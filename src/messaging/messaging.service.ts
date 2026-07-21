@@ -12,6 +12,7 @@ import { EncryptionService } from 'src/common/services/crypto.service';
 import { ContactsService } from 'src/contacts/contacts.service';
 import { SendMessageDto, MessageTypeEnum } from './dto/send-message.dto';
 import { SendMessageResponseDto, MessageListItemDto } from './dto/message-response.dto';
+import { MessageAnalyticsDto } from './dto/message-analytics.dto';
 
 @Injectable()
 export class MessagingService {
@@ -117,6 +118,52 @@ export class MessagingService {
       status: message.status,
       createdAt: message.createdAt,
       updatedAt: message.updatedAt,
+    };
+  }
+
+  async analytics(ssoOrgId: string, days = 14): Promise<MessageAnalyticsDto> {
+    const range = Math.min(Math.max(days, 1), 90);
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+    since.setDate(since.getDate() - (range - 1));
+
+    const messages = await this.prisma.message.findMany({
+      where: { ssoOrgId, createdAt: { gte: since } },
+      select: { status: true, createdAt: true },
+    });
+
+    const totals = { sent: 0, delivered: 0, read: 0, failed: 0, total: 0 };
+
+    // Pre-seed one bucket per day so the series has no gaps.
+    const buckets = new Map<string, { delivered: number; failed: number }>();
+    for (let i = 0; i < range; i++) {
+      const d = new Date(since);
+      d.setDate(since.getDate() + i);
+      buckets.set(d.toISOString().slice(0, 10), { delivered: 0, failed: 0 });
+    }
+
+    for (const m of messages) {
+      totals.total++;
+      totals[m.status as keyof typeof totals]++;
+
+      const key = m.createdAt.toISOString().slice(0, 10);
+      const bucket = buckets.get(key);
+      if (bucket) {
+        // "read" implies delivered for charting purposes.
+        if (m.status === 'delivered' || m.status === 'read') bucket.delivered++;
+        else if (m.status === 'failed') bucket.failed++;
+      }
+    }
+
+    const round = (n: number) => Math.round(n * 1000) / 1000;
+    const deliveredOrRead = totals.delivered + totals.read;
+
+    return {
+      rangeDays: range,
+      totals,
+      deliveryRate: totals.total ? round(deliveredOrRead / totals.total) : 0,
+      readRate: deliveredOrRead ? round(totals.read / deliveredOrRead) : 0,
+      series: [...buckets.entries()].map(([date, v]) => ({ date, ...v })),
     };
   }
 

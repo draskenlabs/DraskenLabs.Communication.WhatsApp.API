@@ -1,9 +1,15 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import axios from 'axios';
 import { TemplateCategory, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { TemplateResponseDto, TemplateSyncResponseDto } from './dto/template.dto';
+import { CreateTemplateDto } from './dto/create-template.dto';
 
 @Injectable()
 export class TemplatesService {
@@ -66,6 +72,71 @@ export class TemplatesService {
     }
 
     return { synced, wabaId };
+  }
+
+  async createTemplate(
+    userId: number,
+    ssoOrgId: string,
+    wabaId: string,
+    dto: CreateTemplateDto,
+  ): Promise<TemplateResponseDto> {
+    const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
+      where: { userId, wabaId },
+    });
+    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+
+    const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
+    if (!waba) throw new NotFoundException('WABA not found in your organisation');
+
+    const accessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
+
+    const payload: Record<string, unknown> = {
+      name: dto.name,
+      category: dto.category,
+      language: dto.language,
+      components: dto.components,
+    };
+    if (dto.parameterFormat) payload.parameter_format = dto.parameterFormat;
+
+    let metaData: { id: string | number; status?: string; category?: string };
+    try {
+      const response = await axios.post(
+        `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/message_templates`,
+        payload,
+        { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } },
+      );
+      metaData = response.data;
+    } catch (err: any) {
+      const metaMessage =
+        err.response?.data?.error?.error_user_msg ??
+        err.response?.data?.error?.message ??
+        err.message;
+      this.logger.warn(`Meta template create failed for ${dto.name}: ${metaMessage}`);
+      throw new BadRequestException(metaMessage || 'Failed to create template');
+    }
+
+    const template = await this.prisma.messageTemplate.upsert({
+      where: { wabaId_name_language: { wabaId, name: dto.name, language: dto.language } },
+      create: {
+        metaTemplateId: String(metaData.id),
+        wabaId,
+        name: dto.name,
+        language: dto.language,
+        category: this.mapCategory(metaData.category ?? dto.category),
+        status: this.mapStatus(metaData.status ?? 'PENDING'),
+        components: dto.components as any,
+        rejectedReason: null,
+      },
+      update: {
+        metaTemplateId: String(metaData.id),
+        category: this.mapCategory(metaData.category ?? dto.category),
+        status: this.mapStatus(metaData.status ?? 'PENDING'),
+        components: dto.components as any,
+        rejectedReason: null,
+      },
+    });
+
+    return this.toDto(template);
   }
 
   async findAll(ssoOrgId: string, wabaId?: string): Promise<TemplateResponseDto[]> {

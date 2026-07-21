@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
@@ -12,7 +13,11 @@ import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger'
 import { Request } from 'express';
 import { TemplatesService } from './templates.service';
 import { TemplateResponseDto, TemplateSyncResponseDto } from './dto/template.dto';
-import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
+import { CreateTemplateDto } from './dto/create-template.dto';
+import {
+  ApiStandardErrorResponses,
+  ApiWrappedOkResponse,
+} from 'src/common/responses/swagger.decorators';
 
 @ApiTags('Templates')
 @ApiBearerAuth()
@@ -34,6 +39,27 @@ export class TemplatesController {
     const orgId = (req as any).orgId;
     if (!user || !orgId) throw new UnauthorizedException();
     return this.templatesService.syncTemplates(user.id, orgId, wabaId);
+  }
+
+  @Post(':wabaId')
+  @ApiOperation({
+    summary: 'Create a message template for a WABA',
+    description:
+      'Submits a new template to the Meta Cloud API (`POST /{waba-id}/message_templates`) and stores it locally. ' +
+      'The template is created with status PENDING; approval arrives asynchronously via the ' +
+      'message_template_status_update webhook.',
+  })
+  @ApiWrappedOkResponse({ dataDto: TemplateResponseDto, description: 'Created template (pending review)' })
+  @ApiStandardErrorResponses({ unauthorized: true, badRequest: true, validation: true })
+  async create(
+    @Req() req: Request,
+    @Param('wabaId') wabaId: string,
+    @Body() dto: CreateTemplateDto,
+  ): Promise<TemplateResponseDto> {
+    const user = (req as any).user;
+    const orgId = (req as any).orgId;
+    if (!user || !orgId) throw new UnauthorizedException();
+    return this.templatesService.createTemplate(user.id, orgId, wabaId, dto);
   }
 
   @Get()
