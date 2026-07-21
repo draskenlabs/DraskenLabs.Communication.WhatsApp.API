@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whatsapp-api
+  labels:
+    app.kubernetes.io/name: whatsapp-api
+    app.kubernetes.io/part-of: whatsapp-platform
+  annotations:
+    # Adjust for your ingress controller / cert-manager setup.
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.example.com
+      secretName: whatsapp-api-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: whatsapp-api
+                port:
+                  number: 80
