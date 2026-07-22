@@ -73,15 +73,31 @@ export class SsoService {
   }
 
   /**
+   * Derives a short, friendly URL slug from an organisation name, e.g.
+   * "Drasken Labs Private Limited" → "drasken-labs-private-limited".
+   */
+  private slugify(name: string): string {
+    const slug = name
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48)
+      .replace(/-+$/g, '');
+    return slug || 'organisation';
+  }
+
+  /**
    * Creates a new organisation in the SSO on behalf of the user (the user
-   * becomes its owner). Uses the user's SSO access token; the created org is
-   * the single source of truth, matching `listOrganizations`.
+   * becomes its owner). Sends a friendly slug derived from the name so orgs
+   * don't get an auto-generated slug with a long unique suffix. Uses the user's
+   * SSO access token; the created org is the single source of truth.
    */
   async createOrganization(ssoAccessToken: string, name: string): Promise<OrgSummary> {
     try {
       const { data } = await axios.post(
         `${this.apiBase}/organizations`,
-        { name },
+        { name, slug: this.slugify(name) },
         { headers: { Authorization: `Bearer ${ssoAccessToken}` } },
       );
       const o = (data?.data ?? data) as Record<string, unknown> | undefined;
