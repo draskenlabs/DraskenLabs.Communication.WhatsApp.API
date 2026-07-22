@@ -15,8 +15,8 @@
 
 | Wave | Name | Status | Notes |
 |------|------|--------|-------|
-| A.0 | PKCE Authorize Endpoint | ✅ Complete | `GET /auth/authorize` — generates state in Redis, returns SSO redirect URL |
-| A.1 | SSO Callback + JWT Issuance | ✅ Complete | `POST /auth/callback` — exchanges code, decodes SSO token, issues internal JWT |
+| A.0 | Browser Authorize Redirect | ✅ Complete | Handled by the web app — redirect to `${SSO_ACCOUNTS_URL}/authorize`; this API no longer exposes `GET /auth/authorize` |
+| A.1 | SSO Callback + JWT Issuance | ✅ Complete | `POST /auth/callback` — confidential code→token exchange, decodes SSO token, issues internal JWT |
 | A.2 | JWT Auth Middleware | ✅ Complete | `AuthMiddleware` — Redis user cache (15 min TTL); falls through to DB on miss |
 | A.3 | User Profile Endpoint | ✅ Complete | `GET /user/profile` live |
 | A.4 | API Key Generation | ✅ Complete | `POST /api-keys` — `ak_` + `sk_` pair; secret encrypted; cached in Redis |
@@ -30,7 +30,6 @@
 
 | Method | Endpoint | Auth | Status |
 |--------|----------|------|--------|
-| GET | `/auth/authorize` | None | ✅ Live |
 | POST | `/auth/callback` | None | ✅ Live |
 | GET | `/user/profile` | JWT | ✅ Live |
 | POST | `/api-keys` | JWT | ✅ Live |
@@ -54,8 +53,9 @@
 | Component | Test File | Status |
 |-----------|-----------|--------|
 | `AuthMiddleware` | `auth.middleware.spec.ts` | ✅ 4 tests |
-| `SsoService` | `sso.service.spec.ts` | ✅ 7 tests |
-| `AuthService` | — | ❌ Missing |
+| `SsoService` | `sso.service.spec.ts` | ✅ 6 tests |
+| `AuthService` | `auth.service.spec.ts` | ✅ 4 tests |
+| `AuthController` | `auth.controller.spec.ts` | ✅ 1 test |
 | `UserService` | — | ❌ Missing |
 | `ApiKeyService` | `api-key.service.spec.ts` | ✅ 4 tests |
 | `ApiKeyController` | — | ❌ Missing |

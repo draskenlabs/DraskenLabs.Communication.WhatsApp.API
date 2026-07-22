@@ -1,9 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 
-const mockAuthService = { handleCallback: jest.fn(), authorize: jest.fn() };
+const mockAuthService = { handleCallback: jest.fn() };
 
 describe('AuthController', () => {
   let controller: AuthController;
@@ -15,23 +14,6 @@ describe('AuthController', () => {
       providers: [{ provide: AuthService, useValue: mockAuthService }],
     }).compile();
     controller = module.get<AuthController>(AuthController);
-  });
-
-  describe('authorize', () => {
-    const query = { codeChallenge: 'challenge_abc' };
-
-    it('extracts the bearer token and delegates to AuthService.authorize', async () => {
-      const response = { code: 'c1', state: 's1', redirectUri: 'https://wa.draskenapis.com/auth/callback' };
-      mockAuthService.authorize.mockResolvedValue(response);
-
-      await expect(controller.authorize(query as any, 'Bearer user_tok')).resolves.toEqual(response);
-      expect(mockAuthService.authorize).toHaveBeenCalledWith('user_tok', 'challenge_abc');
-    });
-
-    it('throws UnauthorizedException when the bearer token is missing', async () => {
-      await expect(controller.authorize(query as any, undefined)).rejects.toThrow(UnauthorizedException);
-      expect(mockAuthService.authorize).not.toHaveBeenCalled();
-    });
   });
 
   describe('callback', () => {

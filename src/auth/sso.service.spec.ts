@@ -33,32 +33,6 @@ describe('SsoService', () => {
     service = module.get<SsoService>(SsoService);
   });
 
-  describe('authorize', () => {
-    it('calls the SSO authorize endpoint with the user bearer token and returns the code', async () => {
-      const authData = { code: 'code_1', state: 'state_xyz', redirectUri: 'https://wa.draskenapis.com/auth/callback' };
-      mockedAxios.get = jest.fn().mockResolvedValue({ data: { data: authData } });
-
-      const result = await service.authorize('user_sso_tok', 'challenge_abc', 'state_xyz');
-
-      expect(result).toEqual(authData);
-      expect(mockedAxios.get).toHaveBeenCalledWith('https://sso.drasken.dev/auth/authorize', {
-        params: {
-          clientId: 'test-app',
-          redirectUri: 'https://wa.draskenapis.com/auth/callback',
-          codeChallenge: 'challenge_abc',
-          codeChallengeMethod: 'S256',
-          state: 'state_xyz',
-        },
-        headers: { Authorization: 'Bearer user_sso_tok' },
-      });
-    });
-
-    it('throws UnauthorizedException when SSO returns an error', async () => {
-      mockedAxios.get = jest.fn().mockRejectedValue({ response: { data: { message: 'Unknown client' } } });
-      await expect(service.authorize('t', 'c', 's')).rejects.toThrow(UnauthorizedException);
-    });
-  });
-
   describe('exchangeCode', () => {
     it('calls SSO token endpoint with the client secret and returns token data', async () => {
       const tokenData = { accessToken: 'at', refreshToken: 'rt', expiresIn: 86400 };
