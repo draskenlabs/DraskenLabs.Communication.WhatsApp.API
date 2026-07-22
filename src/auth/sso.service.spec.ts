@@ -93,12 +93,12 @@ describe('SsoService', () => {
         data: { data: { id: 'org_new', name: 'Gamma', slug: 'gamma' } },
       });
 
-      const result = await service.createOrganization('sso_tok', 'Gamma');
+      const result = await service.createOrganization('sso_tok', 'Gamma Team');
 
       expect(result).toEqual({ id: 'org_new', name: 'Gamma', slug: 'gamma' });
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'https://sso.drasken.dev/organizations',
-        { name: 'Gamma' },
+        { name: 'Gamma Team', slug: 'gamma-team' },
         { headers: { Authorization: 'Bearer sso_tok' } },
       );
     });

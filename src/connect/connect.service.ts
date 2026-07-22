@@ -34,15 +34,24 @@ export class ConnectService {
     const rawAccessToken: string = tokenRes.data.access_token;
     if (!rawAccessToken) throw new BadRequestException('Failed to exchange code for access token');
 
-    // 2. Fetch WABA metadata from Meta
+    // 2. Fetch WABA metadata from Meta (incl. owner business so we can derive
+    //    the business id when the client didn't supply one).
     const wabaRes = await axios.get(
       `https://graph.facebook.com/v25.0/${body.wabaId}`,
       {
-        params: { fields: 'id,name,currency,timezone_id,message_template_namespace' },
+        params: {
+          fields:
+            'id,name,currency,timezone_id,message_template_namespace,owner_business_info',
+        },
         headers: { Authorization: `Bearer ${rawAccessToken}` },
       },
     );
     const wabaMeta = wabaRes.data;
+
+    const businessId: string | undefined = body.businessId ?? wabaMeta.owner_business_info?.id;
+    if (!businessId) {
+      throw new BadRequestException('Could not determine the Meta business id for this account');
+    }
 
     // 3. Upsert Waba record with metadata
     await this.wabaService.createOrUpdateWaba({
@@ -58,7 +67,7 @@ export class ConnectService {
     // 4. Store the connection — token is encrypted inside createOrUpdate
     const userWhatsapp = await this.userWhatsappService.createOrUpdate({
       userId,
-      businessId: body.businessId,
+      businessId,
       wabaId: body.wabaId,
       accessToken: rawAccessToken,
     });
@@ -73,7 +82,7 @@ export class ConnectService {
 
     return {
       wabaId: body.wabaId,
-      businessId: body.businessId,
+      businessId,
       phoneNumbers: phoneNumbers.map((p) => ({
         phoneNumberId: p.phoneNumberId,
         displayPhoneNumber: p.displayPhoneNumber,
