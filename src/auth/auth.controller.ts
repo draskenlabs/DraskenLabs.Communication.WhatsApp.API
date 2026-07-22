@@ -19,8 +19,8 @@ export class AuthController {
       'Requests a single-use authorization code from DraskenLabs SSO on behalf of the user. ' +
       'Pass the **user\'s SSO access token** as `Authorization: Bearer <sso_access_token>` — the API forwards it ' +
       'to the SSO. Provide the `codeChallenge` (SHA-256 hash of your locally generated `codeVerifier`, base64url ' +
-      'encoded) and the `redirectUri`. Returns a `code` (expires in 60s) and a `state` to verify, which you then ' +
-      'exchange via `POST /auth/callback` with the matching `codeVerifier`.',
+      'encoded); the redirect URI is fixed server-side (SSO_REDIRECT_URI). Returns a `code` (expires in 60s) and ' +
+      'a `state` to verify, which you then exchange via `POST /auth/callback` with the matching `codeVerifier`.',
   })
   @ApiWrappedOkResponse({ dataDto: AuthorizeResponseDto, description: 'SSO authorization code and state token' })
   @ApiStandardErrorResponses({ unauthorized: true, validation: true })
@@ -32,7 +32,7 @@ export class AuthController {
     if (!ssoToken) {
       throw new UnauthorizedException('Missing SSO access token');
     }
-    return this.authService.authorize(ssoToken, query.redirectUri, query.codeChallenge);
+    return this.authService.authorize(ssoToken, query.codeChallenge);
   }
 
   @Post('callback')

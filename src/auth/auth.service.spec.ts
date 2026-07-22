@@ -39,21 +39,23 @@ describe('AuthService', () => {
     service = module.get<AuthService>(AuthService);
   });
 
-  const dto = { code: 'code_123', codeVerifier: 'verifier_abc', redirectUri: 'https://app.com/callback' };
+  const dto = { code: 'code_123', codeVerifier: 'verifier_abc' };
 
   describe('authorize', () => {
     it('creates a state and returns the SSO authorization code', async () => {
       mockSsoService.authorize.mockResolvedValue({
-        code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://app.com/cb',
+        code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://wa.draskenapis.com/auth/callback',
       });
 
-      const result = await service.authorize('sso_user_token', 'https://app.com/cb', 'challenge_abc');
+      const result = await service.authorize('sso_user_token', 'challenge_abc');
 
       expect(mockRedisService.createState).toHaveBeenCalled();
       expect(mockSsoService.authorize).toHaveBeenCalledWith(
-        'sso_user_token', 'https://app.com/cb', 'challenge_abc', 'state-uuid-123',
+        'sso_user_token', 'challenge_abc', 'state-uuid-123',
       );
-      expect(result).toEqual({ code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://app.com/cb' });
+      expect(result).toEqual({
+        code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://wa.draskenapis.com/auth/callback',
+      });
     });
   });
 
@@ -69,7 +71,7 @@ describe('AuthService', () => {
       const result = await service.handleCallback(dto);
 
       expect(result.access_token).toBe('signed_token');
-      expect(mockSsoService.exchangeCode).toHaveBeenCalledWith(dto.code, dto.codeVerifier, dto.redirectUri);
+      expect(mockSsoService.exchangeCode).toHaveBeenCalledWith(dto.code, dto.codeVerifier);
       expect(mockUserService.findOrCreateBySsoId).toHaveBeenCalledWith('sso_1');
       expect(mockJwtService.signAsync).toHaveBeenCalledWith({
         sub: 1, orgId: 'org_uuid_1', role: 'owner',

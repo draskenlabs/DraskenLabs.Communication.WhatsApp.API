@@ -1,19 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, IsUrl } from 'class-validator';
+import { IsNotEmpty, IsString } from 'class-validator';
 
 export class AuthCallbackDto {
-  @ApiProperty({ description: 'Authorization code received from SSO callback' })
+  @ApiProperty({ description: 'Authorization code received from GET /auth/authorize' })
   @IsString()
   @IsNotEmpty()
   code: string;
 
-  @ApiProperty({ description: 'PKCE code verifier generated before the redirect' })
+  @ApiProperty({ description: 'PKCE code verifier that matches the codeChallenge sent to authorize' })
   @IsString()
   @IsNotEmpty()
   codeVerifier: string;
-
-  @ApiProperty({ description: 'The redirect URI used in the original authorize request', example: 'https://myapp.com/callback' })
-  @IsString()
-  @IsNotEmpty()
-  redirectUri: string;
 }

@@ -36,6 +36,7 @@ import * as Joi from 'joi';
         SSO_CLIENT_ID: Joi.string().required(),
         SSO_CLIENT_SECRET: Joi.string().required(),
         SSO_API_URL: Joi.string().required(),
+        SSO_REDIRECT_URI: Joi.string().required(),
       }),
     }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),

@@ -28,11 +28,13 @@ export class SsoService {
   private readonly apiBase: string;
   private readonly clientId: string;
   private readonly clientSecret: string;
+  private readonly redirectUri: string;
 
   constructor(private readonly config: ConfigService) {
     this.apiBase = config.getOrThrow<string>('SSO_API_URL');
     this.clientId = config.getOrThrow<string>('SSO_CLIENT_ID');
     this.clientSecret = config.getOrThrow<string>('SSO_CLIENT_SECRET');
+    this.redirectUri = config.getOrThrow<string>('SSO_REDIRECT_URI');
   }
 
   /**
@@ -45,7 +47,6 @@ export class SsoService {
    */
   async authorize(
     userSsoToken: string,
-    redirectUri: string,
     codeChallenge: string,
     state: string,
     codeChallengeMethod = 'S256',
@@ -54,7 +55,7 @@ export class SsoService {
       const { data } = await axios.get(`${this.apiBase}/auth/authorize`, {
         params: {
           clientId: this.clientId,
-          redirectUri,
+          redirectUri: this.redirectUri,
           codeChallenge,
           codeChallengeMethod,
           state,
@@ -69,14 +70,14 @@ export class SsoService {
     }
   }
 
-  async exchangeCode(code: string, codeVerifier: string, redirectUri: string): Promise<SsoTokenData> {
+  async exchangeCode(code: string, codeVerifier: string): Promise<SsoTokenData> {
     try {
       const { data } = await axios.post(`${this.apiBase}/auth/token`, {
         clientId: this.clientId,
         clientSecret: this.clientSecret,
         code,
         codeVerifier,
-        redirectUri,
+        redirectUri: this.redirectUri,
       });
       return data.data as SsoTokenData;
     } catch (err) {

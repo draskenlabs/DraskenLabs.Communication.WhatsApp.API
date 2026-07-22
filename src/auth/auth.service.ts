@@ -16,18 +16,14 @@ export class AuthService {
     private readonly redisService: RedisService,
   ) {}
 
-  async authorize(
-    userSsoToken: string,
-    redirectUri: string,
-    codeChallenge: string,
-  ): Promise<AuthorizeResponseDto> {
+  async authorize(userSsoToken: string, codeChallenge: string): Promise<AuthorizeResponseDto> {
     const state = await this.redisService.createState();
-    const result = await this.ssoService.authorize(userSsoToken, redirectUri, codeChallenge, state);
+    const result = await this.ssoService.authorize(userSsoToken, codeChallenge, state);
     return { code: result.code, state: result.state, redirectUri: result.redirectUri };
   }
 
   async handleCallback(dto: AuthCallbackDto): Promise<AuthResponseDto> {
-    const tokens = await this.ssoService.exchangeCode(dto.code, dto.codeVerifier, dto.redirectUri);
+    const tokens = await this.ssoService.exchangeCode(dto.code, dto.codeVerifier);
     const ssoUser = this.ssoService.decodeUserInfo(tokens.accessToken);
 
     if (!ssoUser.ssoOrgId) {
