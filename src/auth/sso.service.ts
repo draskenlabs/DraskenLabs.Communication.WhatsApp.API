@@ -8,12 +8,6 @@ interface SsoTokenData {
   expiresIn: number;
 }
 
-export interface SsoAuthorizeData {
-  code: string;
-  state: string;
-  redirectUri: string;
-}
-
 export interface SsoUserInfo {
   ssoId: string;
   email: string;
@@ -38,38 +32,13 @@ export class SsoService {
   }
 
   /**
-   * Requests an authorization code from DraskenLabs SSO.
+   * Exchanges a single-use authorization code for tokens (confidential client).
    *
-   * DraskenLabs `GET /auth/authorize` is an authenticated API call (not a
-   * browser redirect): it requires the user's SSO access token as a Bearer
-   * credential and returns `{ code, state, redirectUri }` as JSON. The single-
-   * use code expires in 60 seconds and is exchanged via `exchangeCode`.
+   * The code is obtained by the browser redirect to DraskenLabs SSO
+   * (`${SSO_ACCOUNTS_URL}/authorize`) and posted here by the web app together
+   * with the original PKCE `codeVerifier`. This runs server-side so the client
+   * secret never reaches the browser. The code is single-use and expires in 60s.
    */
-  async authorize(
-    userSsoToken: string,
-    codeChallenge: string,
-    state: string,
-    codeChallengeMethod = 'S256',
-  ): Promise<SsoAuthorizeData> {
-    try {
-      const { data } = await axios.get(`${this.apiBase}/auth/authorize`, {
-        params: {
-          clientId: this.clientId,
-          redirectUri: this.redirectUri,
-          codeChallenge,
-          codeChallengeMethod,
-          state,
-        },
-        headers: { Authorization: `Bearer ${userSsoToken}` },
-      });
-      return data.data as SsoAuthorizeData;
-    } catch (err) {
-      const error = err as AxiosError<{ message?: string }>;
-      const msg = error.response?.data?.message ?? 'SSO authorize request failed';
-      throw new UnauthorizedException(msg);
-    }
-  }
-
   async exchangeCode(code: string, codeVerifier: string): Promise<SsoTokenData> {
     try {
       const { data } = await axios.post(`${this.apiBase}/auth/token`, {

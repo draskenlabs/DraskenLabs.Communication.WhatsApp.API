@@ -2,10 +2,8 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { SsoService } from './sso.service';
 import { UserService } from 'src/user/user.service';
-import { RedisService } from 'src/redis/redis.service';
 import { AuthCallbackDto } from './dto/callback.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
-import { AuthorizeResponseDto } from './dto/authorize.dto';
 
 @Injectable()
 export class AuthService {
@@ -13,14 +11,7 @@ export class AuthService {
     private readonly ssoService: SsoService,
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
-    private readonly redisService: RedisService,
   ) {}
-
-  async authorize(userSsoToken: string, codeChallenge: string): Promise<AuthorizeResponseDto> {
-    const state = await this.redisService.createState();
-    const result = await this.ssoService.authorize(userSsoToken, codeChallenge, state);
-    return { code: result.code, state: result.state, redirectUri: result.redirectUri };
-  }
 
   async handleCallback(dto: AuthCallbackDto): Promise<AuthResponseDto> {
     const tokens = await this.ssoService.exchangeCode(dto.code, dto.codeVerifier);

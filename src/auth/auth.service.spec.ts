@@ -4,12 +4,10 @@ import { AuthService } from './auth.service';
 import { SsoService } from './sso.service';
 import { UserService } from 'src/user/user.service';
 import { JwtService } from '@nestjs/jwt';
-import { RedisService } from 'src/redis/redis.service';
 
 const mockSsoService = {
   exchangeCode: jest.fn(),
   decodeUserInfo: jest.fn(),
-  authorize: jest.fn(),
 };
 
 const mockUserService = {
@@ -17,10 +15,6 @@ const mockUserService = {
 };
 
 const mockJwtService = { signAsync: jest.fn().mockResolvedValue('signed_token') };
-
-const mockRedisService = {
-  createState: jest.fn().mockResolvedValue('state-uuid-123'),
-};
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -33,31 +27,12 @@ describe('AuthService', () => {
         { provide: SsoService, useValue: mockSsoService },
         { provide: UserService, useValue: mockUserService },
         { provide: JwtService, useValue: mockJwtService },
-        { provide: RedisService, useValue: mockRedisService },
       ],
     }).compile();
     service = module.get<AuthService>(AuthService);
   });
 
   const dto = { code: 'code_123', codeVerifier: 'verifier_abc' };
-
-  describe('authorize', () => {
-    it('creates a state and returns the SSO authorization code', async () => {
-      mockSsoService.authorize.mockResolvedValue({
-        code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://wa.draskenapis.com/auth/callback',
-      });
-
-      const result = await service.authorize('sso_user_token', 'challenge_abc');
-
-      expect(mockRedisService.createState).toHaveBeenCalled();
-      expect(mockSsoService.authorize).toHaveBeenCalledWith(
-        'sso_user_token', 'challenge_abc', 'state-uuid-123',
-      );
-      expect(result).toEqual({
-        code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://wa.draskenapis.com/auth/callback',
-      });
-    });
-  });
 
   describe('handleCallback', () => {
     it('exchanges code, provisions user and returns signed JWT', async () => {
