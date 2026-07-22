@@ -19,7 +19,7 @@ workflow.
   cp secret.example.yaml secret.yaml   # then edit
   kubectl apply -f secret.yaml
   ```
-- A reachable **Postgres** (`DATABASE_URL`) and **Redis** (`REDIS_HOST`/`REDIS_PORT`).
+- A reachable **Postgres** (`DATABASE_URL`) and **Redis** (`REDIS_URL`).
 
 ## Deploy
 

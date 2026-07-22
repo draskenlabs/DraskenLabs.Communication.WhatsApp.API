@@ -9,7 +9,7 @@ import { RedisService } from 'src/redis/redis.service';
 const mockSsoService = {
   exchangeCode: jest.fn(),
   decodeUserInfo: jest.fn(),
-  getAuthorizeUrl: jest.fn().mockReturnValue('https://accounts.drasken.dev/authorize?foo=bar'),
+  authorize: jest.fn(),
 };
 
 const mockUserService = {
@@ -39,17 +39,23 @@ describe('AuthService', () => {
     service = module.get<AuthService>(AuthService);
   });
 
-  const dto = { code: 'code_123', codeVerifier: 'verifier_abc', redirectUri: 'https://app.com/callback' };
+  const dto = { code: 'code_123', codeVerifier: 'verifier_abc' };
 
-  describe('getAuthorizeUrl', () => {
-    it('creates a state and returns the SSO authorize URL', async () => {
-      const result = await service.getAuthorizeUrl('https://app.com/cb', 'challenge_abc');
+  describe('authorize', () => {
+    it('creates a state and returns the SSO authorization code', async () => {
+      mockSsoService.authorize.mockResolvedValue({
+        code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://wa.draskenapis.com/auth/callback',
+      });
+
+      const result = await service.authorize('sso_user_token', 'challenge_abc');
 
       expect(mockRedisService.createState).toHaveBeenCalled();
-      expect(mockSsoService.getAuthorizeUrl).toHaveBeenCalledWith(
-        'https://app.com/cb', 'challenge_abc', 'state-uuid-123',
+      expect(mockSsoService.authorize).toHaveBeenCalledWith(
+        'sso_user_token', 'challenge_abc', 'state-uuid-123',
       );
-      expect(result).toEqual({ url: 'https://accounts.drasken.dev/authorize?foo=bar', state: 'state-uuid-123' });
+      expect(result).toEqual({
+        code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://wa.draskenapis.com/auth/callback',
+      });
     });
   });
 
@@ -65,7 +71,7 @@ describe('AuthService', () => {
       const result = await service.handleCallback(dto);
 
       expect(result.access_token).toBe('signed_token');
-      expect(mockSsoService.exchangeCode).toHaveBeenCalledWith(dto.code, dto.codeVerifier, dto.redirectUri);
+      expect(mockSsoService.exchangeCode).toHaveBeenCalledWith(dto.code, dto.codeVerifier);
       expect(mockUserService.findOrCreateBySsoId).toHaveBeenCalledWith('sso_1');
       expect(mockJwtService.signAsync).toHaveBeenCalledWith({
         sub: 1, orgId: 'org_uuid_1', role: 'owner',
