@@ -103,5 +103,23 @@ describe('WabaPhoneNumberService', () => {
       expect(result).toHaveLength(1);
       expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p2', 1, 'w1', 'enc');
     });
+
+    it('handles a "Pending sync" number with fields omitted by Meta', async () => {
+      // A not-yet-onboarded number comes back with no last_onboarded_time and
+      // several fields missing. This must not crash the connect flow.
+      const metaPhone = { id: 'p3' };
+      mockedAxios.get = jest.fn().mockResolvedValue({ data: { data: [metaPhone] } });
+      mockPrisma.wabaPhoneNumber.upsert.mockImplementation(({ create }) => create);
+
+      const result = await service.syncPhoneNumbersWithToken(1, 'w1', 'raw', 'enc');
+
+      expect(result).toHaveLength(1);
+      const written = mockPrisma.wabaPhoneNumber.upsert.mock.calls[0][0].create;
+      expect(written.lastOnboardedTime).toBeNull();
+      expect(written.qualityRating).toBe('UNKNOWN');
+      expect(written.platformType).toBe('NOT_APPLICABLE');
+      expect(written.codeVerificationStatus).toBe('NOT_VERIFIED');
+      expect(written.verifiedName).toBe('');
+    });
   });
 });
