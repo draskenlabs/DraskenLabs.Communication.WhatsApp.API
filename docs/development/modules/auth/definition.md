@@ -70,11 +70,26 @@ exchange, so the client secret never reaches the browser.
 3. Web app calls POST /auth/callback { code, codeVerifier }
    → API exchanges the code at POST {SSO_API_URL}/auth/token, sending
      clientId + clientSecret + codeVerifier + redirectUri (confidential)
-   → Decodes SSO access token → extracts ssoId, ssoOrgId, role
+   → Decodes SSO access token → extracts ssoId, email
    → Finds or creates User by ssoId
-   → Issues internal JWT
-   → Returns { access_token, user }
+   → Fetches the user's orgs from GET {SSO_API_URL}/organizations and caches the
+     SSO access token + org list in Redis (ssosession:{sessionId})
+   → Issues a SESSION JWT { sub, sessionId } (no org) and returns
+     { access_token, user, organisations }
+
+4. Client selects/creates an organisation → API re-issues an ORG-SCOPED JWT:
+   - POST /auth/select-org { orgId } → validates membership (cached) → JWT { sub, orgId, role, sessionId }
+   - POST /auth/organisations { name } → creates org in SSO → JWT { sub, orgId, role: owner, sessionId }
+   - GET  /auth/organisations → lists the cached orgs
 ```
+
+**Session model.** The SSO access token carries **no organisation claim**, so
+organisation is not resolved at login. Instead the API keeps a **BFF session**:
+it stores the user's SSO access token + org membership in Redis
+(`ssosession:{sessionId}`, TTL 1 day) so org list/create/switch run behind the
+app JWT without the SSO token ever reaching the browser. The session JWT can't
+call business routes (they require `orgId`); the client must select or create an
+org first. Switching org = re-issuing the org-scoped JWT.
 
 `SSO_REDIRECT_URI` must be the web app's `/auth/callback` URL and match exactly
 both the value the browser redirected with and the one sent at token exchange.
@@ -96,6 +111,7 @@ both the value the browser redirected with and the one sent at token exchange.
 | Key | TTL | Value |
 |-----|-----|-------|
 | `state:{uuid}` | 5 min | `{}` (presence check) |
+| `ssosession:{sessionId}` | 1 day | `{ ssoId, ssoAccessToken, orgs[] }` (BFF org session) |
 | `user:{id}` | 15 min | `{ id, ssoId }` |
 | `apiKey:{accessKey}` | None | `{ userId, ssoOrgId, secretKey (encrypted) }` |
 
@@ -105,7 +121,10 @@ both the value the browser redirected with and the one sent at token exchange.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/auth/callback` | None | Exchange SSO code (+ PKCE verifier) for internal JWT |
+| POST | `/auth/callback` | None | Exchange SSO code (+ PKCE verifier) for a session token + orgs |
+| GET | `/auth/organisations` | App JWT | List the session user's organisations |
+| POST | `/auth/organisations` | App JWT | Create an organisation and switch into it |
+| POST | `/auth/select-org` | App JWT | Switch into a member org (re-issues the token) |
 | GET | `/user/profile` | JWT | Get authenticated user profile |
 | POST | `/api-keys` | JWT | Create a new API key pair |
 | GET | `/api-keys` | JWT | List active API keys for the user |

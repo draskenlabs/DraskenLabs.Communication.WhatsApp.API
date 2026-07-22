@@ -9,6 +9,12 @@ import Redis from 'ioredis';
 import { v7 as uuidv7 } from 'uuid';
 import { WABAConnectState } from './dto/waba-connect-state.dto';
 
+export interface SsoSessionData {
+  ssoId: string;
+  ssoAccessToken: string;
+  orgs: { id: string; name: string; slug?: string }[];
+}
+
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private client: Redis;
@@ -59,6 +65,24 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async updateState(stateId: string, data: WABAConnectState): Promise<string> {
     await this.client.set(`state:${stateId}`, JSON.stringify(data), 'EX', 300);
     return stateId;
+  }
+
+  // SSO Session — ssosession:{sessionId} → { ssoId, ssoAccessToken, orgs }.
+  // Holds the user's SSO access token + org membership server-side so org
+  // list/create/switch can run behind the app JWT without the browser ever
+  // seeing the SSO token. TTL defaults to the app JWT lifetime (1 day).
+  async createSessionId(): Promise<string> {
+    return uuidv7();
+  }
+
+  async setSsoSession(sessionId: string, data: SsoSessionData, ttlSeconds = 86400): Promise<void> {
+    await this.client.set(`ssosession:${sessionId}`, JSON.stringify(data), 'EX', ttlSeconds);
+  }
+
+  async getSsoSession(sessionId: string): Promise<SsoSessionData | null> {
+    const raw = await this.client.get(`ssosession:${sessionId}`);
+    if (!raw) return null;
+    return JSON.parse(raw);
   }
 
   // User Cache

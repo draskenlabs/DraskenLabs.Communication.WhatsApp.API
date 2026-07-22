@@ -30,7 +30,10 @@
 
 | Method | Endpoint | Auth | Status |
 |--------|----------|------|--------|
-| POST | `/auth/callback` | None | ✅ Live |
+| POST | `/auth/callback` | None | ✅ Live (returns session token + orgs) |
+| GET | `/auth/organisations` | App JWT | ✅ Live |
+| POST | `/auth/organisations` | App JWT | ✅ Live (create + switch) |
+| POST | `/auth/select-org` | App JWT | ✅ Live (switch) |
 | GET | `/user/profile` | JWT | ✅ Live |
 | POST | `/api-keys` | JWT | ✅ Live |
 | GET | `/api-keys` | JWT | ✅ Live |
