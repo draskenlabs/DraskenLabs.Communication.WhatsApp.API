@@ -11,8 +11,10 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiSecurity, ApiOperation, ApiParam, ApiHeader } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiParam } from '@nestjs/swagger';
 import { Request } from 'express';
+import { JwtService } from '@nestjs/jwt';
+import { RedisService } from 'src/redis/redis.service';
 import { OrgService } from './org.service';
 import { ApiWrappedOkResponse, ApiStandardErrorResponses } from 'src/common/responses/swagger.decorators';
 import {
@@ -25,24 +27,43 @@ import {
 } from './dto/org.dto';
 
 @ApiTags('Organisations')
-@ApiSecurity('sso-token')
-@ApiHeader({ name: 'Authorization', description: 'SSO Bearer token — Bearer <sso_access_token>', required: true })
+@ApiBearerAuth()
 @ApiStandardErrorResponses({ unauthorized: true, forbidden: true })
 @Controller('organisation')
 export class OrgController {
-  constructor(private readonly orgService: OrgService) {}
+  constructor(
+    private readonly orgService: OrgService,
+    private readonly jwtService: JwtService,
+    private readonly redisService: RedisService,
+  ) {}
 
-  private auth(req: Request): string {
-    const authorization = req.headers.authorization;
-    if (!authorization) throw new UnauthorizedException('Missing Authorization header');
-    return authorization;
+  /**
+   * Authenticates the app JWT (session or org-scoped) and returns the SSO
+   * `Authorization` header built from the cached SSO access token — so the
+   * browser never needs the SSO token to manage organisations.
+   */
+  private async ssoAuth(req: Request): Promise<string> {
+    const header = req.headers.authorization;
+    const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
+    if (!token) throw new UnauthorizedException('Missing Authorization header');
+    let sessionId: string | undefined;
+    try {
+      const payload = await this.jwtService.verifyAsync(token);
+      sessionId = payload?.sessionId;
+    } catch {
+      throw new UnauthorizedException('Invalid token');
+    }
+    if (!sessionId) throw new UnauthorizedException('Invalid session token');
+    const session = await this.redisService.getSsoSession(sessionId);
+    if (!session) throw new UnauthorizedException('Session expired — please sign in again');
+    return `Bearer ${session.ssoAccessToken}`;
   }
 
   @Get()
-  @ApiOperation({ summary: 'List organisations for the authenticated SSO user' })
+  @ApiOperation({ summary: 'List organisations for the authenticated user' })
   @ApiWrappedOkResponse({ dataDto: OrganisationDto, isArray: true, description: 'List of organisations' })
-  listOrgs(@Req() req: Request) {
-    return this.orgService.listOrgs(this.auth(req));
+  async listOrgs(@Req() req: Request) {
+    return this.orgService.listOrgs(await this.ssoAuth(req));
   }
 
   @Get(':orgId')
@@ -50,32 +71,32 @@ export class OrgController {
   @ApiParam({ name: 'orgId', description: 'SSO organisation ID' })
   @ApiWrappedOkResponse({ dataDto: OrganisationDto, description: 'Organisation details' })
   @ApiStandardErrorResponses({ notFound: true })
-  getOrg(@Param('orgId') orgId: string, @Req() req: Request) {
-    return this.orgService.getOrg(orgId, this.auth(req));
+  async getOrg(@Param('orgId') orgId: string, @Req() req: Request) {
+    return this.orgService.getOrg(orgId, await this.ssoAuth(req));
   }
 
   @Patch(':orgId')
   @ApiOperation({ summary: 'Update organisation name or slug (admin only)' })
   @ApiParam({ name: 'orgId', description: 'SSO organisation ID' })
   @ApiWrappedOkResponse({ dataDto: OrganisationDto, description: 'Updated organisation' })
-  updateOrg(@Param('orgId') orgId: string, @Req() req: Request, @Body() body: UpdateOrganisationDto) {
-    return this.orgService.updateOrg(orgId, this.auth(req), body as unknown as Record<string, unknown>);
+  async updateOrg(@Param('orgId') orgId: string, @Req() req: Request, @Body() body: UpdateOrganisationDto) {
+    return this.orgService.updateOrg(orgId, await this.ssoAuth(req), body as unknown as Record<string, unknown>);
   }
 
   @Get(':orgId/members')
   @ApiOperation({ summary: 'List members of an organisation' })
   @ApiParam({ name: 'orgId', description: 'SSO organisation ID' })
   @ApiWrappedOkResponse({ dataDto: MemberDto, isArray: true, description: 'Organisation member list' })
-  listMembers(@Param('orgId') orgId: string, @Req() req: Request) {
-    return this.orgService.listMembers(orgId, this.auth(req));
+  async listMembers(@Param('orgId') orgId: string, @Req() req: Request) {
+    return this.orgService.listMembers(orgId, await this.ssoAuth(req));
   }
 
   @Post(':orgId/members/invite')
   @ApiOperation({ summary: 'Invite a user to the organisation' })
   @ApiParam({ name: 'orgId', description: 'SSO organisation ID' })
   @ApiWrappedOkResponse({ dataDto: InvitationDto, description: 'Created invitation' })
-  inviteMember(@Param('orgId') orgId: string, @Req() req: Request, @Body() body: InviteMemberDto) {
-    return this.orgService.inviteMember(orgId, this.auth(req), body as unknown as Record<string, unknown>);
+  async inviteMember(@Param('orgId') orgId: string, @Req() req: Request, @Body() body: InviteMemberDto) {
+    return this.orgService.inviteMember(orgId, await this.ssoAuth(req), body as unknown as Record<string, unknown>);
   }
 
   @Patch(':orgId/members/:userId/role')
@@ -83,13 +104,13 @@ export class OrgController {
   @ApiParam({ name: 'orgId', description: 'SSO organisation ID' })
   @ApiParam({ name: 'userId', description: 'SSO user ID' })
   @ApiWrappedOkResponse({ dataDto: MemberDto, description: 'Updated member' })
-  updateMemberRole(
+  async updateMemberRole(
     @Param('orgId') orgId: string,
     @Param('userId') userId: string,
     @Req() req: Request,
     @Body() body: UpdateMemberRoleDto,
   ) {
-    return this.orgService.updateMemberRole(orgId, userId, this.auth(req), body as unknown as Record<string, unknown>);
+    return this.orgService.updateMemberRole(orgId, userId, await this.ssoAuth(req), body as unknown as Record<string, unknown>);
   }
 
   @Delete(':orgId/members/:userId')
@@ -97,15 +118,15 @@ export class OrgController {
   @ApiOperation({ summary: 'Remove a member from the organisation (admin only)' })
   @ApiParam({ name: 'orgId', description: 'SSO organisation ID' })
   @ApiParam({ name: 'userId', description: 'SSO user ID' })
-  removeMember(@Param('orgId') orgId: string, @Param('userId') userId: string, @Req() req: Request) {
-    return this.orgService.removeMember(orgId, userId, this.auth(req));
+  async removeMember(@Param('orgId') orgId: string, @Param('userId') userId: string, @Req() req: Request) {
+    return this.orgService.removeMember(orgId, userId, await this.ssoAuth(req));
   }
 
   @Get(':orgId/invitations')
   @ApiOperation({ summary: 'List pending invitations for an organisation' })
   @ApiParam({ name: 'orgId', description: 'SSO organisation ID' })
   @ApiWrappedOkResponse({ dataDto: InvitationDto, isArray: true, description: 'Pending invitations' })
-  listInvitations(@Param('orgId') orgId: string, @Req() req: Request) {
-    return this.orgService.listInvitations(orgId, this.auth(req));
+  async listInvitations(@Param('orgId') orgId: string, @Req() req: Request) {
+    return this.orgService.listInvitations(orgId, await this.ssoAuth(req));
   }
 }

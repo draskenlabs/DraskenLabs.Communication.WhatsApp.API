@@ -8,7 +8,7 @@ Provides organisation and member management for the platform by proxying request
 
 ## Design Pattern
 
-**SSO Proxy** — every request to `/organisation/*` extracts the `Authorization` header from the incoming request and forwards it verbatim to `SSO_API_URL/organizations`. The response is passed back to the caller unchanged. There is no local DB interaction.
+**BFF Proxy** — every request to `/organisation/*` authenticates the caller's **app JWT** (session or org-scoped), looks up the cached SSO access token from the Redis BFF session (`ssosession:{sessionId}`), and calls `SSO_API_URL/organizations` with **that** token. The response is passed back unchanged. The browser never handles the SSO token. There is no local DB interaction.
 
 This means:
 - The frontend must pass the **SSO access token** (not the internal JWT) for these endpoints
@@ -52,12 +52,14 @@ This means:
 
 ## Auth
 
-All endpoints require the **SSO Bearer token** in the `Authorization` header:
+All endpoints require the **app JWT** (session or org-scoped) in the `Authorization` header:
 ```
-Authorization: Bearer <sso_access_token>
+Authorization: Bearer <app_jwt>
 ```
 
-This is the token received from the SSO during the PKCE login flow, **not** the internal JWT.
+The controller verifies the JWT, then swaps it for the user's cached SSO access
+token (from the Redis BFF session keyed by the JWT's `sessionId`) before calling
+the SSO. Callers never send the SSO token directly.
 
 ---
 
