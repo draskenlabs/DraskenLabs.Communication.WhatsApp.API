@@ -12,10 +12,12 @@ data:
   # Redis connection string lives in the Secret (REDIS_URL) since it may carry
   # credentials. For a passwordless in-cluster Redis you may instead set it here:
   #   REDIS_URL: "redis://redis:6379"
-  # DraskenLabs SSO — base URL of the IAM service (/auth/authorize, /auth/token).
-  # The confidential client secret is NOT here; it lives in the Secret.
+  # DraskenLabs SSO — base URL for the confidential code→token exchange
+  # (POST {SSO_API_URL}/auth/token). The client secret is NOT here; it lives in
+  # the Secret. The browser-facing authorize redirect is handled by the web app.
   SSO_API_URL: "https://iam.draskenapis.com"
-  # Redirect URI registered for this SSO client (must match exactly at IAM).
+  # Redirect URI registered for this SSO client. Must EXACTLY match the web app's
+  # /auth/callback URL (its SSO_REDIRECT_URI) and the value sent at token exchange.
   SSO_REDIRECT_URI: "https://wa.draskenapis.com/auth/callback"
   # Meta OAuth redirect (must match the Meta App config)
   META_REDIRECT_URI: "https://api.example.com/connect/callback"
