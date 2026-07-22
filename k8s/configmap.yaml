@@ -9,9 +9,9 @@ data:
   # Non-secret runtime config. Secrets live in the Secret (see secret.example.yaml).
   PORT: "3000"
   NODE_ENV: "production"
-  # Point these at your in-cluster Redis service.
-  REDIS_HOST: "redis"
-  REDIS_PORT: "6379"
+  # Redis connection string lives in the Secret (REDIS_URL) since it may carry
+  # credentials. For a passwordless in-cluster Redis you may instead set it here:
+  #   REDIS_URL: "redis://redis:6379"
   # DraskenLabs SSO — base URL of the IAM service (/auth/authorize, /auth/token).
   # The confidential client secret is NOT here; it lives in the Secret.
   SSO_API_URL: "https://iam.draskenapis.com"

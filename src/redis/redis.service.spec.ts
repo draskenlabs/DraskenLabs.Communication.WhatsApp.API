@@ -20,7 +20,7 @@ import { ConfigService } from '@nestjs/config';
 import { RedisService } from './redis.service';
 
 const mockConfigService = {
-  get: (key: string) => (key === 'REDIS_PORT' ? 6379 : 'localhost'),
+  getOrThrow: (key: string) => (key === 'REDIS_URL' ? 'redis://localhost:6379' : undefined),
 };
 
 describe('RedisService', () => {
