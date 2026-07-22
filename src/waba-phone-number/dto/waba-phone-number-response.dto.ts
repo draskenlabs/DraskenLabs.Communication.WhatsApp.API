@@ -25,8 +25,12 @@ export class WabaPhoneNumberResponseDto {
   @ApiProperty({ example: 'NOT_APPLICABLE' })
   throughputLevel: string;
 
-  @ApiProperty({ example: '2026-04-23T20:15:20.000Z' })
-  lastOnboardedTime: Date;
+  @ApiProperty({
+    example: '2026-04-23T20:15:20.000Z',
+    nullable: true,
+    description: 'Null until the number has completed onboarding.',
+  })
+  lastOnboardedTime: Date | null;
 
   @ApiProperty({ example: '1610143633542913' })
   wabaId: string;

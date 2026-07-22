@@ -4,13 +4,17 @@ import {
   ExceptionFilter,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(GlobalExceptionFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse();
+    const request = ctx.getRequest?.();
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
@@ -41,6 +45,15 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       });
       return;
     }
+
+    // Non-HttpException: a genuine unexpected error. Log it with a stack so it
+    // isn't silently masked behind the generic 500 the client receives.
+    const method = request?.method ?? 'UNKNOWN';
+    const url = request?.url ?? 'UNKNOWN';
+    this.logger.error(
+      `Unhandled exception on ${method} ${url}`,
+      exception instanceof Error ? exception.stack : String(exception),
+    );
 
     response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
       statusCode: HttpStatus.INTERNAL_SERVER_ERROR,

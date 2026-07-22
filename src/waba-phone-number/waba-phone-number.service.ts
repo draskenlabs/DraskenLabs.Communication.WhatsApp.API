@@ -32,33 +32,41 @@ export class WabaPhoneNumberService {
     );
 
     const synced: WabaPhoneNumber[] = [];
-    for (const meta of response.data.data) {
+    for (const meta of response.data?.data ?? []) {
+      // A number that hasn't finished onboarding yet ("Pending sync") comes back
+      // from Meta with several of these fields absent. The columns are required,
+      // so fall back to sensible defaults rather than writing null/Invalid Date
+      // (which Prisma rejects and would fail the whole connect flow).
+      const fields = {
+        verifiedName: meta.verified_name ?? '',
+        codeVerificationStatus: meta.code_verification_status ?? 'NOT_VERIFIED',
+        displayPhoneNumber: meta.display_phone_number ?? '',
+        qualityRating: meta.quality_rating ?? 'UNKNOWN',
+        platformType: meta.platform_type ?? 'NOT_APPLICABLE',
+        throughputLevel: meta.throughput?.level ?? 'NOT_APPLICABLE',
+        lastOnboardedTime: this.parseOnboardedTime(meta.last_onboarded_time),
+      };
+
       const record = await this.prisma.wabaPhoneNumber.upsert({
         where: { phoneNumberId: meta.id },
-        update: {
-          verifiedName: meta.verified_name,
-          codeVerificationStatus: meta.code_verification_status,
-          displayPhoneNumber: meta.display_phone_number,
-          qualityRating: meta.quality_rating,
-          platformType: meta.platform_type,
-          throughputLevel: meta.throughput?.level ?? 'NOT_APPLICABLE',
-          lastOnboardedTime: new Date(meta.last_onboarded_time),
-        },
+        update: fields,
         create: {
           phoneNumberId: meta.id,
           wabaId,
-          verifiedName: meta.verified_name,
-          codeVerificationStatus: meta.code_verification_status,
-          displayPhoneNumber: meta.display_phone_number,
-          qualityRating: meta.quality_rating,
-          platformType: meta.platform_type,
-          throughputLevel: meta.throughput?.level ?? 'NOT_APPLICABLE',
-          lastOnboardedTime: new Date(meta.last_onboarded_time),
+          ...fields,
         },
       });
       synced.push(record);
     }
     return synced;
+  }
+
+  // Meta omits last_onboarded_time for numbers that haven't been onboarded yet,
+  // and may return an unparseable value. Return null instead of an Invalid Date.
+  private parseOnboardedTime(value: unknown): Date | null {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = new Date(value as string | number);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
   // Populates Redis phone cache for each synced phone number.
