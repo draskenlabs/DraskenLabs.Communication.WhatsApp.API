@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SsoService } from './sso.service';
 import axios from 'axios';
@@ -56,6 +56,61 @@ describe('SsoService', () => {
     it('throws UnauthorizedException when SSO returns an error', async () => {
       mockedAxios.post = jest.fn().mockRejectedValue({ response: { data: { message: 'Invalid or expired authorization code' } } });
       await expect(service.exchangeCode('bad', 'v')).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('listOrganizations', () => {
+    it('maps organisations from GET /organizations', async () => {
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: { data: [{ id: 'org_1', name: 'Acme', slug: 'acme' }, { id: 'org_2', name: 'Beta' }] },
+      });
+
+      const result = await service.listOrganizations('sso_tok');
+
+      expect(result).toEqual([
+        { id: 'org_1', name: 'Acme', slug: 'acme' },
+        { id: 'org_2', name: 'Beta', slug: undefined },
+      ]);
+      expect(mockedAxios.get).toHaveBeenCalledWith('https://sso.drasken.dev/organizations', {
+        headers: { Authorization: 'Bearer sso_tok' },
+      });
+    });
+
+    it('returns an empty array when the user has no organisations', async () => {
+      mockedAxios.get = jest.fn().mockResolvedValue({ data: { data: [] } });
+      await expect(service.listOrganizations('sso_tok')).resolves.toEqual([]);
+    });
+
+    it('returns an empty array when the request fails', async () => {
+      mockedAxios.get = jest.fn().mockRejectedValue({ response: { status: 401 } });
+      await expect(service.listOrganizations('sso_tok')).resolves.toEqual([]);
+    });
+  });
+
+  describe('createOrganization', () => {
+    it('creates an organisation via POST /organizations and returns it', async () => {
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { data: { id: 'org_new', name: 'Gamma', slug: 'gamma' } },
+      });
+
+      const result = await service.createOrganization('sso_tok', 'Gamma');
+
+      expect(result).toEqual({ id: 'org_new', name: 'Gamma', slug: 'gamma' });
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'https://sso.drasken.dev/organizations',
+        { name: 'Gamma' },
+        { headers: { Authorization: 'Bearer sso_tok' } },
+      );
+    });
+
+    it('throws UnauthorizedException on a 401 from the SSO', async () => {
+      mockedAxios.post = jest.fn().mockRejectedValue({ response: { status: 401, data: { message: 'expired' } } });
+      await expect(service.createOrganization('sso_tok', 'X')).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('throws BadRequestException on other SSO errors', async () => {
+      mockedAxios.post = jest.fn().mockRejectedValue({ response: { status: 409, data: { message: 'name taken' } } });
+      await expect(service.createOrganization('sso_tok', 'X')).rejects.toThrow(BadRequestException);
     });
   });
 
