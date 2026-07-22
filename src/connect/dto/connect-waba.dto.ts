@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class ConnectWhatsAppRequestDTO {
   @ApiProperty({ description: 'OAuth code received from Meta Embedded Signup' })
@@ -12,10 +12,13 @@ export class ConnectWhatsAppRequestDTO {
   @IsNotEmpty()
   wabaId: string;
 
-  @ApiProperty({ description: 'Meta Business ID' })
+  @ApiPropertyOptional({
+    description: 'Meta Business ID. Optional — derived from the WABA (owner_business_info) when omitted.',
+  })
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  businessId: string;
+  businessId?: string;
 }
 
 export class ConnectedPhoneNumberDTO {

@@ -60,7 +60,34 @@ describe('ConnectService', () => {
 
     const result = await service.connectWhatsapp({ code: 'code', wabaId: 'w1', businessId: 'b1' }, 1, 'sso_org_1');
     expect(result.wabaId).toBe('w1');
+    expect(result.businessId).toBe('b1');
     expect(result.phoneNumbers).toHaveLength(1);
     expect(result.phoneNumbers[0].phoneNumberId).toBe('p1');
+  });
+
+  it('derives businessId from the WABA when the client omits it', async () => {
+    mockedAxios.get = jest.fn()
+      .mockResolvedValueOnce({ data: { access_token: 'tok' } })
+      .mockResolvedValueOnce({ data: { id: 'w1', name: 'Test', owner_business_info: { id: 'biz_from_meta' } } });
+
+    wabaService.createOrUpdateWaba.mockResolvedValue({ wabaId: 'w1' } as any);
+    userWhatsappService.createOrUpdate.mockResolvedValue({ accessToken: 'enc' } as any);
+    wabaPhoneNumberService.syncPhoneNumbersWithToken.mockResolvedValue([]);
+
+    const result = await service.connectWhatsapp({ code: 'code', wabaId: 'w1' }, 1, 'sso_org_1');
+    expect(result.businessId).toBe('biz_from_meta');
+    expect(userWhatsappService.createOrUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ businessId: 'biz_from_meta' }),
+    );
+  });
+
+  it('throws when no businessId can be determined', async () => {
+    mockedAxios.get = jest.fn()
+      .mockResolvedValueOnce({ data: { access_token: 'tok' } })
+      .mockResolvedValueOnce({ data: { id: 'w1', name: 'Test' } });
+
+    await expect(
+      service.connectWhatsapp({ code: 'code', wabaId: 'w1' }, 1, 'sso_org_1'),
+    ).rejects.toThrow(BadRequestException);
   });
 });
