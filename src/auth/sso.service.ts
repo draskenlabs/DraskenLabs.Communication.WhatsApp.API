@@ -8,6 +8,12 @@ interface SsoTokenData {
   expiresIn: number;
 }
 
+export interface SsoAuthorizeData {
+  code: string;
+  state: string;
+  redirectUri: string;
+}
+
 export interface SsoUserInfo {
   ssoId: string;
   email: string;
@@ -20,35 +26,54 @@ export interface SsoUserInfo {
 @Injectable()
 export class SsoService {
   private readonly apiBase: string;
-  private readonly accountsBase: string;
   private readonly clientId: string;
+  private readonly clientSecret: string;
 
   constructor(private readonly config: ConfigService) {
     this.apiBase = config.getOrThrow<string>('SSO_API_URL');
-    this.accountsBase = config.getOrThrow<string>('SSO_ACCOUNTS_URL');
     this.clientId = config.getOrThrow<string>('SSO_CLIENT_ID');
+    this.clientSecret = config.getOrThrow<string>('SSO_CLIENT_SECRET');
   }
 
-  getAuthorizeUrl(
+  /**
+   * Requests an authorization code from DraskenLabs SSO.
+   *
+   * DraskenLabs `GET /auth/authorize` is an authenticated API call (not a
+   * browser redirect): it requires the user's SSO access token as a Bearer
+   * credential and returns `{ code, state, redirectUri }` as JSON. The single-
+   * use code expires in 60 seconds and is exchanged via `exchangeCode`.
+   */
+  async authorize(
+    userSsoToken: string,
     redirectUri: string,
     codeChallenge: string,
     state: string,
     codeChallengeMethod = 'S256',
-  ): string {
-    const params = new URLSearchParams({
-      clientId: this.clientId,
-      redirectUri,
-      codeChallenge,
-      codeChallengeMethod,
-      state,
-    });
-    return `${this.accountsBase}/authorize?${params}`;
+  ): Promise<SsoAuthorizeData> {
+    try {
+      const { data } = await axios.get(`${this.apiBase}/auth/authorize`, {
+        params: {
+          clientId: this.clientId,
+          redirectUri,
+          codeChallenge,
+          codeChallengeMethod,
+          state,
+        },
+        headers: { Authorization: `Bearer ${userSsoToken}` },
+      });
+      return data.data as SsoAuthorizeData;
+    } catch (err) {
+      const error = err as AxiosError<{ message?: string }>;
+      const msg = error.response?.data?.message ?? 'SSO authorize request failed';
+      throw new UnauthorizedException(msg);
+    }
   }
 
   async exchangeCode(code: string, codeVerifier: string, redirectUri: string): Promise<SsoTokenData> {
     try {
       const { data } = await axios.post(`${this.apiBase}/auth/token`, {
         clientId: this.clientId,
+        clientSecret: this.clientSecret,
         code,
         codeVerifier,
         redirectUri,

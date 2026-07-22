@@ -12,8 +12,8 @@ data:
   # Point these at your in-cluster Redis service.
   REDIS_HOST: "redis"
   REDIS_PORT: "6379"
-  # Drasken SSO
-  SSO_API_URL: "https://sso.drasken.dev"
-  SSO_ACCOUNTS_URL: "https://accounts.drasken.dev"
+  # DraskenLabs SSO — base URL of the IAM service (/auth/authorize, /auth/token).
+  # The confidential client secret is NOT here; it lives in the Secret.
+  SSO_API_URL: "https://iam.draskenapis.com"
   # Meta OAuth redirect (must match the Meta App config)
   META_REDIRECT_URI: "https://api.example.com/connect/callback"

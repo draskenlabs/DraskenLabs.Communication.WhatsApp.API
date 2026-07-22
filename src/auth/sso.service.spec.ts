@@ -11,8 +11,8 @@ const mockConfig = {
   getOrThrow: jest.fn((key: string) => {
     const map: Record<string, string> = {
       SSO_API_URL: 'https://sso.drasken.dev',
-      SSO_ACCOUNTS_URL: 'https://accounts.drasken.dev',
       SSO_CLIENT_ID: 'test-app',
+      SSO_CLIENT_SECRET: 'test-secret',
     };
     return map[key];
   }),
@@ -32,19 +32,34 @@ describe('SsoService', () => {
     service = module.get<SsoService>(SsoService);
   });
 
-  describe('getAuthorizeUrl', () => {
-    it('builds the correct authorize URL', () => {
-      const url = service.getAuthorizeUrl('https://app.com/cb', 'challenge_abc', 'state_xyz');
-      expect(url).toContain('https://accounts.drasken.dev/authorize');
-      expect(url).toContain('clientId=test-app');
-      expect(url).toContain('codeChallenge=challenge_abc');
-      expect(url).toContain('state=state_xyz');
-      expect(url).toContain('codeChallengeMethod=S256');
+  describe('authorize', () => {
+    it('calls the SSO authorize endpoint with the user bearer token and returns the code', async () => {
+      const authData = { code: 'code_1', state: 'state_xyz', redirectUri: 'https://app.com/cb' };
+      mockedAxios.get = jest.fn().mockResolvedValue({ data: { data: authData } });
+
+      const result = await service.authorize('user_sso_tok', 'https://app.com/cb', 'challenge_abc', 'state_xyz');
+
+      expect(result).toEqual(authData);
+      expect(mockedAxios.get).toHaveBeenCalledWith('https://sso.drasken.dev/auth/authorize', {
+        params: {
+          clientId: 'test-app',
+          redirectUri: 'https://app.com/cb',
+          codeChallenge: 'challenge_abc',
+          codeChallengeMethod: 'S256',
+          state: 'state_xyz',
+        },
+        headers: { Authorization: 'Bearer user_sso_tok' },
+      });
+    });
+
+    it('throws UnauthorizedException when SSO returns an error', async () => {
+      mockedAxios.get = jest.fn().mockRejectedValue({ response: { data: { message: 'Unknown client' } } });
+      await expect(service.authorize('t', 'https://app.com/cb', 'c', 's')).rejects.toThrow(UnauthorizedException);
     });
   });
 
   describe('exchangeCode', () => {
-    it('calls SSO token endpoint and returns token data', async () => {
+    it('calls SSO token endpoint with the client secret and returns token data', async () => {
       const tokenData = { accessToken: 'at', refreshToken: 'rt', expiresIn: 86400 };
       mockedAxios.post = jest.fn().mockResolvedValue({ data: { data: tokenData } });
 
@@ -53,7 +68,13 @@ describe('SsoService', () => {
       expect(result).toEqual(tokenData);
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'https://sso.drasken.dev/auth/token',
-        { clientId: 'test-app', code: 'code_1', codeVerifier: 'verifier_1', redirectUri: 'https://app.com/cb' },
+        {
+          clientId: 'test-app',
+          clientSecret: 'test-secret',
+          code: 'code_1',
+          codeVerifier: 'verifier_1',
+          redirectUri: 'https://app.com/cb',
+        },
       );
     });
 

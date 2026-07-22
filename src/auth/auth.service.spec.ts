@@ -9,7 +9,7 @@ import { RedisService } from 'src/redis/redis.service';
 const mockSsoService = {
   exchangeCode: jest.fn(),
   decodeUserInfo: jest.fn(),
-  getAuthorizeUrl: jest.fn().mockReturnValue('https://accounts.drasken.dev/authorize?foo=bar'),
+  authorize: jest.fn(),
 };
 
 const mockUserService = {
@@ -41,15 +41,19 @@ describe('AuthService', () => {
 
   const dto = { code: 'code_123', codeVerifier: 'verifier_abc', redirectUri: 'https://app.com/callback' };
 
-  describe('getAuthorizeUrl', () => {
-    it('creates a state and returns the SSO authorize URL', async () => {
-      const result = await service.getAuthorizeUrl('https://app.com/cb', 'challenge_abc');
+  describe('authorize', () => {
+    it('creates a state and returns the SSO authorization code', async () => {
+      mockSsoService.authorize.mockResolvedValue({
+        code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://app.com/cb',
+      });
+
+      const result = await service.authorize('sso_user_token', 'https://app.com/cb', 'challenge_abc');
 
       expect(mockRedisService.createState).toHaveBeenCalled();
-      expect(mockSsoService.getAuthorizeUrl).toHaveBeenCalledWith(
-        'https://app.com/cb', 'challenge_abc', 'state-uuid-123',
+      expect(mockSsoService.authorize).toHaveBeenCalledWith(
+        'sso_user_token', 'https://app.com/cb', 'challenge_abc', 'state-uuid-123',
       );
-      expect(result).toEqual({ url: 'https://accounts.drasken.dev/authorize?foo=bar', state: 'state-uuid-123' });
+      expect(result).toEqual({ code: 'code_xyz', state: 'state-uuid-123', redirectUri: 'https://app.com/cb' });
     });
   });
 
