@@ -15,8 +15,12 @@ ALTER TABLE "Waba" DROP COLUMN "orgId";
 ALTER TABLE "UserApiKey" DROP COLUMN "orgId";
 ALTER TABLE "Message" DROP COLUMN "orgId";
 
--- Contact unique constraint — rebuild on ssoOrgId
-ALTER TABLE "Contact" DROP CONSTRAINT "Contact_orgId_phone_key";
+-- Contact unique constraint — rebuild on ssoOrgId.
+-- NB: the old uniqueness was created via `CREATE UNIQUE INDEX` (an index,
+-- not a table constraint), so it must be removed with DROP INDEX. Using
+-- ALTER TABLE ... DROP CONSTRAINT here fails with 42704 ("constraint ... does
+-- not exist").
+DROP INDEX "Contact_orgId_phone_key";
 ALTER TABLE "Contact" DROP COLUMN "orgId";
 ALTER TABLE "Contact" ADD CONSTRAINT "Contact_ssoOrgId_phone_key" UNIQUE ("ssoOrgId", "phone");
 
