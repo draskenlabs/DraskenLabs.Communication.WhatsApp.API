@@ -3,7 +3,9 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -16,6 +18,64 @@ import { TemplateCategory } from '@prisma/client';
 export enum TemplateParameterFormat {
   POSITIONAL = 'POSITIONAL',
   NAMED = 'NAMED',
+}
+
+/**
+ * A single button inside a BUTTONS component. Covers Meta's call-to-action,
+ * quick-reply and AUTHENTICATION (OTP) button shapes.
+ *
+ * IMPORTANT: every field the frontend may send MUST be declared here. The
+ * global ValidationPipe runs with `whitelist: true` + `transform: true`, and an
+ * untyped `Record<string, unknown>[]` gets stripped to empty objects during
+ * transformation — which made Meta reject templates with
+ * `components[..]['buttons'][0]['type'] is required`. A typed nested DTO keeps
+ * the fields intact.
+ */
+export class TemplateButtonDto {
+  @ApiProperty({ description: 'QUICK_REPLY | URL | PHONE_NUMBER | OTP | COPY_CODE | FLOW' })
+  @IsString()
+  @IsNotEmpty()
+  type: string;
+
+  @ApiPropertyOptional({ description: 'Button label (not used for OTP creation)' })
+  @IsOptional()
+  @IsString()
+  text?: string;
+
+  @ApiPropertyOptional({ description: 'URL buttons — may contain a trailing {{1}} variable' })
+  @IsOptional()
+  @IsString()
+  url?: string;
+
+  @ApiPropertyOptional({ description: 'PHONE_NUMBER buttons — E.164 number' })
+  @IsOptional()
+  @IsString()
+  phone_number?: string;
+
+  @ApiPropertyOptional({ description: 'URL button variable example values', type: [String] })
+  @IsOptional()
+  @IsArray()
+  example?: string[];
+
+  @ApiPropertyOptional({ description: 'OTP buttons — COPY_CODE | ONE_TAP | ZERO_TAP' })
+  @IsOptional()
+  @IsString()
+  otp_type?: string;
+
+  @ApiPropertyOptional({ description: 'ONE_TAP/ZERO_TAP autofill button label' })
+  @IsOptional()
+  @IsString()
+  autofill_text?: string;
+
+  @ApiPropertyOptional({ description: 'ONE_TAP/ZERO_TAP — Android app package name' })
+  @IsOptional()
+  @IsString()
+  package_name?: string;
+
+  @ApiPropertyOptional({ description: 'ONE_TAP/ZERO_TAP — app signing-key hash' })
+  @IsOptional()
+  @IsString()
+  signature_hash?: string;
 }
 
 /**
@@ -47,10 +107,22 @@ export class TemplateComponentDto {
   @IsOptional()
   example?: Record<string, unknown>;
 
-  @ApiPropertyOptional({ description: 'BUTTONS only — array of button objects', type: 'array', items: { type: 'object' } })
+  @ApiPropertyOptional({ description: 'AUTHENTICATION BODY — appends a security advisory' })
+  @IsOptional()
+  @IsBoolean()
+  add_security_recommendation?: boolean;
+
+  @ApiPropertyOptional({ description: 'AUTHENTICATION FOOTER — code expiry in minutes (1–90)' })
+  @IsOptional()
+  @IsInt()
+  code_expiration_minutes?: number;
+
+  @ApiPropertyOptional({ description: 'BUTTONS only — array of button objects', type: [TemplateButtonDto] })
   @IsOptional()
   @IsArray()
-  buttons?: Record<string, unknown>[];
+  @ValidateNested({ each: true })
+  @Type(() => TemplateButtonDto)
+  buttons?: TemplateButtonDto[];
 }
 
 /**
