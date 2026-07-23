@@ -35,6 +35,24 @@ describe('TemplateStatusHandler', () => {
     });
   });
 
+  it('maps a PAUSED event to the PAUSED status', async () => {
+    mockPrisma.messageTemplate.updateMany.mockResolvedValue({ count: 1 });
+    await handler.handle({ event: 'PAUSED', message_template_id: 789, message_template_name: 'promo', message_template_language: 'en_US', reason: 'NONE' });
+    expect(mockPrisma.messageTemplate.updateMany).toHaveBeenCalledWith({
+      where: { metaTemplateId: '789' },
+      data: { status: 'PAUSED' },
+    });
+  });
+
+  it('maps a PENDING_DELETION event', async () => {
+    mockPrisma.messageTemplate.updateMany.mockResolvedValue({ count: 1 });
+    await handler.handle({ event: 'PENDING_DELETION', message_template_id: 790, message_template_name: 'promo', message_template_language: 'en_US', reason: 'NONE' });
+    expect(mockPrisma.messageTemplate.updateMany).toHaveBeenCalledWith({
+      where: { metaTemplateId: '790' },
+      data: { status: 'PENDING_DELETION' },
+    });
+  });
+
   it('does nothing for unknown event type', async () => {
     await handler.handle({ event: 'UNKNOWN_EVENT', message_template_id: 1 });
     expect(mockPrisma.messageTemplate.updateMany).not.toHaveBeenCalled();

@@ -7,6 +7,8 @@ const mockTemplatesService = {
   syncTemplates: jest.fn(),
   findAll: jest.fn(),
   findOne: jest.fn(),
+  updateTemplate: jest.fn(),
+  deleteTemplate: jest.fn(),
 };
 
 describe('TemplatesController', () => {
@@ -41,14 +43,26 @@ describe('TemplatesController', () => {
       const req = { orgId: 2 } as any;
       mockTemplatesService.findAll.mockResolvedValue([{ id: 1 }]);
       await expect(controller.findAll(req, undefined)).resolves.toEqual([{ id: 1 }]);
-      expect(mockTemplatesService.findAll).toHaveBeenCalledWith(2, undefined);
+      expect(mockTemplatesService.findAll).toHaveBeenCalledWith(2, {
+        wabaId: undefined,
+        status: undefined,
+        category: undefined,
+        page: undefined,
+        limit: undefined,
+      });
     });
 
-    it('filters by wabaId when provided', async () => {
+    it('passes filters and pagination through to the service', async () => {
       const req = { orgId: 2 } as any;
       mockTemplatesService.findAll.mockResolvedValue([]);
-      await controller.findAll(req, 'w1');
-      expect(mockTemplatesService.findAll).toHaveBeenCalledWith(2, 'w1');
+      await controller.findAll(req, 'w1', 'APPROVED', 'MARKETING', '2', '20');
+      expect(mockTemplatesService.findAll).toHaveBeenCalledWith(2, {
+        wabaId: 'w1',
+        status: 'APPROVED',
+        category: 'MARKETING',
+        page: 2,
+        limit: 20,
+      });
     });
 
     it('throws when orgId missing', async () => {
@@ -66,6 +80,33 @@ describe('TemplatesController', () => {
 
     it('throws when orgId missing', async () => {
       await expect(controller.findOne({} as any, 3)).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('update', () => {
+    it('edits a template', async () => {
+      const req = { user: { id: 1 }, orgId: 2 } as any;
+      const dto = { category: 'UTILITY' } as any;
+      mockTemplatesService.updateTemplate.mockResolvedValue({ id: 3 });
+      await expect(controller.update(req, 3, dto)).resolves.toEqual({ id: 3 });
+      expect(mockTemplatesService.updateTemplate).toHaveBeenCalledWith(1, 2, 3, dto);
+    });
+
+    it('throws when user or org missing', async () => {
+      await expect(controller.update({} as any, 3, {} as any)).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('remove', () => {
+    it('deletes a template', async () => {
+      const req = { user: { id: 1 }, orgId: 2 } as any;
+      mockTemplatesService.deleteTemplate.mockResolvedValue(undefined);
+      await expect(controller.remove(req, 3)).resolves.toBeUndefined();
+      expect(mockTemplatesService.deleteTemplate).toHaveBeenCalledWith(1, 2, 3);
+    });
+
+    it('throws when user or org missing', async () => {
+      await expect(controller.remove({} as any, 3)).rejects.toThrow(UnauthorizedException);
     });
   });
 });

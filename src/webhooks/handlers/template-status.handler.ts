@@ -3,12 +3,15 @@ import { TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 const STATUS_MAP: Record<string, TemplateStatus> = {
+  PENDING: TemplateStatus.PENDING,
   APPROVED: TemplateStatus.APPROVED,
   REJECTED: TemplateStatus.REJECTED,
   FLAGGED: TemplateStatus.FLAGGED,
   DELETED: TemplateStatus.DELETED,
   DISABLED: TemplateStatus.DISABLED,
   IN_APPEAL: TemplateStatus.IN_APPEAL,
+  PAUSED: TemplateStatus.PAUSED,
+  PENDING_DELETION: TemplateStatus.PENDING_DELETION,
 };
 
 @Injectable()

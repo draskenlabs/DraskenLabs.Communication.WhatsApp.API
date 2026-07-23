@@ -5,11 +5,28 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import axios from 'axios';
-import { TemplateCategory, TemplateStatus } from '@prisma/client';
+import { Prisma, TemplateCategory, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
+import { BaseResponse } from 'src/common/responses/base-response';
 import { TemplateResponseDto, TemplateSyncResponseDto } from './dto/template.dto';
 import { CreateTemplateDto } from './dto/create-template.dto';
+import { UpdateTemplateDto } from './dto/update-template.dto';
+
+/** Options for {@link TemplatesService.findAll}. */
+export interface FindTemplatesOptions {
+  wabaId?: string;
+  status?: string;
+  category?: string;
+  page?: number;
+  limit?: number;
+}
+
+/** A resolved, authorised WABA connection with a decrypted Meta access token. */
+interface WabaContext {
+  wabaId: string;
+  accessToken: string;
+}
 
 @Injectable()
 export class TemplatesService {
@@ -139,15 +156,41 @@ export class TemplatesService {
     return this.toDto(template);
   }
 
-  async findAll(ssoOrgId: string, wabaId?: string): Promise<TemplateResponseDto[]> {
-    const wabaIds = await this.resolveWabaIds(ssoOrgId, wabaId);
+  async findAll(
+    ssoOrgId: string,
+    opts: FindTemplatesOptions = {},
+  ): Promise<BaseResponse<TemplateResponseDto[]>> {
+    const wabaIds = await this.resolveWabaIds(ssoOrgId, opts.wabaId);
 
-    const templates = await this.prisma.messageTemplate.findMany({
-      where: { wabaId: { in: wabaIds } },
+    const where: Prisma.MessageTemplateWhereInput = { wabaId: { in: wabaIds } };
+    const status = this.parseEnum(TemplateStatus, opts.status);
+    if (status) where.status = status;
+    const category = this.parseEnum(TemplateCategory, opts.category);
+    if (category) where.category = category;
+
+    // Paginate only when the caller asks for it; otherwise return the full list
+    // (keeps existing clients that render every template unaffected).
+    if (opts.page !== undefined || opts.limit !== undefined) {
+      const page = Math.max(1, opts.page ?? 1);
+      const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+      const [rows, total] = await this.prisma.$transaction([
+        this.prisma.messageTemplate.findMany({
+          where,
+          orderBy: { name: 'asc' },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        this.prisma.messageTemplate.count({ where }),
+      ]);
+      const totalPages = Math.ceil(total / limit);
+      return BaseResponse.paginate(rows.map(this.toDto), total, totalPages, page, limit);
+    }
+
+    const rows = await this.prisma.messageTemplate.findMany({
+      where,
       orderBy: { name: 'asc' },
     });
-
-    return templates.map(this.toDto);
+    return BaseResponse.success(rows.map(this.toDto));
   }
 
   async findOne(ssoOrgId: string, id: number): Promise<TemplateResponseDto> {
@@ -160,10 +203,123 @@ export class TemplatesService {
     return this.toDto(template);
   }
 
+  async updateTemplate(
+    userId: number,
+    ssoOrgId: string,
+    id: number,
+    dto: UpdateTemplateDto,
+  ): Promise<TemplateResponseDto> {
+    const template = await this.prisma.messageTemplate.findUnique({ where: { id } });
+    if (!template) throw new NotFoundException('Template not found');
+
+    const { accessToken } = await this.resolveWabaContext(userId, ssoOrgId, template.wabaId);
+
+    const payload: Record<string, unknown> = {};
+    if (dto.category !== undefined) payload.category = dto.category;
+    if (dto.components !== undefined) payload.components = dto.components;
+    if (Object.keys(payload).length === 0) {
+      throw new BadRequestException('No changes provided');
+    }
+
+    try {
+      // Meta edits target the template id (hsm_id), not the WABA collection.
+      await axios.post(
+        `https://graph.facebook.com/${this.metaApiVersion}/${template.metaTemplateId}`,
+        payload,
+        { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } },
+      );
+    } catch (err: any) {
+      const metaMessage =
+        err.response?.data?.error?.error_user_msg ??
+        err.response?.data?.error?.message ??
+        err.message;
+      this.logger.warn(`Meta template edit failed for ${template.name}: ${metaMessage}`);
+      throw new BadRequestException(metaMessage || 'Failed to update template');
+    }
+
+    const updated = await this.prisma.messageTemplate.update({
+      where: { id },
+      data: {
+        ...(dto.category !== undefined && { category: dto.category }),
+        ...(dto.components !== undefined && { components: dto.components as any }),
+      },
+    });
+
+    return this.toDto(updated);
+  }
+
+  async deleteTemplate(userId: number, ssoOrgId: string, id: number): Promise<void> {
+    const template = await this.prisma.messageTemplate.findUnique({ where: { id } });
+    if (!template) throw new NotFoundException('Template not found');
+
+    const { accessToken } = await this.resolveWabaContext(userId, ssoOrgId, template.wabaId);
+
+    try {
+      await axios.delete(
+        `https://graph.facebook.com/${this.metaApiVersion}/${template.wabaId}/message_templates`,
+        {
+          // hsm_id targets this specific template; name is required by Meta.
+          params: { hsm_id: template.metaTemplateId, name: template.name },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      );
+    } catch (err: any) {
+      const metaMessage =
+        err.response?.data?.error?.error_user_msg ??
+        err.response?.data?.error?.message ??
+        err.message;
+      this.logger.warn(`Meta template delete failed for ${template.name}: ${metaMessage}`);
+      throw new BadRequestException(metaMessage || 'Failed to delete template');
+    }
+
+    // Soft delete — keep the record for audit; Meta will also emit a webhook.
+    await this.prisma.messageTemplate.update({
+      where: { id },
+      data: { status: TemplateStatus.DELETED },
+    });
+  }
+
+  /**
+   * Resolve and authorise a WABA connection for a user, returning a decrypted
+   * Meta access token. Shared by create/update/delete.
+   */
+  private async resolveWabaContext(
+    userId: number,
+    ssoOrgId: string,
+    wabaId: string,
+  ): Promise<WabaContext> {
+    const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
+      where: { userId, wabaId },
+    });
+    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+
+    const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
+    if (!waba) throw new NotFoundException('WABA not found in your organisation');
+
+    return { wabaId, accessToken: this.encryptionService.decrypt(userWhatsapp.accessToken) };
+  }
+
   private async resolveWabaIds(ssoOrgId: string, wabaId?: string): Promise<string[]> {
-    if (wabaId) return [wabaId];
+    if (wabaId) {
+      // Verify the caller's org actually owns this WABA before scoping to it,
+      // so a guessed wabaId can't read another organisation's templates.
+      const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
+      if (!waba) throw new NotFoundException('WABA not found in your organisation');
+      return [wabaId];
+    }
     const wabas = await this.prisma.waba.findMany({ where: { ssoOrgId }, select: { wabaId: true } });
     return wabas.map((w) => w.wabaId);
+  }
+
+  /** Return the value if it is a member of the enum, else undefined. */
+  private parseEnum<T extends Record<string, string>>(
+    enumObj: T,
+    value?: string,
+  ): T[keyof T] | undefined {
+    if (!value) return undefined;
+    return (Object.values(enumObj) as string[]).includes(value)
+      ? (value as T[keyof T])
+      : undefined;
   }
 
   private toDto(t: any): TemplateResponseDto {

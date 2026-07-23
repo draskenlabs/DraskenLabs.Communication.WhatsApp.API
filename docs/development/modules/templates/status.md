@@ -4,10 +4,10 @@
 
 | Field | Value |
 |-------|-------|
-| Status | ❌ Not Started |
-| Completion | 0% |
+| Status | ✅ Implemented |
+| Completion | 100% |
 | Blocking Issues | None |
-| Last Updated | 2026-05-01 |
+| Last Updated | 2026-07-23 |
 
 ---
 
@@ -15,25 +15,41 @@
 
 | Wave | Name | Status | Notes |
 |------|------|--------|-------|
-| T.1 | DB Schema | ❌ Not Started | `MessageTemplate` model not added |
-| T.2 | Template DTOs | ❌ Not Started | — |
-| T.3 | Template Listing | ❌ Not Started | — |
-| T.4 | Template Creation | ❌ Not Started | — |
-| T.5 | Template Detail | ❌ Not Started | — |
-| T.6 | Template Deletion | ❌ Not Started | — |
-| T.7 | Status Sync | ❌ Not Started | — |
+| T.1 | DB Schema | ✅ Complete | `MessageTemplate` model + `TemplateStatus`/`TemplateCategory` enums |
+| T.2 | Template DTOs | ✅ Complete | `CreateTemplateDto`, `UpdateTemplateDto`, `TemplateResponseDto`, `TemplateSyncResponseDto` |
+| T.3 | Template Listing | ✅ Complete | `GET /templates` with `wabaId`/`status`/`category` filters + `page`/`limit` pagination |
+| T.4 | Template Creation | ✅ Complete | `POST /templates/:wabaId` proxies to Meta, stores PENDING |
+| T.5 | Template Detail | ✅ Complete | `GET /templates/:id` |
+| T.6 | Template Deletion | ✅ Complete | `DELETE /templates/:id` — Meta delete + soft delete (`status = DELETED`) |
+| T.7 | Status Sync | ✅ Complete | `POST /templates/sync/:wabaId` + `message_template_status_update` webhook |
+| T.8 | Template Edit | ✅ Complete | `PATCH /templates/:id` proxies an edit to Meta |
 
 ---
 
 ## Endpoint Status
 
+Routes are flat under `/templates` (not nested under `/wabas`).
+
 | Method | Endpoint | Auth | Status |
 |--------|----------|------|--------|
-| GET | `/wabas/:wabaId/templates` | JWT / API Key | ❌ Not built |
-| POST | `/wabas/:wabaId/templates` | JWT | ❌ Not built |
-| GET | `/wabas/:wabaId/templates/:id` | JWT / API Key | ❌ Not built |
-| DELETE | `/wabas/:wabaId/templates/:id` | JWT | ❌ Not built |
-| POST | `/wabas/:wabaId/templates/sync` | JWT | ❌ Not built |
+| POST | `/templates/sync/:wabaId` | JWT | ✅ Built |
+| POST | `/templates/:wabaId` | JWT | ✅ Built |
+| GET | `/templates` | JWT / API Key | ✅ Built |
+| GET | `/templates/:id` | JWT / API Key | ✅ Built |
+| PATCH | `/templates/:id` | JWT | ✅ Built |
+| DELETE | `/templates/:id` | JWT | ✅ Built (soft delete, 204) |
+
+### `GET /templates` query params
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `wabaId` | string | Scope to one WABA (ownership verified against the org) |
+| `status` | `TemplateStatus` | Optional filter; invalid values are ignored |
+| `category` | `TemplateCategory` | Optional filter; invalid values are ignored |
+| `page` | number | 1-based; presence enables pagination (adds `meta`) |
+| `limit` | number | 1–100; presence enables pagination |
+
+Without `page`/`limit` the full list is returned (no `meta`) — backward compatible.
 
 ---
 
@@ -41,24 +57,17 @@
 
 | Component | Test File | Status |
 |-----------|-----------|--------|
-| `TemplateService` | — | ❌ Not started |
-| `TemplateController` | — | ❌ Not started |
+| `TemplatesService` | `templates.service.spec.ts` | ✅ sync / findAll (filters, pagination, ownership) / findOne / update / delete |
+| `TemplatesController` | `templates.controller.spec.ts` | ✅ all handlers |
+| `TemplateStatusHandler` | `webhooks/handlers/template-status.handler.spec.ts` | ✅ APPROVED / REJECTED / PAUSED / PENDING_DELETION / unknown |
 
 ---
 
-## Prerequisites
+## Notes & Risks
 
-| Prerequisite | Status | Notes |
-|-------------|--------|-------|
-| Account Management — WABA connected | ✅ Complete | Tokens available for Meta API calls |
-| `MessageTemplate` DB schema | ❌ Not started | Required before any development |
-
----
-
-## Issues & Risks
-
-| Issue | Severity | Notes |
-|-------|----------|-------|
-| Templates required for proactive messaging | High | Messaging module depends on approved templates |
-| Template approval takes 24–48 hours | Medium | Plan ahead for go-live testing |
-| Meta's template policy changes frequently | Medium | Keep Meta docs reference up to date |
+| Item | Severity | Notes |
+|------|----------|-------|
+| Delete is a soft delete | Info | Record kept for audit; Meta also emits a delete webhook |
+| Template approval takes 24–48 hours | Medium | Approval status arrives asynchronously via webhook |
+| Meta Graph API version pinned to `v21.0` | Low | Defined as `metaApiVersion` in `templates.service.ts` |
+| `PAUSED` / `PENDING_DELETION` statuses | Info | Added to the enum + webhook map (migration `20260723000000_add_template_paused_pending_deletion`) |
