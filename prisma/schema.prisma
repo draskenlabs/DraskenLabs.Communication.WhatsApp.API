@@ -106,6 +106,8 @@ enum TemplateStatus {
   DELETED
   DISABLED
   IN_APPEAL
+  PAUSED
+  PENDING_DELETION
 }
 
 enum TemplateCategory {

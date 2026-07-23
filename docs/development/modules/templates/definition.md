@@ -39,9 +39,12 @@ Manages WhatsApp message templates for WABAs. Provides the ability to create, li
 | `PENDING` | Submitted, awaiting Meta review |
 | `APPROVED` | Live and usable for sending |
 | `REJECTED` | Rejected by Meta — reason provided |
-| `DISABLED` | Paused by Meta due to quality issues |
+| `FLAGGED` | Flagged by Meta for a policy concern |
+| `DISABLED` | Disabled by Meta due to quality issues |
+| `PAUSED` | Temporarily paused by Meta (low quality) |
 | `IN_APPEAL` | Under appeal after rejection |
-| `DELETED` | Deleted by user or Meta |
+| `PENDING_DELETION` | Deletion requested, awaiting Meta |
+| `DELETED` | Deleted by user or Meta (soft-deleted locally) |
 
 ---
 
@@ -58,29 +61,37 @@ Manages WhatsApp message templates for WABAs. Provides the ability to create, li
 
 ## Endpoints
 
+Routes are flat under `/templates`. Authorisation is by JWT/API key with the
+org (`orgId`) and user resolved by `AuthMiddleware`.
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/wabas/:wabaId/templates` | JWT / API Key | List all templates for a WABA |
-| POST | `/wabas/:wabaId/templates` | JWT | Create/submit a new template |
-| GET | `/wabas/:wabaId/templates/:templateId` | JWT / API Key | Get template detail |
-| DELETE | `/wabas/:wabaId/templates/:templateId` | JWT | Delete a template |
-| POST | `/wabas/:wabaId/templates/sync` | JWT | Sync template statuses from Meta |
+| POST | `/templates/sync/:wabaId` | JWT | Sync template statuses from Meta |
+| POST | `/templates/:wabaId` | JWT | Create/submit a new template |
+| GET | `/templates` | JWT / API Key | List templates (filters + optional pagination) |
+| GET | `/templates/:id` | JWT / API Key | Get template detail |
+| PATCH | `/templates/:id` | JWT | Edit a template (components/category) |
+| DELETE | `/templates/:id` | JWT | Delete a template (soft delete, 204) |
 
 ---
 
 ## Meta API Integration
 
+Graph API version is pinned to `v21.0` (`metaApiVersion` in `templates.service.ts`).
+
 | Operation | Meta Endpoint | Notes |
 |-----------|--------------|-------|
-| List templates | `GET /{wabaId}/message_templates` | Paginated |
+| List templates | `GET /{wabaId}/message_templates` | Used by sync |
 | Create template | `POST /{wabaId}/message_templates` | Returns template ID |
-| Get template | `GET /{templateId}` | Status, components |
-| Delete template | `DELETE /{wabaId}/message_templates` | By name |
-| Update template | `POST /{templateId}` | Body text only |
+| Edit template | `POST /{message-template-id}` | Components/category only |
+| Delete template | `DELETE /{wabaId}/message_templates?hsm_id=&name=` | By id + name |
+
+Approval status updates arrive asynchronously via the
+`message_template_status_update` webhook (`TemplateStatusHandler`).
 
 ---
 
-## Data Model (Planned)
+## Data Model
 
 ### `MessageTemplate` Table
 
@@ -88,12 +99,14 @@ Manages WhatsApp message templates for WABAs. Provides the ability to create, li
 |-------|------|-------|
 | `id` | Int | PK, autoincrement |
 | `metaTemplateId` | String | Meta-assigned template ID |
-| `wabaId` | Int | FK → Waba |
-| `name` | String | Template name (unique per WABA) |
+| `wabaId` | String | FK → Waba (`wabaId`) |
+| `name` | String | Template name |
 | `category` | Enum | `MARKETING`, `UTILITY`, `AUTHENTICATION` |
 | `language` | String | BCP-47 language code (e.g., `en_US`) |
-| `status` | Enum | Approval status |
+| `status` | Enum | Approval status (default `PENDING`) |
 | `components` | JSON | Header, body, footer, buttons |
 | `rejectedReason` | String? | Populated on rejection |
 | `createdAt` | DateTime | — |
 | `updatedAt` | DateTime | — |
+
+Unique constraint: `@@unique([wabaId, name, language])`.
