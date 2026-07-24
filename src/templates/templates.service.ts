@@ -124,11 +124,10 @@ export class TemplatesService {
       );
       metaData = response.data;
     } catch (err: any) {
-      const metaMessage =
-        err.response?.data?.error?.error_user_msg ??
-        err.response?.data?.error?.message ??
-        err.message;
-      this.logger.warn(`Meta template create failed for ${dto.name}: ${metaMessage}`);
+      const metaMessage = this.logMetaError(
+        `Meta template create failed for ${dto.name} on WABA ${wabaId}`,
+        err,
+      );
       throw new BadRequestException(metaMessage || 'Failed to create template');
     }
 
@@ -229,11 +228,10 @@ export class TemplatesService {
         { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } },
       );
     } catch (err: any) {
-      const metaMessage =
-        err.response?.data?.error?.error_user_msg ??
-        err.response?.data?.error?.message ??
-        err.message;
-      this.logger.warn(`Meta template edit failed for ${template.name}: ${metaMessage}`);
+      const metaMessage = this.logMetaError(
+        `Meta template edit failed for ${template.name}`,
+        err,
+      );
       throw new BadRequestException(metaMessage || 'Failed to update template');
     }
 
@@ -264,11 +262,10 @@ export class TemplatesService {
         },
       );
     } catch (err: any) {
-      const metaMessage =
-        err.response?.data?.error?.error_user_msg ??
-        err.response?.data?.error?.message ??
-        err.message;
-      this.logger.warn(`Meta template delete failed for ${template.name}: ${metaMessage}`);
+      const metaMessage = this.logMetaError(
+        `Meta template delete failed for ${template.name}`,
+        err,
+      );
       throw new BadRequestException(metaMessage || 'Failed to delete template');
     }
 
@@ -336,6 +333,34 @@ export class TemplatesService {
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
     };
+  }
+
+  /**
+   * Log the full Meta Graph API error and return the human-facing message.
+   *
+   * Meta permission failures (e.g. "does not have permission to create message
+   * template") only differ by `code`/`error_subcode`; the `fbtrace_id` is what
+   * Meta support needs to investigate. We surface the friendly message to the
+   * caller but keep the diagnostic detail server-side.
+   */
+  private logMetaError(context: string, err: any): string {
+    const metaError = err?.response?.data?.error;
+    const userMessage =
+      metaError?.error_user_msg ?? metaError?.message ?? err?.message;
+    if (metaError) {
+      this.logger.warn(
+        `${context}: ${userMessage} ` +
+          `[code=${metaError.code} subcode=${metaError.error_subcode} ` +
+          `type=${metaError.type} fbtrace_id=${metaError.fbtrace_id}` +
+          (metaError.error_data
+            ? ` error_data=${JSON.stringify(metaError.error_data)}`
+            : '') +
+          ']',
+      );
+    } else {
+      this.logger.warn(`${context}: ${userMessage}`);
+    }
+    return userMessage;
   }
 
   private mapStatus(raw: string): TemplateStatus {
