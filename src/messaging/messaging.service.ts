@@ -45,18 +45,26 @@ export class MessagingService {
     const plainToken = this.encryptionService.decrypt(phoneCache.accessToken);
     const metaPayload = this.buildMetaPayload(dto);
 
-    const metaResponse = await axios.post(
-      `https://graph.facebook.com/${this.metaApiVersion}/${dto.phoneNumberId}/messages`,
-      metaPayload,
-      {
-        headers: {
-          Authorization: `Bearer ${plainToken}`,
-          'Content-Type': 'application/json',
+    let metaMessageId: string | undefined;
+    try {
+      const metaResponse = await axios.post(
+        `https://graph.facebook.com/${this.metaApiVersion}/${dto.phoneNumberId}/messages`,
+        metaPayload,
+        {
+          headers: {
+            Authorization: `Bearer ${plainToken}`,
+            'Content-Type': 'application/json',
+          },
         },
-      },
-    );
-
-    const metaMessageId: string | undefined = metaResponse.data?.messages?.[0]?.id;
+      );
+      metaMessageId = metaResponse.data?.messages?.[0]?.id;
+    } catch (err: any) {
+      const metaMessage = this.logMetaError(
+        `Meta send failed for ${dto.type} to ${dto.to} on phone ${dto.phoneNumberId}`,
+        err,
+      );
+      throw new BadRequestException(metaMessage || 'Failed to send message');
+    }
 
     const message = await this.prisma.message.create({
       data: {
@@ -165,6 +173,31 @@ export class MessagingService {
       readRate: deliveredOrRead ? round(totals.read / deliveredOrRead) : 0,
       series: [...buckets.entries()].map(([date, v]) => ({ date, ...v })),
     };
+  }
+
+  /**
+   * Log the full Meta Graph API error and return the human-facing message.
+   * Keeps the diagnostic detail (code/subcode/fbtrace_id) server-side while
+   * surfacing a friendly message to the caller.
+   */
+  private logMetaError(context: string, err: any): string {
+    const metaError = err?.response?.data?.error;
+    const userMessage =
+      metaError?.error_user_msg ?? metaError?.message ?? err?.message;
+    if (metaError) {
+      this.logger.warn(
+        `${context}: ${userMessage} ` +
+          `[code=${metaError.code} subcode=${metaError.error_subcode} ` +
+          `type=${metaError.type} fbtrace_id=${metaError.fbtrace_id}` +
+          (metaError.error_data
+            ? ` error_data=${JSON.stringify(metaError.error_data)}`
+            : '') +
+          ']',
+      );
+    } else {
+      this.logger.warn(`${context}: ${userMessage}`);
+    }
+    return userMessage;
   }
 
   private buildMetaPayload(dto: SendMessageDto): Record<string, unknown> {
