@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
@@ -11,6 +12,7 @@ import { WabaPhoneNumberService } from './waba-phone-number.service';
 import { Request } from 'express';
 import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
 import { WabaPhoneNumberResponseDto } from './dto/waba-phone-number-response.dto';
+import { RegisterPhoneNumberDto } from './dto/register-phone-number.dto';
 
 @ApiTags('WABA Phone Numbers')
 @Controller('wabas/:wabaId/phone-numbers')
@@ -51,5 +53,32 @@ export class WabaPhoneNumberController {
     const user = (req as any).user;
     if (!user) throw new UnauthorizedException('User not found in context');
     return this.phoneNumberService.syncPhoneNumbers(user.id, wabaId);
+  }
+
+  @Post(':phoneNumberId/register')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Register a phone number on the WhatsApp Cloud API',
+    description:
+      'Registers the number with Meta using a 6-digit PIN so it can send messages. Required once before a verified number can be used.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: WabaPhoneNumberResponseDto,
+    description: 'Registered phone number',
+  })
+  async register(
+    @Param('wabaId') wabaId: string,
+    @Param('phoneNumberId') phoneNumberId: string,
+    @Body() dto: RegisterPhoneNumberDto,
+    @Req() req: Request,
+  ): Promise<WabaPhoneNumberResponseDto> {
+    const user = (req as any).user;
+    if (!user) throw new UnauthorizedException('User not found in context');
+    return this.phoneNumberService.registerPhoneNumber(
+      user.id,
+      wabaId,
+      phoneNumberId,
+      dto.pin,
+    );
   }
 }
