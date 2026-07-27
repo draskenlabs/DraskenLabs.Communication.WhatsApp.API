@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { WabaPhoneNumberService } from './waba-phone-number.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
@@ -11,7 +11,7 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 const mockPrisma = {
   waba: { findFirst: jest.fn() },
-  wabaPhoneNumber: { findMany: jest.fn(), upsert: jest.fn() },
+  wabaPhoneNumber: { findFirst: jest.fn(), findMany: jest.fn(), upsert: jest.fn() },
   userWhatsapp: { findFirst: jest.fn() },
 };
 
@@ -120,6 +120,59 @@ describe('WabaPhoneNumberService', () => {
       expect(written.platformType).toBe('NOT_APPLICABLE');
       expect(written.codeVerificationStatus).toBe('NOT_VERIFIED');
       expect(written.verifiedName).toBe('');
+    });
+  });
+
+  describe('registerPhoneNumber', () => {
+    it('throws NotFoundException when the WABA is not owned by the user', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue(null);
+      await expect(service.registerPhoneNumber(1, 'w1', 'p1', '123456')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('throws NotFoundException when the phone is not on the WABA', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue(null);
+      await expect(service.registerPhoneNumber(1, 'w1', 'p1', '123456')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('posts the PIN to Meta then re-syncs and returns the updated number', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({ phoneNumberId: 'p1', wabaId: 'w1' });
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc_token' });
+      mockEncryption.decrypt.mockReturnValue('raw_token');
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { success: true } });
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: { data: [{ id: 'p1', platform_type: 'CLOUD_API', throughput: { level: 'STANDARD' } }] },
+      });
+      mockPrisma.wabaPhoneNumber.upsert.mockImplementation(({ create }) => create);
+
+      const result = await service.registerPhoneNumber(1, 'w1', 'p1', '123456');
+
+      const [url, payload] = (mockedAxios.post as jest.Mock).mock.calls[0];
+      expect(url).toContain('/p1/register');
+      expect(payload).toEqual({ messaging_product: 'whatsapp', pin: '123456' });
+      expect(result.phoneNumberId).toBe('p1');
+      expect(result.platformType).toBe('CLOUD_API');
+      expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 1, 'w1', 'enc_token');
+    });
+
+    it('translates a Meta failure into a BadRequestException and does not re-sync', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({ phoneNumberId: 'p1', wabaId: 'w1' });
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc_token' });
+      mockedAxios.post = jest.fn().mockRejectedValue({
+        response: { data: { error: { message: 'Invalid PIN', code: 100 } } },
+      });
+      mockedAxios.get = jest.fn();
+
+      await expect(service.registerPhoneNumber(1, 'w1', 'p1', '000000')).rejects.toThrow(
+        'Invalid PIN',
+      );
+      expect(mockedAxios.get).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -7,11 +12,85 @@ import { WabaPhoneNumber } from '@prisma/client';
 
 @Injectable()
 export class WabaPhoneNumberService {
+  private readonly logger = new Logger(WabaPhoneNumberService.name);
+  private readonly metaApiVersion = 'v25.0';
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
     private readonly redisService: RedisService,
   ) {}
+
+  /**
+   * Register a phone number on the WhatsApp Cloud API. Until this runs Meta
+   * reports the number with platform_type = NOT_APPLICABLE and rejects sends
+   * with "(#133010) Account not registered". On success we re-sync so the
+   * stored platform/throughput reflect the new registration.
+   */
+  async registerPhoneNumber(
+    userId: number,
+    wabaId: string,
+    phoneNumberId: string,
+    pin: string,
+  ): Promise<WabaPhoneNumber> {
+    const waba = await this.prisma.waba.findFirst({ where: { userId, wabaId } });
+    if (!waba) throw new NotFoundException('WABA not found');
+
+    const phone = await this.prisma.wabaPhoneNumber.findFirst({
+      where: { phoneNumberId, wabaId },
+    });
+    if (!phone) throw new NotFoundException('Phone number not found for this WABA');
+
+    const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
+      where: { userId, wabaId },
+    });
+    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+
+    const rawAccessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
+
+    try {
+      await axios.post(
+        `https://graph.facebook.com/${this.metaApiVersion}/${phoneNumberId}/register`,
+        { messaging_product: 'whatsapp', pin },
+        {
+          headers: {
+            Authorization: `Bearer ${rawAccessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+    } catch (err: any) {
+      const metaMessage = this.logMetaError(
+        `Meta register failed for phone ${phoneNumberId} on WABA ${wabaId}`,
+        err,
+      );
+      throw new BadRequestException(metaMessage || 'Failed to register phone number');
+    }
+
+    const phones = await this.fetchAndUpsert(wabaId, rawAccessToken);
+    await this.populatePhoneCache(phones, userId, wabaId, userWhatsapp.accessToken);
+    return phones.find((p) => p.phoneNumberId === phoneNumberId) ?? phone;
+  }
+
+  /**
+   * Log the full Meta Graph API error and return the human-facing message,
+   * keeping diagnostic detail (code/subcode/fbtrace_id) server-side.
+   */
+  private logMetaError(context: string, err: any): string {
+    const metaError = err?.response?.data?.error;
+    const userMessage =
+      metaError?.error_user_msg ?? metaError?.message ?? err?.message;
+    if (metaError) {
+      this.logger.warn(
+        `${context}: ${userMessage} ` +
+          `[code=${metaError.code} subcode=${metaError.error_subcode} ` +
+          `type=${metaError.type} fbtrace_id=${metaError.fbtrace_id}]`,
+      );
+    } else {
+      this.logger.warn(`${context}: ${userMessage}`);
+    }
+    return userMessage;
+  }
 
   async findAllByWabaId(userId: number, wabaId: string): Promise<WabaPhoneNumber[]> {
     const waba = await this.prisma.waba.findFirst({ where: { userId, wabaId } });
