@@ -86,6 +86,80 @@ export class ListSectionDto {
   rows: ListRowDto[];
 }
 
+/** Media link/id for a template `image`/`video`/`document` parameter. */
+export class TemplateMediaParamDto {
+  @ApiPropertyOptional({ description: 'Public URL of the media' })
+  @IsOptional()
+  @IsString()
+  link?: string;
+
+  @ApiPropertyOptional({ description: 'Uploaded media id' })
+  @IsOptional()
+  @IsString()
+  id?: string;
+}
+
+/**
+ * A single parameter inside a template component. Typed so the global
+ * ValidationPipe (`whitelist` + `transform`) keeps the nested fields — an
+ * untyped array is stripped to empty objects and Meta then rejects the send
+ * with "template.components.N ... missing: 'type'".
+ */
+export class TemplateParameterDto {
+  @ApiProperty({ description: 'Parameter type, e.g. text / image / video / document' })
+  @IsString()
+  @IsNotEmpty()
+  type: string;
+
+  @ApiPropertyOptional({ description: 'Value for a text parameter' })
+  @IsOptional()
+  @IsString()
+  text?: string;
+
+  @ApiPropertyOptional({ type: TemplateMediaParamDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TemplateMediaParamDto)
+  image?: TemplateMediaParamDto;
+
+  @ApiPropertyOptional({ type: TemplateMediaParamDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TemplateMediaParamDto)
+  video?: TemplateMediaParamDto;
+
+  @ApiPropertyOptional({ type: TemplateMediaParamDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TemplateMediaParamDto)
+  document?: TemplateMediaParamDto;
+}
+
+/** A template component (header / body / button) in the send payload. */
+export class TemplateComponentDto {
+  @ApiProperty({ description: 'Component type: header / body / button' })
+  @IsString()
+  @IsNotEmpty()
+  type: string;
+
+  @ApiPropertyOptional({ description: 'Button sub-type, e.g. url / quick_reply' })
+  @IsOptional()
+  @IsString()
+  sub_type?: string;
+
+  @ApiPropertyOptional({ description: 'Button index (as a string), e.g. "0"' })
+  @IsOptional()
+  @IsString()
+  index?: string;
+
+  @ApiPropertyOptional({ type: [TemplateParameterDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => TemplateParameterDto)
+  parameters?: TemplateParameterDto[];
+}
+
 export class SendMessageDto {
   @ApiProperty({ description: 'Phone number ID to send from (from your connected WABA)' })
   @IsString()
@@ -132,12 +206,13 @@ export class SendMessageDto {
 
   @ApiPropertyOptional({
     description: 'Template component parameters (optional — variable substitutions per component)',
-    type: 'array',
-    items: { type: 'object' },
+    type: [TemplateComponentDto],
   })
   @IsOptional()
   @IsArray()
-  templateComponents?: any[];
+  @ValidateNested({ each: true })
+  @Type(() => TemplateComponentDto)
+  templateComponents?: TemplateComponentDto[];
 
   // ---- Location (type=location) --------------------------------------------
 
