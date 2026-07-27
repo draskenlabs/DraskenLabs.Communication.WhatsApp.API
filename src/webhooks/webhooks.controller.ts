@@ -1,8 +1,27 @@
-import { Controller, Get, Post, Query, Res, Body, ForbiddenException } from '@nestjs/common';
-import { ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  Post,
+  Query,
+  Req,
+  Res,
+  Body,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiQuery,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { WebhooksService } from './webhooks.service';
+import { WebhookConfigDto } from './dto/webhook-config.dto';
+import { WebhookEventDto } from './dto/webhook-event.dto';
+import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
 
 @ApiTags('Webhooks')
 @Controller('webhooks')
@@ -11,6 +30,40 @@ export class WebhooksController {
     private readonly webhooksService: WebhooksService,
     private readonly config: ConfigService,
   ) {}
+
+  @Get('config')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Webhook configuration for the console',
+    description:
+      'Returns the callback URL, signature header and subscribed fields for display in the dashboard. The verify token value is never returned — only whether it is configured.',
+  })
+  @ApiWrappedOkResponse({ dataDto: WebhookConfigDto, description: 'Webhook configuration' })
+  getConfig(@Req() req: Request): WebhookConfigDto {
+    const host = req.get('host');
+    const callbackUrl = `${req.protocol}://${host ?? ''}/webhooks`;
+    return this.webhooksService.getConfig(callbackUrl);
+  }
+
+  @Get('events')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Recent webhook events for a WABA',
+    description: 'Returns the most recent stored webhook events for a WABA owned by the caller.',
+  })
+  @ApiQuery({ name: 'wabaId', required: true, description: 'WABA id to list events for' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Max events (1–100, default 20)' })
+  @ApiWrappedOkResponse({ dataDto: WebhookEventDto, isArray: true, description: 'Recent webhook events' })
+  async getEvents(
+    @Req() req: Request,
+    @Query('wabaId') wabaId: string,
+    @Query('limit') limit?: string,
+  ): Promise<WebhookEventDto[]> {
+    const orgId = (req as any).orgId;
+    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    if (!wabaId) throw new ForbiddenException('wabaId is required');
+    return this.webhooksService.getRecentEvents(orgId, wabaId, limit ? Number(limit) : 20);
+  }
 
   @Get()
   @ApiOperation({
