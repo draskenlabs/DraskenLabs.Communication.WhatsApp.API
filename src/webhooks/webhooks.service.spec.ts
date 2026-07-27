@@ -1,4 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ForbiddenException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { WebhooksService } from './webhooks.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { InboundMessageHandler } from './handlers/inbound-message.handler';
@@ -7,8 +9,10 @@ import { AccountHandler } from './handlers/account.handler';
 import { TemplateStatusHandler } from './handlers/template-status.handler';
 
 const mockPrisma = {
-  webhookEvent: { create: jest.fn(), update: jest.fn() },
+  webhookEvent: { create: jest.fn(), update: jest.fn(), findMany: jest.fn() },
+  waba: { findFirst: jest.fn() },
 };
+const mockConfig = { get: jest.fn().mockReturnValue('a-verify-token') };
 const mockInbound = { handle: jest.fn() };
 const mockStatus = { handle: jest.fn() };
 const mockAccount = { handleAccountUpdate: jest.fn(), handlePhoneQualityUpdate: jest.fn(), handlePhoneNameUpdate: jest.fn() };
@@ -19,10 +23,12 @@ describe('WebhooksService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockConfig.get.mockReturnValue('a-verify-token');
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WebhooksService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: ConfigService, useValue: mockConfig },
         { provide: InboundMessageHandler, useValue: mockInbound },
         { provide: StatusUpdateHandler, useValue: mockStatus },
         { provide: AccountHandler, useValue: mockAccount },
@@ -108,6 +114,64 @@ describe('WebhooksService', () => {
     expect(mockPrisma.webhookEvent.update).toHaveBeenCalledWith({
       where: { id: 4 },
       data: { error: 'handler blew up' },
+    });
+  });
+
+  describe('getConfig', () => {
+    it('returns config without exposing the verify token value', () => {
+      const config = service.getConfig('https://api.example.com/webhooks');
+      expect(config.callbackUrl).toBe('https://api.example.com/webhooks');
+      expect(config.signatureHeader).toBe('X-Hub-Signature-256');
+      expect(config.subscribed).toBe(true);
+      expect(config.verifyTokenConfigured).toBe(true);
+      expect(config.fields).toContain('messages');
+      expect(JSON.stringify(config)).not.toContain('a-verify-token');
+    });
+
+    it('reports not subscribed when the verify token is missing', () => {
+      mockConfig.get.mockReturnValue(undefined);
+      const config = service.getConfig('https://api.example.com/webhooks');
+      expect(config.subscribed).toBe(false);
+      expect(config.verifyTokenConfigured).toBe(false);
+    });
+  });
+
+  describe('getRecentEvents', () => {
+    it('rejects a WABA that does not belong to the org', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue(null);
+      await expect(service.getRecentEvents('org1', 'wabaX')).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.webhookEvent.findMany).not.toHaveBeenCalled();
+    });
+
+    it('maps stored events to display kind and summary', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ id: 1, wabaId: 'waba1', ssoOrgId: 'org1' });
+      const created = new Date('2026-07-27T10:00:00.000Z');
+      mockPrisma.webhookEvent.findMany.mockResolvedValue([
+        { id: 10, eventType: 'messages', wabaId: 'waba1', processed: true, error: null, createdAt: created,
+          payload: { statuses: [{ id: 'wamid.9', status: 'read' }] } },
+        { id: 11, eventType: 'messages', wabaId: 'waba1', processed: true, error: null, createdAt: created,
+          payload: { messages: [{ from: '919822010210', type: 'text' }] } },
+        { id: 12, eventType: 'message_template_status_update', wabaId: 'waba1', processed: false, error: 'x', createdAt: created,
+          payload: { message_template_name: 'order_confirmation', event: 'APPROVED' } },
+      ]);
+
+      const events = await service.getRecentEvents('org1', 'waba1');
+
+      expect(mockPrisma.webhookEvent.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { wabaId: 'waba1' }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(events[0]).toMatchObject({ kind: 'status_update', summary: 'Message wamid.9 → read' });
+      expect(events[1]).toMatchObject({ kind: 'inbound_message', summary: 'Inbound text from 919822010210' });
+      expect(events[2]).toMatchObject({ kind: 'template_status', summary: 'order_confirmation → APPROVED', error: 'x' });
+    });
+
+    it('clamps the limit to at most 100', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ id: 1, wabaId: 'waba1', ssoOrgId: 'org1' });
+      mockPrisma.webhookEvent.findMany.mockResolvedValue([]);
+      await service.getRecentEvents('org1', 'waba1', 500);
+      expect(mockPrisma.webhookEvent.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 100 }),
+      );
     });
   });
 });
