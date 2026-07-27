@@ -99,6 +99,18 @@ describe('MessagingService', () => {
       expect(postedPayload.template.language.code).toBe('en_US');
     });
 
+    it('translates a Meta 400 into a BadRequestException with the Meta message', async () => {
+      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockContacts.isOptedOut.mockResolvedValue(false);
+      mockedAxios.post = jest.fn().mockRejectedValue({
+        response: { data: { error: { message: 'Invalid parameter', code: 100, fbtrace_id: 'ABC' } } },
+      });
+
+      await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toThrow(BadRequestException);
+      await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toThrow('Invalid parameter');
+      expect(mockPrisma.message.create).not.toHaveBeenCalled();
+    });
+
     it('sends location message with correct Meta payload', async () => {
       const locationDto: any = {
         phoneNumberId: 'p1', to: '447911111111',
