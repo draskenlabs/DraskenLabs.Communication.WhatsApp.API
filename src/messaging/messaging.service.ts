@@ -10,7 +10,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { ContactsService } from 'src/contacts/contacts.service';
-import { SendMessageDto, MessageTypeEnum } from './dto/send-message.dto';
+import { SendMessageDto, MessageTypeEnum, InteractiveTypeEnum } from './dto/send-message.dto';
 import { SendMessageResponseDto, MessageListItemDto } from './dto/message-response.dto';
 import { MessageAnalyticsDto } from './dto/message-analytics.dto';
 
@@ -204,10 +204,69 @@ export class MessagingService {
           ...(dto.templateComponents?.length ? { components: dto.templateComponents } : {}),
         };
         break;
+      case MessageTypeEnum.location:
+        base.location = {
+          latitude: dto.latitude,
+          longitude: dto.longitude,
+          ...(dto.locationName ? { name: dto.locationName } : {}),
+          ...(dto.locationAddress ? { address: dto.locationAddress } : {}),
+        };
+        break;
+      case MessageTypeEnum.interactive:
+        base.interactive = this.buildInteractivePayload(dto);
+        break;
       default:
         break;
     }
 
     return base;
+  }
+
+  private buildInteractivePayload(dto: SendMessageDto): Record<string, unknown> {
+    const interactive: Record<string, unknown> = {
+      type: dto.interactiveType,
+      body: { text: dto.interactiveBodyText },
+      ...(dto.interactiveHeaderText
+        ? { header: { type: 'text', text: dto.interactiveHeaderText } }
+        : {}),
+      ...(dto.interactiveFooterText ? { footer: { text: dto.interactiveFooterText } } : {}),
+    };
+
+    switch (dto.interactiveType) {
+      case InteractiveTypeEnum.button:
+        interactive.action = {
+          buttons: (dto.interactiveButtons ?? []).map((b) => ({
+            type: 'reply',
+            reply: { id: b.id, title: b.title },
+          })),
+        };
+        break;
+      case InteractiveTypeEnum.list:
+        interactive.action = {
+          button: dto.interactiveButtonLabel,
+          sections: (dto.interactiveSections ?? []).map((s) => ({
+            title: s.title,
+            rows: s.rows.map((r) => ({
+              id: r.id,
+              title: r.title,
+              ...(r.description ? { description: r.description } : {}),
+            })),
+          })),
+        };
+        break;
+      case InteractiveTypeEnum.cta_url:
+        interactive.action = {
+          name: 'cta_url',
+          parameters: {
+            display_text: dto.interactiveCtaDisplayText,
+            url: dto.interactiveCtaUrl,
+          },
+        };
+        break;
+      default:
+        break;
+    }
+
+    return interactive;
   }
 }
