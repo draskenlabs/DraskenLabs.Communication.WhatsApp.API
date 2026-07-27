@@ -98,6 +98,87 @@ describe('MessagingService', () => {
       expect(postedPayload.template.name).toBe('hello_world');
       expect(postedPayload.template.language.code).toBe('en_US');
     });
+
+    it('sends location message with correct Meta payload', async () => {
+      const locationDto: any = {
+        phoneNumberId: 'p1', to: '447911111111',
+        type: MessageTypeEnum.location,
+        latitude: 37.4847, longitude: -122.1477,
+        locationName: 'Meta HQ', locationAddress: '1 Hacker Way',
+      };
+      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.l1' }] } });
+      mockPrisma.message.create.mockResolvedValue({
+        id: 3, metaMessageId: 'wamid.l1', phoneNumberId: 'p1', to: '447911111111',
+        type: 'location', status: 'sent', createdAt: new Date(),
+      });
+
+      await service.sendMessage(1, 'sso_org_1', locationDto);
+
+      const postedPayload = (mockedAxios.post as jest.Mock).mock.calls[0][1];
+      expect(postedPayload.type).toBe('location');
+      expect(postedPayload.location).toEqual({
+        latitude: 37.4847, longitude: -122.1477, name: 'Meta HQ', address: '1 Hacker Way',
+      });
+    });
+
+    it('sends interactive reply-button message with correct Meta payload', async () => {
+      const interactiveDto: any = {
+        phoneNumberId: 'p1', to: '447911111111',
+        type: MessageTypeEnum.interactive,
+        interactiveType: 'button',
+        interactiveBodyText: 'Confirm your order?',
+        interactiveFooterText: 'Drasken Labs',
+        interactiveButtons: [
+          { id: 'yes', title: 'Yes' },
+          { id: 'no', title: 'No' },
+        ],
+      };
+      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.i1' }] } });
+      mockPrisma.message.create.mockResolvedValue({
+        id: 4, metaMessageId: 'wamid.i1', phoneNumberId: 'p1', to: '447911111111',
+        type: 'interactive', status: 'sent', createdAt: new Date(),
+      });
+
+      await service.sendMessage(1, 'sso_org_1', interactiveDto);
+
+      const postedPayload = (mockedAxios.post as jest.Mock).mock.calls[0][1];
+      expect(postedPayload.type).toBe('interactive');
+      expect(postedPayload.interactive.type).toBe('button');
+      expect(postedPayload.interactive.body).toEqual({ text: 'Confirm your order?' });
+      expect(postedPayload.interactive.footer).toEqual({ text: 'Drasken Labs' });
+      expect(postedPayload.interactive.action.buttons).toEqual([
+        { type: 'reply', reply: { id: 'yes', title: 'Yes' } },
+        { type: 'reply', reply: { id: 'no', title: 'No' } },
+      ]);
+    });
+
+    it('sends interactive cta_url message with correct Meta payload', async () => {
+      const ctaDto: any = {
+        phoneNumberId: 'p1', to: '447911111111',
+        type: MessageTypeEnum.interactive,
+        interactiveType: 'cta_url',
+        interactiveBodyText: 'View your invoice',
+        interactiveCtaDisplayText: 'Open invoice',
+        interactiveCtaUrl: 'https://example.com/i/48210',
+      };
+      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.c1' }] } });
+      mockPrisma.message.create.mockResolvedValue({
+        id: 5, metaMessageId: 'wamid.c1', phoneNumberId: 'p1', to: '447911111111',
+        type: 'interactive', status: 'sent', createdAt: new Date(),
+      });
+
+      await service.sendMessage(1, 'sso_org_1', ctaDto);
+
+      const postedPayload = (mockedAxios.post as jest.Mock).mock.calls[0][1];
+      expect(postedPayload.interactive.type).toBe('cta_url');
+      expect(postedPayload.interactive.action).toEqual({
+        name: 'cta_url',
+        parameters: { display_text: 'Open invoice', url: 'https://example.com/i/48210' },
+      });
+    });
   });
 
   describe('findAll', () => {
