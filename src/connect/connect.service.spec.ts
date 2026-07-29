@@ -98,20 +98,17 @@ describe('ConnectService', () => {
   });
 
   describe('manualConnect', () => {
-    const OLD_ENV = process.env.NODE_ENV;
-    afterEach(() => {
-      process.env.NODE_ENV = OLD_ENV;
-    });
-
-    it('is disabled in production', async () => {
-      process.env.NODE_ENV = 'production';
+    it('is disabled unless ALLOW_MANUAL_CONNECT is true', async () => {
+      configService.get.mockReturnValue(false);
       await expect(
         service.manualConnect({ wabaId: 'w1', accessToken: 't' }, 1, 'sso_org_1'),
       ).rejects.toThrow(ForbiddenException);
     });
 
     it('connects with a supplied token (no OAuth exchange) and subscribes webhooks', async () => {
-      process.env.NODE_ENV = 'development';
+      configService.get.mockImplementation((k: string) =>
+        k === 'ALLOW_MANUAL_CONNECT' ? 'true' : 'x',
+      );
       mockedAxios.get = jest.fn().mockResolvedValue({
         data: { id: 'w1', name: 'Test WABA', owner_business_info: { id: 'b9' } },
       });

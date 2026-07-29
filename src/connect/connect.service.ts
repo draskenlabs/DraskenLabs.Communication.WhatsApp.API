@@ -31,8 +31,12 @@ export class ConnectService {
     userId: number,
     ssoOrgId: string,
   ): Promise<ConnectWhatsAppResponseDTO> {
-    if (process.env.NODE_ENV === 'production') {
-      throw new ForbiddenException('Manual connect is disabled in production');
+    const allowed =
+      String(this.configService.get('ALLOW_MANUAL_CONNECT')).toLowerCase() === 'true';
+    if (!allowed) {
+      throw new ForbiddenException(
+        'Manual connect is disabled. Set ALLOW_MANUAL_CONNECT=true to enable it.',
+      );
     }
 
     const rawAccessToken = body.accessToken;
