@@ -33,6 +33,7 @@ import * as Joi from 'joi';
         META_APP_SECRET: Joi.string().required(),
         META_REDIRECT_URI: Joi.string().required(),
         WEBHOOK_VERIFY_TOKEN: Joi.string().required(),
+        ALLOW_MANUAL_CONNECT: Joi.boolean().truthy('true').falsy('false').default(false),
         SSO_CLIENT_ID: Joi.string().required(),
         SSO_CLIENT_SECRET: Joi.string().required(),
         SSO_API_URL: Joi.string().required(),
