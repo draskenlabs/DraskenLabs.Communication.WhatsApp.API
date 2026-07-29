@@ -34,6 +34,9 @@ export class AuthService {
     await this.redisService.setSsoSession(sessionId, {
       ssoId: ssoUser.ssoId,
       ssoAccessToken: tokens.accessToken,
+      email: ssoUser.email,
+      firstName: ssoUser.firstName,
+      lastName: ssoUser.lastName,
       orgs: organisations,
     });
 

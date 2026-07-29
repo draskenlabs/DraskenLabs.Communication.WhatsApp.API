@@ -5,6 +5,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { UserProfileDto } from './dto/user-profile.dto';
+import { RedisService } from 'src/redis/redis.service';
 import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
 
 @ApiTags('User')
@@ -14,6 +15,7 @@ export class UserController {
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly redisService: RedisService,
   ) {}
 
   @Get('profile')
@@ -28,7 +30,23 @@ export class UserController {
     if (!user) {
       throw new UnauthorizedException('User not found in context');
     }
-    return user;
+
+    // The User table is intentionally slim (id + ssoId); the display name and
+    // email live in the SSO session keyed by the token's sessionId. Fall back
+    // to empty strings when the session has expired so the endpoint never
+    // returns undefined fields (which crash the client's profile view).
+    const sessionId = (req as any).sessionId;
+    const session = sessionId
+      ? await this.redisService.getSsoSession(sessionId)
+      : null;
+
+    return {
+      id: user.id,
+      ssoId: user.ssoId,
+      firstName: session?.firstName ?? '',
+      lastName: session?.lastName ?? '',
+      email: session?.email ?? '',
+    };
   }
 
   @Post('test-token')

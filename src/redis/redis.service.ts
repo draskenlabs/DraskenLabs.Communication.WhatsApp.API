@@ -12,6 +12,9 @@ import { WABAConnectState } from './dto/waba-connect-state.dto';
 export interface SsoSessionData {
   ssoId: string;
   ssoAccessToken: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
   orgs: { id: string; name: string; slug?: string }[];
 }
 

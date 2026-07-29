@@ -4,21 +4,15 @@ export class UserProfileDto {
   @ApiProperty()
   id: number;
 
-  @ApiProperty()
-  clerkId: string;
+  @ApiProperty({ description: 'DraskenLabs SSO subject id' })
+  ssoId: string;
 
-  @ApiProperty()
+  @ApiProperty({ description: 'Empty when the SSO session has expired' })
   firstName: string;
 
-  @ApiProperty()
+  @ApiProperty({ description: 'Empty when the SSO session has expired' })
   lastName: string;
 
-  @ApiProperty()
+  @ApiProperty({ description: 'Empty when the SSO session has expired' })
   email: string;
-
-  @ApiProperty()
-  status: boolean;
-
-  @ApiProperty()
-  createdAt: Date;
 }
