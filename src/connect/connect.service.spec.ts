@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ConnectService } from './connect.service';
 import { UserWhatsappService } from 'src/user/user-whatsapp.service';
@@ -95,5 +95,44 @@ describe('ConnectService', () => {
     await expect(
       service.connectWhatsapp({ code: 'code', wabaId: 'w1' }, 1, 'sso_org_1'),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  describe('manualConnect', () => {
+    const OLD_ENV = process.env.NODE_ENV;
+    afterEach(() => {
+      process.env.NODE_ENV = OLD_ENV;
+    });
+
+    it('is disabled in production', async () => {
+      process.env.NODE_ENV = 'production';
+      await expect(
+        service.manualConnect({ wabaId: 'w1', accessToken: 't' }, 1, 'sso_org_1'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('connects with a supplied token (no OAuth exchange) and subscribes webhooks', async () => {
+      process.env.NODE_ENV = 'development';
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: { id: 'w1', name: 'Test WABA', owner_business_info: { id: 'b9' } },
+      });
+      userWhatsappService.createOrUpdate.mockResolvedValue({ accessToken: 'enc' } as any);
+      wabaPhoneNumberService.syncPhoneNumbersWithToken.mockResolvedValue([
+        { phoneNumberId: 'p1', displayPhoneNumber: '+1 555', verifiedName: 'Test' } as any,
+      ]);
+
+      const result = await service.manualConnect(
+        { wabaId: 'w1', accessToken: 'raw' },
+        1,
+        'sso_org_1',
+      );
+
+      expect(mockedAxios.post).not.toHaveBeenCalled(); // no code→token exchange
+      expect(wabaService.createOrUpdateWaba).toHaveBeenCalled();
+      expect(userWhatsappService.createOrUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ wabaId: 'w1', accessToken: 'raw', businessId: 'b9' }),
+      );
+      expect(wabaService.subscribeAppToWaba).toHaveBeenCalledWith('w1', 'raw');
+      expect(result.phoneNumbers).toHaveLength(1);
+    });
   });
 });
