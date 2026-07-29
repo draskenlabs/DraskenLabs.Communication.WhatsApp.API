@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateContactDto, UpdateContactDto, ContactResponseDto } from './dto/contact.dto';
+import { BaseResponse } from 'src/common/responses/base-response';
 
 @Injectable()
 export class ContactsService {
@@ -29,12 +30,34 @@ export class ContactsService {
     return this.toDto(contact);
   }
 
-  async findAll(ssoOrgId: string): Promise<ContactResponseDto[]> {
+  async findAll(
+    ssoOrgId: string,
+    opts: { page?: number; limit?: number } = {},
+  ): Promise<BaseResponse<ContactResponseDto[]>> {
+    const where = { ssoOrgId };
+
+    // Paginate only when asked; otherwise return the full contact list.
+    if (opts.page !== undefined || opts.limit !== undefined) {
+      const page = Math.max(1, opts.page ?? 1);
+      const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+      const [rows, total] = await this.prisma.$transaction([
+        this.prisma.contact.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        this.prisma.contact.count({ where }),
+      ]);
+      const totalPages = Math.ceil(total / limit);
+      return BaseResponse.paginate(rows.map(this.toDto), total, totalPages, page, limit);
+    }
+
     const contacts = await this.prisma.contact.findMany({
-      where: { ssoOrgId },
+      where,
       orderBy: { createdAt: 'desc' },
     });
-    return contacts.map(this.toDto);
+    return BaseResponse.success(contacts.map(this.toDto));
   }
 
   async findOne(ssoOrgId: string, id: number): Promise<ContactResponseDto> {

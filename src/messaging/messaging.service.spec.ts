@@ -16,7 +16,9 @@ const mockPrisma = {
     create: jest.fn(),
     findMany: jest.fn(),
     findUnique: jest.fn(),
+    count: jest.fn(),
   },
+  $transaction: jest.fn(),
 };
 const mockRedis = { getPhoneCache: jest.fn() };
 const mockEncryption = { decrypt: jest.fn().mockReturnValue('plain_token') };
@@ -194,13 +196,25 @@ describe('MessagingService', () => {
   });
 
   describe('findAll', () => {
-    it('returns messages scoped to org', async () => {
+    it('returns every message scoped to org when unpaginated', async () => {
       mockPrisma.message.findMany.mockResolvedValue([
         { id: 1, metaMessageId: 'w1', phoneNumberId: 'p1', to: '111', type: 'text', status: 'sent', createdAt: new Date(), updatedAt: new Date() },
       ]);
       const result = await service.findAll('sso_org_1');
       expect(mockPrisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { ssoOrgId: 'sso_org_1' } }));
-      expect(result).toHaveLength(1);
+      expect(result.data).toHaveLength(1);
+      expect(result.meta).toBeUndefined();
+    });
+
+    it('paginates and returns meta when page/limit supplied', async () => {
+      mockPrisma.$transaction.mockResolvedValue([
+        [{ id: 2, phoneNumberId: 'p1', to: '222', type: 'text', status: 'sent', createdAt: new Date(), updatedAt: new Date() }],
+        41,
+      ]);
+      const result = await service.findAll('sso_org_1', { page: 2, limit: 20 });
+      expect(mockPrisma.$transaction).toHaveBeenCalled();
+      expect(result.data).toHaveLength(1);
+      expect(result.meta).toEqual({ total: 41, totalPages: 3, page: 2, limit: 20 });
     });
   });
 

@@ -21,6 +21,8 @@ import { Request, Response } from 'express';
 import { WebhooksService } from './webhooks.service';
 import { WebhookConfigDto } from './dto/webhook-config.dto';
 import { WebhookEventDto } from './dto/webhook-event.dto';
+import { PaginationMetaDto } from 'src/common/responses/swagger-response.dto';
+import { BaseResponse } from 'src/common/responses/base-response';
 import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
 
 @ApiTags('Webhooks')
@@ -48,21 +50,31 @@ export class WebhooksController {
   @Get('events')
   @ApiBearerAuth('jwt')
   @ApiOperation({
-    summary: 'Recent webhook events for a WABA',
-    description: 'Returns the most recent stored webhook events for a WABA owned by the caller.',
+    summary: 'Webhook events for a WABA (paginated)',
+    description: 'Returns stored webhook events for a WABA owned by the caller, newest first, with pagination metadata.',
   })
   @ApiQuery({ name: 'wabaId', required: true, description: 'WABA id to list events for' })
-  @ApiQuery({ name: 'limit', required: false, description: 'Max events (1–100, default 20)' })
-  @ApiWrappedOkResponse({ dataDto: WebhookEventDto, isArray: true, description: 'Recent webhook events' })
+  @ApiQuery({ name: 'page', required: false, type: Number, description: '1-based page number (default 1)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Page size, 1–100 (default 20)' })
+  @ApiWrappedOkResponse({
+    dataDto: WebhookEventDto,
+    isArray: true,
+    metaDto: PaginationMetaDto,
+    description: 'Webhook events',
+  })
   async getEvents(
     @Req() req: Request,
     @Query('wabaId') wabaId: string,
+    @Query('page') page?: string,
     @Query('limit') limit?: string,
-  ): Promise<WebhookEventDto[]> {
+  ): Promise<BaseResponse<WebhookEventDto[]>> {
     const orgId = (req as any).orgId;
     if (!orgId) throw new UnauthorizedException('Organisation not found in context');
     if (!wabaId) throw new ForbiddenException('wabaId is required');
-    return this.webhooksService.getRecentEvents(orgId, wabaId, limit ? Number(limit) : 20);
+    return this.webhooksService.getRecentEvents(orgId, wabaId, {
+      page: page !== undefined ? Number(page) : undefined,
+      limit: limit !== undefined ? Number(limit) : undefined,
+    });
   }
 
   @Get()

@@ -13,6 +13,7 @@ import { ContactsService } from 'src/contacts/contacts.service';
 import { SendMessageDto, MessageTypeEnum, InteractiveTypeEnum } from './dto/send-message.dto';
 import { SendMessageResponseDto, MessageListItemDto } from './dto/message-response.dto';
 import { MessageAnalyticsDto } from './dto/message-analytics.dto';
+import { BaseResponse } from 'src/common/responses/base-response';
 
 @Injectable()
 export class MessagingService {
@@ -90,13 +91,39 @@ export class MessagingService {
     };
   }
 
-  async findAll(ssoOrgId: string): Promise<MessageListItemDto[]> {
+  async findAll(
+    ssoOrgId: string,
+    opts: { page?: number; limit?: number } = {},
+  ): Promise<BaseResponse<MessageListItemDto[]>> {
+    const where = { ssoOrgId };
+
+    // Paginate only when asked (keeps existing API-key clients that pull the
+    // full history unaffected); otherwise return every message.
+    if (opts.page !== undefined || opts.limit !== undefined) {
+      const page = Math.max(1, opts.page ?? 1);
+      const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+      const [rows, total] = await this.prisma.$transaction([
+        this.prisma.message.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        this.prisma.message.count({ where }),
+      ]);
+      const totalPages = Math.ceil(total / limit);
+      return BaseResponse.paginate(rows.map(this.toListItem), total, totalPages, page, limit);
+    }
+
     const messages = await this.prisma.message.findMany({
-      where: { ssoOrgId },
+      where,
       orderBy: { createdAt: 'desc' },
     });
+    return BaseResponse.success(messages.map(this.toListItem));
+  }
 
-    return messages.map((m) => ({
+  private toListItem(m: any): MessageListItemDto {
+    return {
       id: m.id,
       metaMessageId: m.metaMessageId ?? undefined,
       phoneNumberId: m.phoneNumberId,
@@ -105,7 +132,7 @@ export class MessagingService {
       status: m.status,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
-    }));
+    };
   }
 
   async findOne(ssoOrgId: string, messageId: number): Promise<MessageListItemDto> {
@@ -118,14 +145,9 @@ export class MessagingService {
     }
 
     return {
-      id: message.id,
-      metaMessageId: message.metaMessageId ?? undefined,
-      phoneNumberId: message.phoneNumberId,
-      to: message.to,
-      type: message.type,
-      status: message.status,
-      createdAt: message.createdAt,
-      updatedAt: message.updatedAt,
+      ...this.toListItem(message),
+      // Detail view shows what was actually sent (text body, media, template).
+      payload: (message.payload ?? undefined) as Record<string, unknown> | undefined,
     };
   }
 

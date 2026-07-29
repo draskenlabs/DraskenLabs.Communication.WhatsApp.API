@@ -11,18 +11,25 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 const mockPrisma = {
   waba: { findFirst: jest.fn() },
-  wabaPhoneNumber: { findFirst: jest.fn(), findMany: jest.fn(), upsert: jest.fn() },
+  wabaPhoneNumber: {
+    findFirst: jest.fn(),
+    findMany: jest.fn(),
+    upsert: jest.fn(),
+    deleteMany: jest.fn(),
+  },
   userWhatsapp: { findFirst: jest.fn() },
 };
 
 const mockEncryption = { decrypt: jest.fn().mockReturnValue('raw_token') };
-const mockRedis = { setPhoneCache: jest.fn() };
+const mockRedis = { setPhoneCache: jest.fn(), invalidatePhoneCache: jest.fn() };
 
 describe('WabaPhoneNumberService', () => {
   let service: WabaPhoneNumberService;
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // No stale numbers to prune unless a test overrides it.
+    mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([]);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WabaPhoneNumberService,
@@ -79,6 +86,23 @@ describe('WabaPhoneNumberService', () => {
       expect(result).toHaveLength(1);
       expect(result[0].phoneNumberId).toBe('p1');
       expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 1, 'w1', 'enc_token');
+    });
+
+    it('prunes numbers removed on Meta and invalidates their cache', async () => {
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc_token' });
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: { data: [{ id: 'p1', platform_type: 'CLOUD_API' }] },
+      });
+      mockPrisma.wabaPhoneNumber.upsert.mockResolvedValue({ phoneNumberId: 'p1', wabaId: 'w1' });
+      // Meta no longer returns 'p_old' → it should be pruned.
+      mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([{ phoneNumberId: 'p_old' }]);
+
+      await service.syncPhoneNumbers(1, 'w1');
+
+      expect(mockPrisma.wabaPhoneNumber.deleteMany).toHaveBeenCalledWith({
+        where: { wabaId: 'w1', phoneNumberId: { notIn: ['p1'] } },
+      });
+      expect(mockRedis.invalidatePhoneCache).toHaveBeenCalledWith('p_old');
     });
   });
 

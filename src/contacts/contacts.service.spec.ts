@@ -10,7 +10,9 @@ const mockPrisma = {
     create: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
+    count: jest.fn(),
   },
+  $transaction: jest.fn(),
 };
 
 const baseContact = {
@@ -41,6 +43,26 @@ describe('ContactsService', () => {
       const result = await service.create('sso_org_1', { phone: '447911111111', name: 'Alice' });
       expect(result.phone).toBe('447911111111');
       expect(result.optedOut).toBe(false);
+    });
+  });
+
+  describe('findAll', () => {
+    it('returns every contact when unpaginated (no meta)', async () => {
+      mockPrisma.contact.findMany.mockResolvedValue([baseContact]);
+      const result = await service.findAll('sso_org_1');
+      expect(mockPrisma.contact.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { ssoOrgId: 'sso_org_1' } }),
+      );
+      expect(result.data).toHaveLength(1);
+      expect(result.meta).toBeUndefined();
+    });
+
+    it('paginates and returns meta when page/limit supplied', async () => {
+      mockPrisma.$transaction.mockResolvedValue([[baseContact], 5]);
+      const result = await service.findAll('sso_org_1', { page: 1, limit: 2 });
+      expect(mockPrisma.$transaction).toHaveBeenCalled();
+      expect(result.data).toHaveLength(1);
+      expect(result.meta).toEqual({ total: 5, totalPages: 3, page: 1, limit: 2 });
     });
   });
 

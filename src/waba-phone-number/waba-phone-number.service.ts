@@ -111,6 +111,7 @@ export class WabaPhoneNumberService {
     );
 
     const synced: WabaPhoneNumber[] = [];
+    const keepIds: string[] = [];
     for (const meta of response.data?.data ?? []) {
       // A number that hasn't finished onboarding yet ("Pending sync") comes back
       // from Meta with several of these fields absent. The columns are required,
@@ -136,7 +137,26 @@ export class WabaPhoneNumberService {
         },
       });
       synced.push(record);
+      keepIds.push(meta.id);
     }
+
+    // Prune numbers that were removed on Meta's side — otherwise a deleted
+    // number lingers in the DB and reappears on the next list fetch. (An empty
+    // Meta list legitimately means the WABA has no numbers; axios throws on a
+    // failed request, so we never reach here with a partial result.)
+    const stale = await this.prisma.wabaPhoneNumber.findMany({
+      where: { wabaId, phoneNumberId: { notIn: keepIds } },
+      select: { phoneNumberId: true },
+    });
+    if (stale.length > 0) {
+      await this.prisma.wabaPhoneNumber.deleteMany({
+        where: { wabaId, phoneNumberId: { notIn: keepIds } },
+      });
+      await Promise.all(
+        stale.map((p) => this.redisService.invalidatePhoneCache(p.phoneNumberId)),
+      );
+    }
+
     return synced;
   }
 
