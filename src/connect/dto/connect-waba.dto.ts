@@ -21,6 +21,29 @@ export class ConnectWhatsAppRequestDTO {
   businessId?: string;
 }
 
+export class ManualConnectRequestDTO {
+  @ApiProperty({ description: 'WhatsApp Business Account ID (e.g. from API Setup / test number)' })
+  @IsString()
+  @IsNotEmpty()
+  wabaId: string;
+
+  @ApiProperty({ description: 'Access token for the WABA (temporary test token is fine)' })
+  @IsString()
+  @IsNotEmpty()
+  accessToken: string;
+
+  @ApiPropertyOptional({ description: 'Meta Business ID. Derived from the WABA when omitted.' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  businessId?: string;
+
+  @ApiPropertyOptional({ description: 'Display name for the WABA when metadata cannot be fetched.' })
+  @IsOptional()
+  @IsString()
+  name?: string;
+}
+
 export class ConnectedPhoneNumberDTO {
   @ApiProperty() phoneNumberId: string;
   @ApiProperty() displayPhoneNumber: string;

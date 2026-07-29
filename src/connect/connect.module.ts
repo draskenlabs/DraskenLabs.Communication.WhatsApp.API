@@ -15,6 +15,9 @@ export class ConnectModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(AuthMiddleware)
-      .forRoutes({ path: 'connect', method: RequestMethod.POST });
+      .forRoutes(
+        { path: 'connect', method: RequestMethod.POST },
+        { path: 'connect/manual', method: RequestMethod.POST },
+      );
   }
 }
