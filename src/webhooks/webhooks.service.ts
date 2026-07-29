@@ -7,6 +7,7 @@ import { AccountHandler } from './handlers/account.handler';
 import { TemplateStatusHandler } from './handlers/template-status.handler';
 import { WebhookConfigDto } from './dto/webhook-config.dto';
 import { WebhookEventDto, WebhookEventKind } from './dto/webhook-event.dto';
+import { BaseResponse } from 'src/common/responses/base-response';
 
 /** Meta change fields this server subscribes to and handles. */
 const SUBSCRIBED_FIELDS = [
@@ -44,19 +45,26 @@ export class WebhooksService {
   async getRecentEvents(
     ssoOrgId: string,
     wabaId: string,
-    limit = 20,
-  ): Promise<WebhookEventDto[]> {
+    opts: { page?: number; limit?: number } = {},
+  ): Promise<BaseResponse<WebhookEventDto[]>> {
     // Authorise: the WABA must belong to the caller's organisation.
     const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
     if (!waba) throw new ForbiddenException('WABA does not belong to your organisation');
 
-    const events = await this.prisma.webhookEvent.findMany({
-      where: { wabaId },
-      orderBy: { createdAt: 'desc' },
-      take: Math.min(Math.max(limit, 1), 100),
-    });
+    const page = Math.max(1, opts.page ?? 1);
+    const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+    const where = { wabaId };
+    const [events, total] = await this.prisma.$transaction([
+      this.prisma.webhookEvent.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.webhookEvent.count({ where }),
+    ]);
 
-    return events.map((e) => {
+    const data = events.map((e) => {
       const { kind, summary } = this.describeEvent(e.eventType, e.payload);
       return {
         id: e.id,
@@ -69,6 +77,9 @@ export class WebhooksService {
         createdAt: e.createdAt,
       };
     });
+
+    const totalPages = Math.ceil(total / limit);
+    return BaseResponse.paginate(data, total, totalPages, page, limit);
   }
 
   /** Derive a display kind + one-line summary from a stored change payload. */

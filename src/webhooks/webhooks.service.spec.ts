@@ -9,8 +9,9 @@ import { AccountHandler } from './handlers/account.handler';
 import { TemplateStatusHandler } from './handlers/template-status.handler';
 
 const mockPrisma = {
-  webhookEvent: { create: jest.fn(), update: jest.fn(), findMany: jest.fn() },
+  webhookEvent: { create: jest.fn(), update: jest.fn(), findMany: jest.fn(), count: jest.fn() },
   waba: { findFirst: jest.fn() },
+  $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
 };
 const mockConfig = { get: jest.fn().mockReturnValue('a-verify-token') };
 const mockInbound = { handle: jest.fn() };
@@ -155,22 +156,25 @@ describe('WebhooksService', () => {
           payload: { message_template_name: 'order_confirmation', event: 'APPROVED' } },
       ]);
 
-      const events = await service.getRecentEvents('org1', 'waba1');
+      mockPrisma.webhookEvent.count.mockResolvedValue(3);
+      const result = await service.getRecentEvents('org1', 'waba1');
 
       expect(mockPrisma.webhookEvent.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { wabaId: 'waba1' }, orderBy: { createdAt: 'desc' } }),
       );
-      expect(events[0]).toMatchObject({ kind: 'status_update', summary: 'Message wamid.9 → read' });
-      expect(events[1]).toMatchObject({ kind: 'inbound_message', summary: 'Inbound text from 919822010210' });
-      expect(events[2]).toMatchObject({ kind: 'template_status', summary: 'order_confirmation → APPROVED', error: 'x' });
+      expect(result.meta).toEqual({ total: 3, totalPages: 1, page: 1, limit: 20 });
+      expect(result.data[0]).toMatchObject({ kind: 'status_update', summary: 'Message wamid.9 → read' });
+      expect(result.data[1]).toMatchObject({ kind: 'inbound_message', summary: 'Inbound text from 919822010210' });
+      expect(result.data[2]).toMatchObject({ kind: 'template_status', summary: 'order_confirmation → APPROVED', error: 'x' });
     });
 
-    it('clamps the limit to at most 100', async () => {
+    it('clamps the limit to at most 100 and paginates', async () => {
       mockPrisma.waba.findFirst.mockResolvedValue({ id: 1, wabaId: 'waba1', ssoOrgId: 'org1' });
       mockPrisma.webhookEvent.findMany.mockResolvedValue([]);
-      await service.getRecentEvents('org1', 'waba1', 500);
+      mockPrisma.webhookEvent.count.mockResolvedValue(0);
+      await service.getRecentEvents('org1', 'waba1', { page: 3, limit: 500 });
       expect(mockPrisma.webhookEvent.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ take: 100 }),
+        expect.objectContaining({ take: 100, skip: 200 }),
       );
     });
   });

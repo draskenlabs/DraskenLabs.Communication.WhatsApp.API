@@ -16,6 +16,8 @@ import { MessagingService } from './messaging.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { SendMessageResponseDto, MessageListItemDto } from './dto/message-response.dto';
 import { MessageAnalyticsDto } from './dto/message-analytics.dto';
+import { PaginationMetaDto } from 'src/common/responses/swagger-response.dto';
+import { BaseResponse } from 'src/common/responses/base-response';
 import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
 
 @ApiTags('Messaging')
@@ -36,12 +38,31 @@ export class MessagingController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List all messages for current organisation' })
-  @ApiWrappedOkResponse({ dataDto: MessageListItemDto, isArray: true, description: 'Message list' })
-  async findAll(@Req() req: Request): Promise<MessageListItemDto[]> {
+  @ApiOperation({
+    summary: 'List messages for current organisation',
+    description:
+      'Returns all messages by default. Supply `page`/`limit` to paginate ' +
+      '(response then includes a `meta` block).',
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number, description: '1-based page number (enables pagination)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Page size, 1–100 (enables pagination)' })
+  @ApiWrappedOkResponse({
+    dataDto: MessageListItemDto,
+    isArray: true,
+    metaDto: PaginationMetaDto,
+    description: 'Message list',
+  })
+  async findAll(
+    @Req() req: Request,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<BaseResponse<MessageListItemDto[]>> {
     const orgId = (req as any).orgId;
     if (!orgId) throw new UnauthorizedException('Organisation not found in context');
-    return this.messagingService.findAll(orgId);
+    return this.messagingService.findAll(orgId, {
+      page: page !== undefined ? Number(page) : undefined,
+      limit: limit !== undefined ? Number(limit) : undefined,
+    });
   }
 
   @Get('analytics')
