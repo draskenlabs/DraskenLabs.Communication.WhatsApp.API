@@ -4,6 +4,10 @@ import { WabaService } from './waba.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
+import axios from 'axios';
+
+jest.mock('axios');
+const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 const mockPrisma = {
   waba: { findFirst: jest.fn(), findMany: jest.fn(), findUnique: jest.fn(), upsert: jest.fn() },
@@ -116,6 +120,38 @@ describe('WabaService', () => {
 
       expect(mockRedis.invalidatePhoneCache).not.toHaveBeenCalled();
       expect(mockPrisma.userWhatsapp.delete).toHaveBeenCalled();
+    });
+  });
+
+  describe('subscribeAppToWaba', () => {
+    it('POSTs to subscribed_apps and returns true on success', async () => {
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { success: true } });
+      const result = await service.subscribeAppToWaba('w1', 'raw_token');
+      expect(result).toBe(true);
+      const [url] = (mockedAxios.post as jest.Mock).mock.calls[0];
+      expect(url).toContain('/w1/subscribed_apps');
+    });
+
+    it('returns false (non-fatal) when Meta rejects the subscription', async () => {
+      mockedAxios.post = jest.fn().mockRejectedValue({
+        response: { data: { error: { message: 'missing permission', code: 200 } } },
+      });
+      await expect(service.subscribeAppToWaba('w1', 'raw_token')).resolves.toBe(false);
+    });
+  });
+
+  describe('subscribeExistingWaba', () => {
+    it('throws NotFoundException when there is no connection', async () => {
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue(null);
+      await expect(service.subscribeExistingWaba(1, 'w1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('decrypts the stored token and subscribes', async () => {
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc' });
+      mockEncryption.decrypt.mockReturnValue('raw_token');
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { success: true } });
+      await expect(service.subscribeExistingWaba(1, 'w1')).resolves.toBe(true);
+      expect(mockEncryption.decrypt).toHaveBeenCalledWith('enc');
     });
   });
 });

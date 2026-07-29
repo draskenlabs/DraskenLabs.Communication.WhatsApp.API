@@ -80,6 +80,11 @@ export class ConnectService {
       userWhatsapp.accessToken, // already encrypted by createOrUpdate
     );
 
+    // 6. Subscribe our app to the WABA's webhooks so delivery/read statuses and
+    //    inbound messages actually arrive. Non-fatal — connecting still succeeds
+    //    if the token lacks whatsapp_business_management (logged for diagnosis).
+    await this.wabaService.subscribeAppToWaba(body.wabaId, rawAccessToken);
+
     return {
       wabaId: body.wabaId,
       businessId,

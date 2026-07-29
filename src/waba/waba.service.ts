@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -7,11 +7,53 @@ import { Waba } from '@prisma/client';
 
 @Injectable()
 export class WabaService {
+  private readonly logger = new Logger(WabaService.name);
+  private readonly metaApiVersion = 'v25.0';
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
     private readonly redisService: RedisService,
   ) {}
+
+  /**
+   * Subscribe our app to the WABA's webhooks (`POST /{waba-id}/subscribed_apps`).
+   * Embedded Signup connects the account but does NOT auto-subscribe the app —
+   * without this Meta sends no webhooks (inbound messages OR delivery/read
+   * statuses) for the WABA, so messages stay stuck at "sent".
+   *
+   * Non-fatal: a failure here (e.g. missing `whatsapp_business_management`
+   * permission) is logged but must not break connecting/syncing.
+   */
+  async subscribeAppToWaba(wabaId: string, rawAccessToken: string): Promise<boolean> {
+    try {
+      await axios.post(
+        `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/subscribed_apps`,
+        {},
+        { headers: { Authorization: `Bearer ${rawAccessToken}` } },
+      );
+      this.logger.log(`Subscribed app to WABA ${wabaId} webhooks`);
+      return true;
+    } catch (err: any) {
+      const metaError = err?.response?.data?.error;
+      this.logger.warn(
+        `Failed to subscribe app to WABA ${wabaId} webhooks: ` +
+          `${metaError?.message ?? err?.message} ` +
+          `[code=${metaError?.code} fbtrace_id=${metaError?.fbtrace_id}]`,
+      );
+      return false;
+    }
+  }
+
+  /** Subscribe an already-connected WABA using its stored token. */
+  async subscribeExistingWaba(userId: number, wabaId: string): Promise<boolean> {
+    const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
+      where: { userId, wabaId },
+    });
+    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+    const rawAccessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
+    return this.subscribeAppToWaba(wabaId, rawAccessToken);
+  }
 
   async findAllByOrgId(ssoOrgId: string): Promise<Waba[]> {
     return this.prisma.waba.findMany({ where: { ssoOrgId } });

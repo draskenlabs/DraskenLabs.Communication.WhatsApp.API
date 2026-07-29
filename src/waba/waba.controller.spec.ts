@@ -8,6 +8,7 @@ const mockWabaService = {
   getWabaDetailsFromMeta: jest.fn(),
   createOrUpdateWaba: jest.fn(),
   disconnectWaba: jest.fn(),
+  subscribeExistingWaba: jest.fn().mockResolvedValue(true),
 };
 
 describe('WabaController', () => {

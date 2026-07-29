@@ -23,7 +23,13 @@ describe('ConnectService', () => {
         ConnectService,
         { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue('test-value') } },
         { provide: UserWhatsappService, useValue: { createOrUpdate: jest.fn() } },
-        { provide: WabaService, useValue: { createOrUpdateWaba: jest.fn() } },
+        {
+          provide: WabaService,
+          useValue: {
+            createOrUpdateWaba: jest.fn(),
+            subscribeAppToWaba: jest.fn().mockResolvedValue(true),
+          },
+        },
         { provide: WabaPhoneNumberService, useValue: { syncPhoneNumbersWithToken: jest.fn() } },
       ],
     }).compile();

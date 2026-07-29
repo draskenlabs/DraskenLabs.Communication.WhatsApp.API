@@ -73,7 +73,7 @@ export class WabaController {
     const orgId = (req as any).orgId;
     if (!orgId) throw new UnauthorizedException('Organisation not found in context');
 
-    return this.wabaService.createOrUpdateWaba({
+    const waba = await this.wabaService.createOrUpdateWaba({
       wabaId: metaDetails.id,
       userId: user.id,
       ssoOrgId: orgId,
@@ -82,6 +82,12 @@ export class WabaController {
       timezoneId: metaDetails.timezone_id,
       messageTemplateNamespace: metaDetails.message_template_namespace,
     });
+
+    // (Re)subscribe our app to this WABA's webhooks — lets already-connected
+    // WABAs start receiving delivery/read statuses without re-onboarding.
+    await this.wabaService.subscribeExistingWaba(user.id, wabaId);
+
+    return waba;
   }
 
   @Delete('/:wabaId/connect')
