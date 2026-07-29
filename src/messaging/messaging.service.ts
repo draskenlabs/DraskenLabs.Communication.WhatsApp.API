@@ -145,14 +145,9 @@ export class MessagingService {
     }
 
     return {
-      id: message.id,
-      metaMessageId: message.metaMessageId ?? undefined,
-      phoneNumberId: message.phoneNumberId,
-      to: message.to,
-      type: message.type,
-      status: message.status,
-      createdAt: message.createdAt,
-      updatedAt: message.updatedAt,
+      ...this.toListItem(message),
+      // Detail view shows what was actually sent (text body, media, template).
+      payload: (message.payload ?? undefined) as Record<string, unknown> | undefined,
     };
   }
 
