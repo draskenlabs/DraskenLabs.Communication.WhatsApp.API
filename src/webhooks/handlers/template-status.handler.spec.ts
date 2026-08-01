@@ -22,7 +22,7 @@ describe('TemplateStatusHandler', () => {
     await handler.handle({ event: 'APPROVED', message_template_id: 123, message_template_name: 'hello', message_template_language: 'en_US', reason: 'NONE' });
     expect(mockPrisma.messageTemplate.updateMany).toHaveBeenCalledWith({
       where: { metaTemplateId: '123' },
-      data: { status: 'APPROVED' },
+      data: { status: 'APPROVED', rejectedReason: null },
     });
   });
 
@@ -32,6 +32,15 @@ describe('TemplateStatusHandler', () => {
     expect(mockPrisma.messageTemplate.updateMany).toHaveBeenCalledWith({
       where: { metaTemplateId: '456' },
       data: { status: 'REJECTED', rejectedReason: 'ABUSIVE_CONTENT' },
+    });
+  });
+
+  it('ignores Meta\'s "NONE" sentinel rather than storing it as a reason', async () => {
+    mockPrisma.messageTemplate.updateMany.mockResolvedValue({ count: 1 });
+    await handler.handle({ event: 'FLAGGED', message_template_id: 321, message_template_name: 'promo', message_template_language: 'en', reason: 'NONE' });
+    expect(mockPrisma.messageTemplate.updateMany).toHaveBeenCalledWith({
+      where: { metaTemplateId: '321' },
+      data: { status: 'FLAGGED' },
     });
   });
 

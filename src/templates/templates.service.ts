@@ -9,6 +9,7 @@ import { Prisma, TemplateCategory, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { BaseResponse } from 'src/common/responses/base-response';
+import { normalizeRejectedReason } from 'src/common/utils/rejected-reason';
 import { TemplateResponseDto, TemplateSyncResponseDto } from './dto/template.dto';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
@@ -72,14 +73,14 @@ export class TemplatesService {
             category: this.mapCategory(t.category),
             status: this.mapStatus(t.status),
             components: t.components ?? [],
-            rejectedReason: t.rejected_reason ?? null,
+            rejectedReason: normalizeRejectedReason(t.rejected_reason),
           },
           update: {
             metaTemplateId: String(t.id),
             category: this.mapCategory(t.category),
             status: this.mapStatus(t.status),
             components: t.components ?? [],
-            rejectedReason: t.rejected_reason ?? null,
+            rejectedReason: normalizeRejectedReason(t.rejected_reason),
           },
         });
         synced++;
@@ -329,7 +330,7 @@ export class TemplatesService {
       category: t.category,
       status: t.status,
       components: t.components,
-      rejectedReason: t.rejectedReason ?? undefined,
+      rejectedReason: normalizeRejectedReason(t.rejectedReason) ?? undefined,
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
     };
