@@ -17,6 +17,7 @@ export function mailNotificationsDouble(): jest.Mocked<
     | 'apiKeyRevoked'
     | 'wabaConnected'
     | 'wabaDisconnected'
+    | 'wabaDeleted'
     | 'metaTokenRejected'
     | 'wabaBanned'
     | 'templateDecision'
@@ -32,6 +33,7 @@ export function mailNotificationsDouble(): jest.Mocked<
     apiKeyRevoked: jest.fn().mockResolvedValue(undefined),
     wabaConnected: jest.fn().mockResolvedValue(undefined),
     wabaDisconnected: jest.fn().mockResolvedValue(undefined),
+    wabaDeleted: jest.fn().mockResolvedValue(undefined),
     metaTokenRejected: jest.fn().mockResolvedValue(undefined),
     wabaBanned: jest.fn().mockResolvedValue(undefined),
     templateDecision: jest.fn().mockResolvedValue(undefined),

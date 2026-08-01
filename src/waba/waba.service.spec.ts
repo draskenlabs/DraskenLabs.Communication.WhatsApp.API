@@ -20,6 +20,7 @@ const mockPrisma = {
     delete: jest.fn(),
   },
   wabaPhoneNumber: { findMany: jest.fn() },
+  $transaction: jest.fn(),
 };
 
 const mockEncryption = { decrypt: jest.fn().mockReturnValue('plain_token') };
@@ -149,6 +150,134 @@ describe('WabaService', () => {
 
       expect(mockRedis.invalidatePhoneCache).not.toHaveBeenCalled();
       expect(mockPrisma.userWhatsapp.delete).toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteWaba', () => {
+    const tx = {
+      messageTemplate: { deleteMany: jest.fn() },
+      inboundMessage: { deleteMany: jest.fn() },
+      webhookEvent: { deleteMany: jest.fn() },
+      message: { deleteMany: jest.fn() },
+      wabaPhoneNumber: { deleteMany: jest.fn() },
+      userWhatsapp: { deleteMany: jest.fn() },
+      waba: { delete: jest.fn() },
+    };
+
+    beforeEach(() => {
+      for (const model of Object.values(tx)) {
+        for (const fn of Object.values(model)) {
+          fn.mockReset().mockResolvedValue({ count: 1 });
+        }
+      }
+      mockPrisma.$transaction.mockImplementation(
+        (fn: (t: typeof tx) => unknown) => fn(tx),
+      );
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        wabaId: 'w1',
+        userId: 1,
+        name: 'OneManPlay Games',
+      });
+      mockPrisma.userWhatsapp.findMany.mockResolvedValue([{ userId: 1 }]);
+      mockPrisma.userWhatsapp.findUnique.mockResolvedValue({
+        accessToken: 'enc',
+      });
+      mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([
+        { phoneNumberId: 'p1' },
+      ]);
+      mockedAxios.delete = jest.fn().mockResolvedValue({ data: {} });
+    });
+
+    it('refuses an account belonging to another organisation', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue(null);
+      await expect(service.deleteWaba(1, 'sso_org_1', 'w1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('refuses anyone but the person who connected it', async () => {
+      // Ownership comes from the Waba row, not a connection — a disconnected
+      // account has no connection left to check.
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1', userId: 9 });
+      await expect(service.deleteWaba(1, 'sso_org_1', 'w1')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('removes everything held about the account, in one transaction', async () => {
+      const counts = await service.deleteWaba(1, 'sso_org_1', 'w1');
+
+      expect(tx.messageTemplate.deleteMany).toHaveBeenCalledWith({
+        where: { wabaId: 'w1' },
+      });
+      expect(tx.inboundMessage.deleteMany).toHaveBeenCalledWith({
+        where: { wabaId: 'w1' },
+      });
+      expect(tx.webhookEvent.deleteMany).toHaveBeenCalledWith({
+        where: { wabaId: 'w1' },
+      });
+      // Outbound messages carry a phone number, not a WABA.
+      expect(tx.message.deleteMany).toHaveBeenCalledWith({
+        where: { phoneNumberId: { in: ['p1'] } },
+      });
+      // Every member's connection, not just the caller's — one left behind
+      // would hold the WABA in place by its foreign key.
+      expect(tx.userWhatsapp.deleteMany).toHaveBeenCalledWith({
+        where: { wabaId: 'w1' },
+      });
+      expect(tx.waba.delete).toHaveBeenCalledWith({ where: { wabaId: 'w1' } });
+      expect(counts.templates).toBe(1);
+    });
+
+    it('purges the phone cache, which would otherwise outlive the rows', async () => {
+      await service.deleteWaba(1, 'sso_org_1', 'w1');
+      expect(mockRedis.invalidatePhoneCache).toHaveBeenCalledWith('p1');
+    });
+
+    it('tells Meta to stop sending webhooks while a token still exists', async () => {
+      await service.deleteWaba(1, 'sso_org_1', 'w1');
+
+      const [url] = (mockedAxios.delete as jest.Mock).mock.calls[0] as [string];
+      expect(url).toContain('/w1/subscribed_apps');
+    });
+
+    it('still deletes when Meta refuses the unsubscribe', async () => {
+      // A disconnected account has no usable token, and Meta's answer is not a
+      // reason to keep our copy of the data.
+      mockedAxios.delete = jest.fn().mockRejectedValue(new Error('expired'));
+
+      await expect(service.deleteWaba(1, 'sso_org_1', 'w1')).resolves.toEqual(
+        expect.objectContaining({ templates: 1 }),
+      );
+      expect(tx.waba.delete).toHaveBeenCalled();
+    });
+
+    it('skips Meta entirely when nobody is connected any more', async () => {
+      const unsubscribe = jest.fn();
+      mockedAxios.delete = unsubscribe;
+      mockPrisma.userWhatsapp.findMany.mockResolvedValue([]);
+
+      await service.deleteWaba(1, 'sso_org_1', 'w1');
+
+      expect(unsubscribe).not.toHaveBeenCalled();
+      expect(tx.waba.delete).toHaveBeenCalled();
+    });
+
+    it('emails everyone who used the account, owner included', async () => {
+      mockPrisma.userWhatsapp.findMany.mockResolvedValue([
+        { userId: 1 },
+        { userId: 4 },
+      ]);
+
+      await service.deleteWaba(1, 'sso_org_1', 'w1');
+
+      expect(mockMailNotifications.wabaDeleted).toHaveBeenCalledWith(
+        [1, 4],
+        'OneManPlay Games',
+        'w1',
+        expect.objectContaining({ templates: 1 }),
+      );
     });
   });
 

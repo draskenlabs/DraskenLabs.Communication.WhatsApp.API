@@ -177,6 +177,43 @@ export class MailNotifications {
     });
   }
 
+  /**
+   * T5b — a WABA and everything held about it was deleted. Sent to everyone
+   * who had used it, since the data was theirs to work with too.
+   *
+   * Recipients are passed in rather than looked up: by the time this is
+   * called, the connections that would have identified them are gone.
+   */
+  async wabaDeleted(
+    userIds: number[],
+    wabaName: string,
+    wabaId: string,
+    counts: Record<string, number>,
+  ): Promise<void> {
+    const recipients = await this.mail.recipientsByIds(userIds);
+    const removed = Object.entries(counts)
+      .filter(([, value]) => value > 0)
+      .map(([key, value]): [string, string] => [
+        DELETION_LABEL[key] ?? this.humanise(key),
+        String(value),
+      ]);
+
+    await this.mail.sendToAll(recipients, {
+      kind: 'transactional',
+      template: 'waba.deleted',
+      subject: `${wabaName} and its data were deleted`,
+      heading: 'A WhatsApp Business Account was deleted',
+      intro:
+        'Everything WhatsApp Console held about this account has been removed. This is your record of what went.',
+      facts: [['Account', wabaName], ['WABA ID', wabaId], ...removed],
+      paragraphs: [
+        'Your WhatsApp Business Account, its phone numbers and its approved templates all remain with Meta — only our copy is gone, and the account can be connected again from scratch.',
+        'Nothing here can be undone. If this was not you, contact us immediately.',
+      ],
+      action: { label: 'Connect an account', path: '/connect' },
+    });
+  }
+
   /** T6 — Meta rejected our stored token. Sending is down until it is fixed. */
   async metaTokenRejected(wabaId: string, detail?: string): Promise<void> {
     const recipients = await this.mail.recipientsForWaba(wabaId);

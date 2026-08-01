@@ -277,12 +277,19 @@ export class TemplatesController {
     summary: 'Count templates per status',
     description:
       'Counts across every page, so a paginated list can still show how many ' +
-      'templates sit behind each status. Ignores the category filter.',
+      'templates sit behind each status. Pass `category` to count within one ' +
+      'category, matching a list filtered the same way.',
   })
   @ApiQuery({
     name: 'wabaId',
     required: false,
     description: 'Limit the counts to one WABA',
+  })
+  @ApiQuery({
+    name: 'category',
+    required: false,
+    enum: ['MARKETING', 'UTILITY', 'AUTHENTICATION'],
+    description: 'Count within one category only',
   })
   @ApiWrappedOkResponse({
     dataDto: TemplateStatusCountsDto,
@@ -292,10 +299,11 @@ export class TemplatesController {
   async statusCounts(
     @Req() req: Request,
     @Query('wabaId') wabaId?: string,
+    @Query('category') category?: string,
   ): Promise<TemplateStatusCountsDto> {
     const orgId = (req as any).orgId;
     if (!orgId) throw new UnauthorizedException();
-    return this.templatesService.statusCounts(orgId, wabaId);
+    return this.templatesService.statusCounts(orgId, wabaId, category);
   }
 
   @Get(':id')

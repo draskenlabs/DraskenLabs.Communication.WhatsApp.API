@@ -541,12 +541,18 @@ export class TemplatesService {
   async statusCounts(
     ssoOrgId: string,
     wabaId?: string,
+    category?: string,
   ): Promise<TemplateStatusCountsDto> {
     const wabaIds = await this.resolveWabaIds(ssoOrgId, wabaId);
+    // Parsed rather than trusted: an unknown category is ignored, the same as
+    // it is on the list, instead of failing the count.
+    const parsed = this.parseEnum(TemplateCategory, category);
 
     const grouped = await this.prisma.messageTemplate.groupBy({
       by: ['status'],
-      where: { wabaId: { in: wabaIds } },
+      // Narrowed by category when the caller is filtering by one: a count that
+      // describes a different set from the list it labels is worse than none.
+      where: { wabaId: { in: wabaIds }, ...(parsed && { category: parsed }) },
       _count: { _all: true },
     });
 

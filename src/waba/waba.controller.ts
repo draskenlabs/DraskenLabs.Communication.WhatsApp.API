@@ -11,8 +11,15 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { WabaService } from './waba.service';
 import { Request } from 'express';
-import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
-import { WabaResponseDto, MetaWabaDetailsDto } from './dto/waba-response.dto';
+import {
+  ApiStandardErrorResponses,
+  ApiWrappedOkResponse,
+} from 'src/common/responses/swagger.decorators';
+import {
+  DeleteWabaResultDto,
+  WabaResponseDto,
+  MetaWabaDetailsDto,
+} from './dto/waba-response.dto';
 
 @ApiTags('WABAs')
 @Controller('wabas')
@@ -115,5 +122,41 @@ export class WabaController {
     const orgId = (req as any).orgId;
     if (!user || !orgId) throw new UnauthorizedException('User not found in context');
     return this.wabaService.disconnectWaba(user.id, orgId, wabaId);
+  }
+
+  @Delete('/:wabaId')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Delete a WABA and everything we hold about it',
+    description:
+      'Removes the account record, its phone numbers, templates, sent and ' +
+      'received messages, stored webhook events, and every member’s access ' +
+      'token. Disconnecting keeps all of that for audit — this is how it is ' +
+      'finally discarded, and it cannot be undone. ' +
+      'Only the person who connected the account may delete it. ' +
+      'Your WhatsApp Business Account, its phone numbers and its approved ' +
+      'templates all stay with Meta and can be connected again afterwards.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: DeleteWabaResultDto,
+    description: 'What was deleted',
+  })
+  @ApiStandardErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+  })
+  async remove(
+    @Param('wabaId') wabaId: string,
+    @Req() req: Request,
+  ): Promise<DeleteWabaResultDto> {
+    const { user, orgId } = req as Request & {
+      user?: { id: number };
+      orgId?: string;
+    };
+    if (!user || !orgId) {
+      throw new UnauthorizedException('User not found in context');
+    }
+    return this.wabaService.deleteWaba(user.id, orgId, wabaId);
   }
 }

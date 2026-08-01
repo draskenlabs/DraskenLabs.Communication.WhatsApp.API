@@ -215,4 +215,162 @@ export class WabaService {
       where: { userId_wabaId: { userId, wabaId } },
     });
   }
+
+  /**
+   * Erase one WhatsApp Business Account and everything the console holds about
+   * it. Irreversible, and the point: disconnecting deliberately keeps the
+   * record for audit, so this is how that record is finally discarded.
+   *
+   * Only the person who onboarded the account may do it — ownership is read
+   * from the Waba row rather than from a connection, because a disconnected
+   * account has no connection left to check.
+   *
+   * Never touches Meta's copy: the WhatsApp Business Account, its phone
+   * numbers and its approved templates all survive at Meta, and can be
+   * reconnected afterwards as if for the first time.
+   */
+  async deleteWaba(
+    userId: number,
+    ssoOrgId: string,
+    wabaId: string,
+  ): Promise<WabaDeletionCounts> {
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, ssoOrgId },
+    });
+    if (!waba) {
+      throw new NotFoundException('WABA not found in your organisation');
+    }
+    if (waba.userId !== userId) {
+      throw new ForbiddenException(
+        'Only the person who connected this account can delete it',
+      );
+    }
+
+    // Read before the rows go: afterwards there is nobody to write to, and no
+    // phone numbers left to name the cache entries.
+    const connections = await this.prisma.userWhatsapp.findMany({
+      where: { wabaId },
+      select: { userId: true },
+    });
+    const phoneNumbers = await this.prisma.wabaPhoneNumber.findMany({
+      where: { wabaId },
+      select: { phoneNumberId: true },
+    });
+    const recipientIds = [
+      ...new Set([waba.userId, ...connections.map((c) => c.userId)]),
+    ];
+
+    // Tell Meta to stop sending webhooks while a token still exists. A
+    // disconnected account has none, so Meta keeps the subscription until the
+    // app is removed in Business Manager — nothing we can do from here, and
+    // not a reason to refuse the delete.
+    if (connections.some((c) => c.userId === userId)) {
+      try {
+        await this.unsubscribeAppFromWaba(userId, wabaId);
+      } catch (err: unknown) {
+        const detail = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Could not unsubscribe from WABA ${wabaId}: ${detail}`,
+        );
+      }
+    }
+
+    const counts = await this.prisma.$transaction(async (tx) => {
+      const byWaba = { wabaId };
+
+      const templates = await tx.messageTemplate.deleteMany({ where: byWaba });
+      const inbound = await tx.inboundMessage.deleteMany({ where: byWaba });
+      const events = await tx.webhookEvent.deleteMany({ where: byWaba });
+
+      // Outbound messages carry a phone number, not a WABA, so they are found
+      // through the numbers this account owns.
+      const messages = phoneNumbers.length
+        ? await tx.message.deleteMany({
+            where: {
+              phoneNumberId: { in: phoneNumbers.map((p) => p.phoneNumberId) },
+            },
+          })
+        : { count: 0 };
+
+      const numbers = await tx.wabaPhoneNumber.deleteMany({ where: byWaba });
+      // Every member's connection, not just the caller's — theirs would
+      // otherwise hold the WABA in place by its foreign key.
+      const removedConnections = await tx.userWhatsapp.deleteMany({
+        where: byWaba,
+      });
+
+      await tx.waba.delete({ where: { wabaId } });
+
+      return {
+        phoneNumbers: numbers.count,
+        templates: templates.count,
+        messages: messages.count,
+        inboundMessages: inbound.count,
+        metaConnections: removedConnections.count,
+        webhookEvents: events.count,
+      };
+    });
+
+    // Caches outlive the rows, so a missed purge would keep routing messages
+    // for a number that no longer exists here. Best-effort: the data is gone
+    // either way.
+    try {
+      await Promise.all(
+        phoneNumbers.map((p) =>
+          this.redisService.invalidatePhoneCache(p.phoneNumberId),
+        ),
+      );
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Deleted WABA ${wabaId} but failed to purge phone caches: ${detail}`,
+      );
+    }
+
+    void this.mail.wabaDeleted(
+      recipientIds,
+      waba.name ?? wabaId,
+      wabaId,
+      counts,
+    );
+
+    this.logger.log(
+      `Deleted WABA ${wabaId} for user ${userId}: ${JSON.stringify(counts)}`,
+    );
+    return counts;
+  }
+
+  /**
+   * Ask Meta to stop sending webhooks for this WABA
+   * (`DELETE /{waba-id}/subscribed_apps`). Only possible while we still hold a
+   * token for it.
+   */
+  private async unsubscribeAppFromWaba(
+    userId: number,
+    wabaId: string,
+  ): Promise<void> {
+    const userWhatsapp = await this.prisma.userWhatsapp.findUnique({
+      where: { userId_wabaId: { userId, wabaId } },
+    });
+    if (!userWhatsapp) return;
+
+    const rawAccessToken = this.encryptionService.decrypt(
+      userWhatsapp.accessToken,
+    );
+    await axios.delete(
+      `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/subscribed_apps`,
+      { headers: { Authorization: `Bearer ${rawAccessToken}` } },
+    );
+    this.logger.log(`Unsubscribed app from WABA ${wabaId} webhooks`);
+  }
+}
+
+/** What a WABA deletion removed, for the response and the emailed receipt. */
+export interface WabaDeletionCounts {
+  phoneNumbers: number;
+  templates: number;
+  messages: number;
+  inboundMessages: number;
+  metaConnections: number;
+  webhookEvents: number;
 }

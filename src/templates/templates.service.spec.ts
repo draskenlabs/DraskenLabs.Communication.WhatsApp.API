@@ -437,5 +437,31 @@ describe('TemplatesService', () => {
       // No templates yet is a zero, not a missing block the console has to guess at.
       expect(result).toEqual({ total: 0, byStatus: {} });
     });
+
+    it('counts within a category, so the numbers match a list filtered the same way', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'w1' }]);
+      mockPrisma.messageTemplate.groupBy.mockResolvedValue([
+        { status: 'APPROVED', _count: { _all: 4 } },
+      ]);
+
+      await service.statusCounts('sso_org_1', undefined, 'MARKETING');
+
+      expect(mockPrisma.messageTemplate.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { wabaId: { in: ['w1'] }, category: 'MARKETING' },
+        }),
+      );
+    });
+
+    it('ignores a category it does not recognise rather than failing the count', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'w1' }]);
+      mockPrisma.messageTemplate.groupBy.mockResolvedValue([]);
+
+      await service.statusCounts('sso_org_1', undefined, 'NONSENSE');
+
+      expect(mockPrisma.messageTemplate.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { wabaId: { in: ['w1'] } } }),
+      );
+    });
   });
 });

@@ -62,6 +62,24 @@ export class AccountHandler {
         where: { displayPhoneNumber: display_phone_number },
         data: { qualityRating: current_limit ?? event },
       });
+
+      // The row above is overwritten on every change, so the history would be
+      // lost exactly when it becomes interesting — a drop to RED matters mostly
+      // for when it happened. Recorded as an event too.
+      const number = await this.prisma.wabaPhoneNumber.findFirst({
+        where: { displayPhoneNumber: display_phone_number },
+        select: { phoneNumberId: true, wabaId: true },
+      });
+      if (number) {
+        await this.prisma.phoneQualityEvent.create({
+          data: {
+            phoneNumberId: number.phoneNumberId,
+            wabaId: number.wabaId,
+            qualityRating: String(event ?? current_limit ?? 'UNKNOWN'),
+            limitTier: current_limit ? String(current_limit) : null,
+          },
+        });
+      }
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.error(

@@ -32,7 +32,13 @@ export class StatusUpdateHandler {
     try {
       const existing = await this.prisma.message.findUnique({
         where: { metaMessageId },
-        select: { id: true, status: true, userId: true, to: true },
+        select: {
+          id: true,
+          status: true,
+          userId: true,
+          to: true,
+          deliveredAt: true,
+        },
       });
 
       if (!existing) return;
@@ -40,15 +46,30 @@ export class StatusUpdateHandler {
       // Only advance status forward — never go read → delivered
       if (STATUS_ORDER[status] <= STATUS_ORDER[existing.status]) return;
 
+      const reason =
+        status === 'failed' ? this.failureReason(statusUpdate) : null;
+      const now = new Date();
+
       await this.prisma.message.update({
         where: { metaMessageId },
-        data: { status: status as MessageStatus },
+        data: {
+          status: status as MessageStatus,
+          // Stamped per status rather than relying on `updatedAt`, which only
+          // holds the most recent change — it cannot say when a message was
+          // delivered once it has also been read.
+          ...(status === 'delivered' && { deliveredAt: now }),
+          // A read implies a delivery Meta may never have reported separately.
+          ...(status === 'read' && {
+            readAt: now,
+            deliveredAt: existing.deliveredAt ?? now,
+          }),
+          ...(status === 'failed' && { failedAt: now, failureReason: reason }),
+        },
       });
 
       // Only a failure is worth interrupting someone for; sent/delivered/read
       // are the happy path and would be constant noise.
       if (status === 'failed') {
-        const reason = this.failureReason(statusUpdate);
         // Queued rather than mailed: a bad campaign can fail hundreds of
         // messages, and that must arrive as one email, not hundreds.
         void this.mail.queueFailedSend(existing.userId, {
