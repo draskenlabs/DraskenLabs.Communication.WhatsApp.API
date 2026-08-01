@@ -1,7 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -143,4 +145,75 @@ export class SendTestNotificationResultDto {
 
   @ApiProperty({ description: 'Devices that refused it' })
   failed: number;
+}
+
+/** One entry in the feed the console's bell shows. */
+export class NotificationDto {
+  @ApiProperty({ example: 41 })
+  id: number;
+
+  @ApiProperty({
+    enum: ['inboundMessage', 'templateStatus', 'messageFailed', 'system'],
+    example: 'inboundMessage',
+    description: 'What happened, matching the preference switches',
+  })
+  kind: string;
+
+  @ApiProperty({ example: 'Ada Lovelace' })
+  title: string;
+
+  @ApiProperty({ example: 'Is my order on the way?' })
+  body: string;
+
+  @ApiProperty({
+    type: String,
+    required: false,
+    nullable: true,
+    example: '/messages',
+    description: 'Where clicking it should land, relative to the console root',
+  })
+  link?: string | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    required: false,
+    nullable: true,
+    description: 'When it was read. Null means it still counts as unread.',
+  })
+  readAt?: Date | null;
+
+  @ApiProperty({ format: 'date-time', example: '2026-08-01T18:12:04.000Z' })
+  createdAt: Date;
+}
+
+export class UnreadCountDto {
+  @ApiProperty({
+    example: 3,
+    description: 'Unread notifications for the caller in this organisation',
+  })
+  unread: number;
+}
+
+/** Marking notifications read — specific ones, or the whole feed. */
+export class MarkNotificationsReadDto {
+  @ApiPropertyOptional({
+    type: [Number],
+    description:
+      'Notification ids to mark read. Omit to mark everything in this ' +
+      'organisation read.',
+    example: [41, 42],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  ids?: number[];
+}
+
+export class MarkNotificationsReadResultDto {
+  @ApiProperty({ description: 'How many rows changed from unread to read' })
+  updated: number;
+
+  @ApiProperty({ description: 'Unread notifications left after the call' })
+  unread: number;
 }

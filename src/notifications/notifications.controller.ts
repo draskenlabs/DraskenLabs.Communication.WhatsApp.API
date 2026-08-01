@@ -6,20 +6,32 @@ import {
   Get,
   Patch,
   Post,
+  Query,
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Request } from 'express';
 import { NotificationsService } from './notifications.service';
 import {
   DeleteDeviceTokenDto,
   DeviceTokenResultDto,
+  MarkNotificationsReadDto,
+  MarkNotificationsReadResultDto,
+  NotificationDto,
   NotificationPreferencesDto,
   RegisterDeviceTokenDto,
   SendTestNotificationResultDto,
+  UnreadCountDto,
   UpdateNotificationPreferencesDto,
 } from './dto/notification.dto';
+import { BaseResponse } from 'src/common/responses/base-response';
+import { PaginationMetaDto } from 'src/common/responses/swagger-response.dto';
 import {
   ApiStandardErrorResponses,
   ApiWrappedOkResponse,
@@ -83,6 +95,89 @@ export class NotificationsController {
       dto.token,
     );
     return { deviceCount };
+  }
+
+  @Get()
+  @ApiOperation({
+    summary: 'The notification feed for the current organisation',
+    description:
+      'Everything we would have pushed, whether or not a device took it — a ' +
+      'notification missed while the browser was closed is still here. Newest ' +
+      'first. The console shows the first few under the bell and the rest on ' +
+      'its notifications page.',
+  })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: '1-based page number (default 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Page size, 1–100 (default 20)',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: NotificationDto,
+    isArray: true,
+    metaDto: PaginationMetaDto,
+    description: 'A page of the feed',
+  })
+  @ApiStandardErrorResponses({ unauthorized: true })
+  list(
+    @Req() req: Request,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<BaseResponse<NotificationDto[]>> {
+    const { userId, orgId } = this.identify(req);
+    return this.notificationsService.list(userId, orgId, {
+      page: page !== undefined ? Number(page) : undefined,
+      limit: limit !== undefined ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('unread-count')
+  @ApiOperation({
+    summary: 'How many notifications are unread',
+    description:
+      'Just the number behind the bell, so the console can poll it without ' +
+      'pulling the whole feed.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: UnreadCountDto,
+    description: 'Unread notifications for this organisation',
+  })
+  @ApiStandardErrorResponses({ unauthorized: true })
+  async unreadCount(@Req() req: Request): Promise<UnreadCountDto> {
+    const { userId, orgId } = this.identify(req);
+    return {
+      unread: await this.notificationsService.unreadCount(userId, orgId),
+    };
+  }
+
+  @Post('read')
+  @ApiOperation({
+    summary: 'Mark notifications as read',
+    description:
+      'Pass `ids` to mark specific entries, or omit it to clear the whole ' +
+      'feed for this organisation.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: MarkNotificationsReadResultDto,
+    description: 'What changed, and what is left unread',
+  })
+  @ApiStandardErrorResponses({
+    unauthorized: true,
+    badRequest: true,
+    validation: true,
+  })
+  markRead(
+    @Req() req: Request,
+    @Body() dto: MarkNotificationsReadDto,
+  ): Promise<MarkNotificationsReadResultDto> {
+    const { userId, orgId } = this.identify(req);
+    return this.notificationsService.markRead(userId, orgId, dto.ids);
   }
 
   @Get('preferences')
