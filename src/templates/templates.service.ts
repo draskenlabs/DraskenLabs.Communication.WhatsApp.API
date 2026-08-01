@@ -72,7 +72,7 @@ export class TemplatesService {
       throw new NotFoundException('No connection found for this WABA');
 
     const waba = await this.prisma.waba.findFirst({
-      where: { wabaId, ssoOrgId },
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
     });
     if (!waba)
       throw new NotFoundException('WABA not found in your organisation');
@@ -165,7 +165,7 @@ export class TemplatesService {
       throw new NotFoundException('No connection found for this WABA');
 
     const waba = await this.prisma.waba.findFirst({
-      where: { wabaId, ssoOrgId },
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
     });
     if (!waba)
       throw new NotFoundException('WABA not found in your organisation');
@@ -714,10 +714,14 @@ export class TemplatesService {
       throw new NotFoundException('No connection found for this WABA');
 
     const waba = await this.prisma.waba.findFirst({
-      where: { wabaId, ssoOrgId },
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
     });
     if (!waba)
       throw new NotFoundException('WABA not found in your organisation');
+
+    // Everything routed through here edits templates at Meta on the account's
+    // behalf, which is what the subscription pays for.
+    await this.billing.requireAccess(wabaId);
 
     return {
       wabaId,
@@ -733,14 +737,14 @@ export class TemplatesService {
       // Verify the caller's org actually owns this WABA before scoping to it,
       // so a guessed wabaId can't read another organisation's templates.
       const waba = await this.prisma.waba.findFirst({
-        where: { wabaId, ssoOrgId },
+        where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
       });
       if (!waba)
         throw new NotFoundException('WABA not found in your organisation');
       return [wabaId];
     }
     const wabas = await this.prisma.waba.findMany({
-      where: { ssoOrgId },
+      where: { WabaOrganisation: { some: { ssoOrgId } } },
       select: { wabaId: true },
     });
     return wabas.map((w) => w.wabaId);

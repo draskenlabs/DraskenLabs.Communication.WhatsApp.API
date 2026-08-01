@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { BillingService } from 'src/billing/billing.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
 import axios from 'axios';
@@ -26,6 +27,7 @@ export class WabaPhoneNumberService {
     private readonly encryptionService: EncryptionService,
     private readonly redisService: RedisService,
     private readonly mail: MailNotifications,
+    private readonly billing: BillingService,
   ) {}
 
   /**
@@ -42,6 +44,10 @@ export class WabaPhoneNumberService {
   ): Promise<WabaPhoneNumber> {
     const waba = await this.prisma.waba.findFirst({ where: { userId, wabaId } });
     if (!waba) throw new NotFoundException('WABA not found');
+
+    // Registering a number puts the account on the Cloud API — the thing the
+    // subscription pays for, so it is gated like sending.
+    await this.billing.requireAccess(wabaId);
 
     const phone = await this.prisma.wabaPhoneNumber.findFirst({
       where: { phoneNumberId, wabaId },

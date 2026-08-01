@@ -53,18 +53,44 @@ model Waba {
   currency                 String?
   timezoneId               String?
   messageTemplateNamespace String?
+  /// Who connected it first, and into which organisation. Kept for audit and
+  /// for the delete check; membership is `WabaOrganisation`, not this.
   userId                   Int
   ssoOrgId                 String
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 
-  user            User              @relation(fields: [userId], references: [id])
-  UserWhatsapp    UserWhatsapp[]
-  WabaPhoneNumber WabaPhoneNumber[]
-  InboundMessage  InboundMessage[]
-  MessageTemplate MessageTemplate[]
-  UserApiKey      UserApiKey[]
-  Subscription    Subscription?
+  user             User               @relation(fields: [userId], references: [id])
+  UserWhatsapp     UserWhatsapp[]
+  WabaPhoneNumber  WabaPhoneNumber[]
+  InboundMessage   InboundMessage[]
+  MessageTemplate  MessageTemplate[]
+  UserApiKey       UserApiKey[]
+  Subscription     Subscription?
+  WabaOrganisation WabaOrganisation[]
+}
+
+/// Which organisations have connected a WhatsApp Business Account.
+///
+/// The account itself is Meta's and is shared — its name, currency and phone
+/// numbers are the same whoever looks. What is per organisation is the
+/// *connection*: whether this org has it, who connected it there, and by
+/// extension what that org may do with it. Before this table the Waba row was
+/// the connection, so a second organisation connecting the same account
+/// updated the first one's row instead of gaining its own.
+model WabaOrganisation {
+  id       Int    @id @default(autoincrement())
+  wabaId   String
+  ssoOrgId String
+  /// Who connected it for this organisation. Their token is the one used.
+  userId   Int
+
+  createdAt DateTime @default(now())
+
+  waba Waba @relation(fields: [wabaId], references: [wabaId], onDelete: Cascade)
+
+  @@unique([wabaId, ssoOrgId])
+  @@index([ssoOrgId])
 }
 
 model WabaPhoneNumber {

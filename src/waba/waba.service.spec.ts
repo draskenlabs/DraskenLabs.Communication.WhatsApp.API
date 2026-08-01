@@ -13,6 +13,12 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 const mockPrisma = {
   waba: { findFirst: jest.fn(), findMany: jest.fn(), findUnique: jest.fn(), upsert: jest.fn() },
+  wabaOrganisation: {
+    findUnique: jest.fn(),
+    upsert: jest.fn(),
+    deleteMany: jest.fn(),
+    count: jest.fn(),
+  },
   userWhatsapp: {
     findFirst: jest.fn(),
     findUnique: jest.fn(),
@@ -59,7 +65,9 @@ describe('WabaService', () => {
         { wabaId: 'w1', connected: true },
         { wabaId: 'w2', connected: false },
       ]);
-      expect(mockPrisma.waba.findMany).toHaveBeenCalledWith({ where: { ssoOrgId: 'sso_org_1' } });
+      expect(mockPrisma.waba.findMany).toHaveBeenCalledWith({
+        where: { WabaOrganisation: { some: { ssoOrgId: 'sso_org_1' } } },
+      });
       expect(mockPrisma.userWhatsapp.findMany).toHaveBeenCalledWith({
         where: { wabaId: { in: ['w1', 'w2'] }, userId: 7 },
         select: { wabaId: true },
@@ -91,41 +99,55 @@ describe('WabaService', () => {
     const data = { wabaId: 'w1', userId: 1, ssoOrgId: 'sso_org_1', name: 'Test' };
 
     it('creates a new WABA when none exists', async () => {
-      mockPrisma.waba.findUnique.mockResolvedValue(null);
+      mockPrisma.wabaOrganisation.findUnique.mockResolvedValue(null);
       mockPrisma.waba.upsert.mockResolvedValue({ ...data });
+      mockPrisma.wabaOrganisation.upsert.mockResolvedValue({});
+
       await expect(service.createOrUpdateWaba(data)).resolves.toEqual({ ...data });
       expect(mockPrisma.waba.upsert).toHaveBeenCalled();
+      expect(mockPrisma.wabaOrganisation.upsert).toHaveBeenCalled();
     });
 
     it('updates WABA when requester is the owner', async () => {
-      mockPrisma.waba.findUnique.mockResolvedValue({
+      mockPrisma.wabaOrganisation.findUnique.mockResolvedValue({
         wabaId: 'w1',
-        userId: 1,
         ssoOrgId: 'sso_org_1',
+        userId: 1,
       });
       mockPrisma.waba.upsert.mockResolvedValue({ ...data });
+      mockPrisma.wabaOrganisation.upsert.mockResolvedValue({});
+
       await expect(service.createOrUpdateWaba(data)).resolves.toBeDefined();
     });
 
-    it('refuses to connect an account already connected in another organisation', async () => {
-      // The row is unique on wabaId, so this used to update the other
-      // organisation's copy: the account appeared to reconnect over there and
-      // never arrived here.
-      mockPrisma.waba.findUnique.mockResolvedValue({
-        wabaId: 'w1',
-        userId: 1,
-        ssoOrgId: 'sso_org_other',
-      });
+    it('connects the same account into a second organisation', async () => {
+      // The account is Meta's and shared; what is per organisation is the
+      // membership. This used to update the other organisation's row instead.
+      mockPrisma.wabaOrganisation.findUnique.mockResolvedValue(null);
+      mockPrisma.waba.upsert.mockResolvedValue({ ...data, ssoOrgId: 'sso_org_first' });
+      mockPrisma.wabaOrganisation.upsert.mockResolvedValue({});
 
-      const { ConflictException } = await import('@nestjs/common');
-      await expect(service.createOrUpdateWaba(data)).rejects.toThrow(ConflictException);
-      expect(mockPrisma.waba.upsert).not.toHaveBeenCalled();
+      await expect(
+        service.createOrUpdateWaba({ ...data, ssoOrgId: 'sso_org_second' }),
+      ).resolves.toBeDefined();
+
+      expect(mockPrisma.wabaOrganisation.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ wabaId: 'w1', ssoOrgId: 'sso_org_second' }),
+        }),
+      );
     });
 
-    it('throws ForbiddenException when WABA belongs to another user', async () => {
-      mockPrisma.waba.findUnique.mockResolvedValue({ wabaId: 'w1', userId: 99 });
+    it('refuses when someone else in the same organisation connected it', async () => {
+      mockPrisma.wabaOrganisation.findUnique.mockResolvedValue({
+        wabaId: 'w1',
+        ssoOrgId: 'sso_org_1',
+        userId: 99,
+      });
+
       const { ForbiddenException } = await import('@nestjs/common');
       await expect(service.createOrUpdateWaba(data)).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.waba.upsert).not.toHaveBeenCalled();
     });
   });
 
@@ -154,8 +176,13 @@ describe('WabaService', () => {
 
       expect(mockRedis.invalidatePhoneCache).toHaveBeenCalledWith('p1');
       expect(mockRedis.invalidatePhoneCache).toHaveBeenCalledWith('p2');
+      expect(mockPrisma.$transaction).toHaveBeenCalled();
       expect(mockPrisma.userWhatsapp.delete).toHaveBeenCalledWith({
         where: { userId_wabaId: { userId: 1, wabaId: 'w1' } },
+      });
+      // The account leaves this organisation and stays in any other that has it.
+      expect(mockPrisma.wabaOrganisation.deleteMany).toHaveBeenCalledWith({
+        where: { wabaId: 'w1', ssoOrgId: 'sso_org_1' },
       });
     });
 
@@ -169,6 +196,22 @@ describe('WabaService', () => {
 
       expect(mockRedis.invalidatePhoneCache).not.toHaveBeenCalled();
       expect(mockPrisma.userWhatsapp.delete).toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteWaba while shared', () => {
+    it('refuses while another organisation still has the account', async () => {
+      // Phone numbers, templates and inbound messages belong to the account,
+      // not to one organisation's copy of it — erasing them would take the
+      // other organisation's data with them.
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1', userId: 1 });
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(2);
+
+      const { ConflictException } = await import('@nestjs/common');
+      await expect(service.deleteWaba(1, 'sso_org_1', 'w1')).rejects.toThrow(
+        ConflictException,
+      );
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
     });
   });
 
@@ -197,6 +240,8 @@ describe('WabaService', () => {
         userId: 1,
         name: 'OneManPlay Games',
       });
+      // The only organisation holding it: deleting is refused while shared.
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(1);
       mockPrisma.userWhatsapp.findMany.mockResolvedValue([{ userId: 1 }]);
       mockPrisma.userWhatsapp.findUnique.mockResolvedValue({
         accessToken: 'enc',

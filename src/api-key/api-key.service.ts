@@ -19,7 +19,7 @@ export class ApiKeyService {
     // The WABA is checked against the caller's organisation, not merely for
     // existence: an id from another org would otherwise mint a key into it.
     const waba = await this.prisma.waba.findFirst({
-      where: { wabaId: dto.wabaId, ssoOrgId },
+      where: { wabaId: dto.wabaId, WabaOrganisation: { some: { ssoOrgId } } },
       select: { wabaId: true },
     });
 

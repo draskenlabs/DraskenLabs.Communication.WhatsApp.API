@@ -244,7 +244,7 @@ export class SearchService {
   /** Account name or WABA ID. */
   private async wabas({ ssoOrgId, q, limit }: Scope): Promise<SearchGroupDto> {
     const where: Prisma.WabaWhereInput = {
-      ssoOrgId,
+      WabaOrganisation: { some: { ssoOrgId } },
       OR: [{ name: like(q) }, { wabaId: like(q) }],
     };
 
@@ -299,7 +299,7 @@ export class SearchService {
 
   private async orgWabaIds(ssoOrgId: string): Promise<string[]> {
     const rows = await this.prisma.waba.findMany({
-      where: { ssoOrgId },
+      where: { WabaOrganisation: { some: { ssoOrgId } } },
       select: { wabaId: true },
     });
     return rows.map((w) => w.wabaId);

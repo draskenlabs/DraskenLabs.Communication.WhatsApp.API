@@ -67,7 +67,7 @@ export class BillingService {
   /** The WABA, if it belongs to the caller's organisation. */
   private async ownedWaba(ssoOrgId: string, wabaId: string) {
     const waba = await this.prisma.waba.findFirst({
-      where: { wabaId, ssoOrgId },
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
       select: { wabaId: true, name: true },
     });
     if (!waba) {
@@ -110,7 +110,7 @@ export class BillingService {
   async listStates(ssoOrgId: string): Promise<SubscriptionStateDto[]> {
     const [wabas, subs] = await Promise.all([
       this.prisma.waba.findMany({
-        where: { ssoOrgId },
+        where: { WabaOrganisation: { some: { ssoOrgId } } },
         select: { wabaId: true, name: true },
         orderBy: { createdAt: 'asc' },
       }),
