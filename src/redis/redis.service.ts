@@ -137,18 +137,39 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(`phone:${phoneNumberId}`);
   }
 
-  // API Key Cache — apiKey:{accessKey} → { userId, ssoOrgId, secretKey: encrypted }
-  async setApiKeyCache(accessKey: string, userId: number, ssoOrgId: string, encryptedSecretKey: string): Promise<void> {
+  // API Key Cache — apiKey:{accessKey} → { userId, ssoOrgId, wabaId, secretKey: encrypted }
+  async setApiKeyCache(
+    accessKey: string,
+    userId: number,
+    ssoOrgId: string,
+    encryptedSecretKey: string,
+    wabaId: string | null,
+  ): Promise<void> {
     await this.client.set(
       `apiKey:${accessKey}`,
-      JSON.stringify({ userId, ssoOrgId, secretKey: encryptedSecretKey }),
+      JSON.stringify({ userId, ssoOrgId, wabaId, secretKey: encryptedSecretKey }),
     );
   }
 
-  async getApiKeyCache(accessKey: string): Promise<{ userId: number; ssoOrgId: string; secretKey: string } | null> {
+  async getApiKeyCache(
+    accessKey: string,
+  ): Promise<{ userId: number; ssoOrgId: string; wabaId: string | null; secretKey: string } | null> {
     const raw = await this.client.get(`apiKey:${accessKey}`);
     if (!raw) return null;
-    return JSON.parse(raw);
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+
+    // These entries are written without a TTL, so a cache filled before keys
+    // carried a WABA would otherwise survive the deploy and authenticate
+    // unscoped. A missing field means "stale" — the caller re-reads the row.
+    if (!('wabaId' in parsed)) return null;
+
+    return parsed as unknown as {
+      userId: number;
+      ssoOrgId: string;
+      wabaId: string | null;
+      secretKey: string;
+    };
   }
 
   async deleteApiKeyCache(accessKey: string): Promise<void> {

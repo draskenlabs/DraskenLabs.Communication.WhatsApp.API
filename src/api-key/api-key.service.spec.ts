@@ -14,6 +14,7 @@ const mockPrisma = {
     findUnique: jest.fn(),
     update: jest.fn(),
   },
+  waba: { findFirst: jest.fn() },
 };
 
 const mockEncryption = { encrypt: jest.fn().mockReturnValue('enc_secret'), decrypt: jest.fn() };
@@ -39,20 +40,60 @@ describe('ApiKeyService', () => {
   });
 
   describe('createApiKey', () => {
+    const dto = { label: 'Test Key', wabaId: 'waba_1' } as any;
+
     it('creates a key, encrypts secret, caches in Redis', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1' });
       mockPrisma.userApiKey.create.mockResolvedValue({});
 
-      const result = await service.createApiKey(1, 'sso_org_1', { name: 'Test Key' } as any);
+      const result = await service.createApiKey(1, 'sso_org_1', dto);
 
       expect(result.accessKey).toMatch(/^ak_/);
       expect(result.secretKey).toMatch(/^sk_/);
+      expect(result.wabaId).toBe('waba_1');
       expect(mockEncryption.encrypt).toHaveBeenCalled();
       expect(mockPrisma.userApiKey.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ userId: 1, ssoOrgId: 'sso_org_1' }) }),
+        expect.objectContaining({
+          data: expect.objectContaining({ userId: 1, ssoOrgId: 'sso_org_1', wabaId: 'waba_1' }),
+        }),
       );
       expect(mockRedis.setApiKeyCache).toHaveBeenCalledWith(
-        expect.stringMatching(/^ak_/), 1, 'sso_org_1', 'enc_secret',
+        expect.stringMatching(/^ak_/), 1, 'sso_org_1', 'enc_secret', 'waba_1',
       );
+    });
+
+    it('refuses a WABA the organisation does not own', async () => {
+      // Scoped by org as well as id — otherwise a known id from another
+      // organisation would mint a key into it.
+      mockPrisma.waba.findFirst.mockResolvedValue(null);
+
+      await expect(service.createApiKey(1, 'sso_org_1', dto)).rejects.toThrow(NotFoundException);
+      expect(mockPrisma.userApiKey.create).not.toHaveBeenCalled();
+      expect(mockRedis.setApiKeyCache).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findAllByOrgId', () => {
+    it('lists keys with the name of the account each one acts on', async () => {
+      mockPrisma.userApiKey.findMany.mockResolvedValue([
+        {
+          id: 1, accessKey: 'ak_a', wabaId: 'waba_1', status: true,
+          createdAt: new Date('2026-08-01'), waba: { name: 'OneManPlay Games' },
+        },
+        // A key whose WABA was deleted: still listed, no name to show.
+        {
+          id: 2, accessKey: 'ak_b', wabaId: null, status: true,
+          createdAt: new Date('2026-08-01'), waba: null,
+        },
+      ]);
+
+      const keys = await service.findAllByOrgId('sso_org_1');
+
+      expect(keys[0]).toEqual(
+        expect.objectContaining({ wabaId: 'waba_1', wabaName: 'OneManPlay Games' }),
+      );
+      expect(keys[1]).toEqual(expect.objectContaining({ wabaId: null, wabaName: null }));
+      expect(keys[0]).not.toHaveProperty('waba');
     });
   });
 

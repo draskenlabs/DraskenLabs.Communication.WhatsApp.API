@@ -16,28 +16,56 @@ export class ApiKeyService {
   ) {}
 
   async createApiKey(userId: number, ssoOrgId: string, dto: CreateApiKeyDto): Promise<ApiKeyResponseDto> {
+    // The WABA is checked against the caller's organisation, not merely for
+    // existence: an id from another org would otherwise mint a key into it.
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId: dto.wabaId, ssoOrgId },
+      select: { wabaId: true },
+    });
+
+    if (!waba) {
+      throw new NotFoundException(`WABA ${dto.wabaId} not found in this organisation`);
+    }
+
     const accessKey = `ak_${crypto.randomBytes(12).toString('hex')}`;
     const secretKey = `sk_${crypto.randomBytes(24).toString('hex')}`;
     const encryptedSecretKey = this.encryptionService.encrypt(secretKey);
 
     await this.prisma.userApiKey.create({
-      data: { userId, ssoOrgId, accessKey, secretKey: encryptedSecretKey },
+      data: { userId, ssoOrgId, accessKey, secretKey: encryptedSecretKey, wabaId: waba.wabaId },
     });
 
-    await this.redisService.setApiKeyCache(accessKey, userId, ssoOrgId, encryptedSecretKey);
+    await this.redisService.setApiKeyCache(
+      accessKey,
+      userId,
+      ssoOrgId,
+      encryptedSecretKey,
+      waba.wabaId,
+    );
 
     // The secret is shown once in the console and never emailed; this is the
     // alert that catches a key somebody else created.
     void this.mail.apiKeyCreated(userId, accessKey);
 
-    return { accessKey, secretKey };
+    return { accessKey, secretKey, wabaId: waba.wabaId };
   }
 
   async findAllByOrgId(ssoOrgId: string) {
-    return this.prisma.userApiKey.findMany({
+    const keys = await this.prisma.userApiKey.findMany({
       where: { ssoOrgId },
-      select: { id: true, accessKey: true, status: true, createdAt: true },
+      select: {
+        id: true,
+        accessKey: true,
+        wabaId: true,
+        status: true,
+        createdAt: true,
+        waba: { select: { name: true } },
+      },
     });
+
+    // The account's name rather than its id: a list of numeric WABA ids tells
+    // the reader nothing about which key belongs where.
+    return keys.map(({ waba, ...key }) => ({ ...key, wabaName: waba?.name ?? null }));
   }
 
   async revokeApiKey(userId: number, keyId: number): Promise<void> {
