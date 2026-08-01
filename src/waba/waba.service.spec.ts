@@ -13,7 +13,12 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 const mockPrisma = {
   waba: { findFirst: jest.fn(), findMany: jest.fn(), findUnique: jest.fn(), upsert: jest.fn() },
-  userWhatsapp: { findFirst: jest.fn(), findUnique: jest.fn(), delete: jest.fn() },
+  userWhatsapp: {
+    findFirst: jest.fn(),
+    findUnique: jest.fn(),
+    findMany: jest.fn(),
+    delete: jest.fn(),
+  },
   wabaPhoneNumber: { findMany: jest.fn() },
 };
 
@@ -40,11 +45,30 @@ describe('WabaService', () => {
   });
 
   describe('findAllByOrgId', () => {
-    it('returns all WABAs for an org', async () => {
-      const wabas = [{ wabaId: 'w1' }, { wabaId: 'w2' }];
-      mockPrisma.waba.findMany.mockResolvedValue(wabas);
-      await expect(service.findAllByOrgId('sso_org_1')).resolves.toEqual(wabas);
+    it('flags which WABAs the caller still has a connection to', async () => {
+      // A disconnect keeps the WABA row for audit, so "listed" and "usable"
+      // are different things — the console needs to be able to tell them apart.
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'w1' },
+        { wabaId: 'w2' },
+      ]);
+      mockPrisma.userWhatsapp.findMany.mockResolvedValue([{ wabaId: 'w1' }]);
+
+      await expect(service.findAllByOrgId('sso_org_1', 7)).resolves.toEqual([
+        { wabaId: 'w1', connected: true },
+        { wabaId: 'w2', connected: false },
+      ]);
       expect(mockPrisma.waba.findMany).toHaveBeenCalledWith({ where: { ssoOrgId: 'sso_org_1' } });
+      expect(mockPrisma.userWhatsapp.findMany).toHaveBeenCalledWith({
+        where: { wabaId: { in: ['w1', 'w2'] }, userId: 7 },
+        select: { wabaId: true },
+      });
+    });
+
+    it('does not query connections when the org has no WABAs', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([]);
+      await expect(service.findAllByOrgId('sso_org_1', 7)).resolves.toEqual([]);
+      expect(mockPrisma.userWhatsapp.findMany).not.toHaveBeenCalled();
     });
   });
 

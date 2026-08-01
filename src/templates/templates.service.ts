@@ -11,7 +11,7 @@ import { MailNotifications } from 'src/mail/mail.notifications';
 import {
   isMetaAuthFailure,
   metaErrorMessage,
-} from 'src/mail/meta-auth-failure';
+} from 'src/common/utils/meta-error';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { BaseResponse } from 'src/common/responses/base-response';
 import { normalizeRejectedReason } from 'src/common/utils/rejected-reason';
@@ -79,16 +79,30 @@ export class TemplatesService {
       userWhatsapp.accessToken,
     );
 
-    const response = await axios.get(
-      `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/message_templates`,
-      {
-        params: {
-          fields: 'id,name,language,status,category,components,rejected_reason',
-          limit: 200,
+    let response: { data?: { data?: any[] } };
+    try {
+      response = await axios.get(
+        `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/message_templates`,
+        {
+          params: {
+            fields: 'id,name,language,status,category,components,rejected_reason',
+            limit: 200,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
         },
-        headers: { Authorization: `Bearer ${accessToken}` },
-      },
-    );
+      );
+    } catch (err: unknown) {
+      // Unwrapped, a revoked token or an unknown WABA reached the console as a
+      // bare 500 saying only "Unexpected server error".
+      const metaMessage = this.logMetaError(
+        `Meta template sync failed for WABA ${wabaId}`,
+        err,
+        wabaId,
+      );
+      throw new BadRequestException(
+        metaMessage || 'Could not read templates from Meta.',
+      );
+    }
 
     const templates: any[] = response.data?.data ?? [];
     let synced = 0;

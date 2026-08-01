@@ -28,9 +28,15 @@ export class WabaController {
     description: 'List all WABAs',
   })
   async findAll(@Req() req: Request): Promise<WabaResponseDto[]> {
-    const orgId = (req as any).orgId;
-    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
-    return this.wabaService.findAllByOrgId(orgId);
+    const { user, orgId } = req as Request & {
+      user?: { id: number };
+      orgId?: string;
+    };
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
+    // Scoped to the caller: "connected" means *this* user holds a token, which
+    // is what decides whether sync and send will work for them.
+    return this.wabaService.findAllByOrgId(orgId, user?.id);
   }
 
   @Get('/:wabaId')
@@ -87,7 +93,9 @@ export class WabaController {
     // WABAs start receiving delivery/read statuses without re-onboarding.
     await this.wabaService.subscribeExistingWaba(user.id, wabaId);
 
-    return waba;
+    // Reaching here means the caller's token worked, so the account is
+    // connected by definition.
+    return { ...waba, connected: true };
   }
 
   @Delete('/:wabaId/connect')

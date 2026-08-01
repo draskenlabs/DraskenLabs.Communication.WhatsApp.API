@@ -9,6 +9,12 @@ import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
 import axios from 'axios';
 import { WabaPhoneNumber } from '@prisma/client';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import {
+  isMetaAuthFailure,
+  metaErrorMessage,
+  metaFailureMessage,
+} from 'src/common/utils/meta-error';
 
 @Injectable()
 export class WabaPhoneNumberService {
@@ -19,6 +25,7 @@ export class WabaPhoneNumberService {
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
     private readonly redisService: RedisService,
+    private readonly mail: MailNotifications,
   ) {}
 
   /**
@@ -100,15 +107,30 @@ export class WabaPhoneNumberService {
 
   // Fetches phone numbers from Meta and upserts them into the DB.
   private async fetchAndUpsert(wabaId: string, rawAccessToken: string): Promise<WabaPhoneNumber[]> {
-    const response = await axios.get(
-      `https://graph.facebook.com/v25.0/${wabaId}/phone_numbers`,
-      {
-        params: {
-          fields: 'id,verified_name,code_verification_status,display_phone_number,quality_rating,platform_type,throughput,last_onboarded_time',
+    let response: { data?: { data?: any[] } };
+    try {
+      response = await axios.get(
+        `https://graph.facebook.com/v25.0/${wabaId}/phone_numbers`,
+        {
+          params: {
+            fields: 'id,verified_name,code_verification_status,display_phone_number,quality_rating,platform_type,throughput,last_onboarded_time',
+          },
+          headers: { Authorization: `Bearer ${rawAccessToken}` },
         },
-        headers: { Authorization: `Bearer ${rawAccessToken}` },
-      },
-    );
+      );
+    } catch (err: unknown) {
+      // A revoked token or a WABA Meta no longer recognises would otherwise
+      // reach the console as a bare 500 with nothing to act on.
+      const message = metaFailureMessage(
+        err,
+        'Could not read phone numbers from Meta.',
+      );
+      this.logger.warn(`Meta phone-number sync failed for ${wabaId}: ${message}`);
+      if (isMetaAuthFailure(err)) {
+        void this.mail.metaTokenRejected(wabaId, metaErrorMessage(err));
+      }
+      throw new BadRequestException(message);
+    }
 
     const synced: WabaPhoneNumber[] = [];
     const keepIds: string[] = [];

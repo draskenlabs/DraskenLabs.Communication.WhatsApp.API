@@ -41,6 +41,15 @@ export class WabaResponseDto {
 
   @ApiProperty({ example: '2026-04-23T21:18:54.420Z' })
   createdAt: Date;
+
+  @ApiProperty({
+    description:
+      'Whether the caller still holds a Meta access token for this account. ' +
+      'The record survives a disconnect for audit, so a listed WABA is not ' +
+      'necessarily one we can act on — syncing or sending needs a connection.',
+    example: true,
+  })
+  connected: boolean;
 }
 
 export class MetaWabaDetailsDto {
