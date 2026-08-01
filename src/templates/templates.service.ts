@@ -10,9 +10,21 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { BaseResponse } from 'src/common/responses/base-response';
 import { normalizeRejectedReason } from 'src/common/utils/rejected-reason';
-import { TemplateResponseDto, TemplateSyncResponseDto } from './dto/template.dto';
+import {
+  TemplateResponseDto,
+  TemplateSyncResponseDto,
+} from './dto/template.dto';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
+import {
+  CreateFromLibraryDto,
+  LibraryTemplateDto,
+  ListTemplateLibraryDto,
+} from './dto/template-library.dto';
+import {
+  MigrateTemplatesDto,
+  MigrateTemplatesResultDto,
+} from './dto/template-migration.dto';
 
 /** Options for {@link TemplatesService.findAll}. */
 export interface FindTemplatesOptions {
@@ -39,21 +51,34 @@ export class TemplatesService {
     private readonly encryptionService: EncryptionService,
   ) {}
 
-  async syncTemplates(userId: number, ssoOrgId: string, wabaId: string): Promise<TemplateSyncResponseDto> {
+  async syncTemplates(
+    userId: number,
+    ssoOrgId: string,
+    wabaId: string,
+  ): Promise<TemplateSyncResponseDto> {
     const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
       where: { userId, wabaId },
     });
-    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+    if (!userWhatsapp)
+      throw new NotFoundException('No connection found for this WABA');
 
-    const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
-    if (!waba) throw new NotFoundException('WABA not found in your organisation');
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, ssoOrgId },
+    });
+    if (!waba)
+      throw new NotFoundException('WABA not found in your organisation');
 
-    const accessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
+    const accessToken = this.encryptionService.decrypt(
+      userWhatsapp.accessToken,
+    );
 
     const response = await axios.get(
       `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/message_templates`,
       {
-        params: { fields: 'id,name,language,status,category,components,rejected_reason', limit: 200 },
+        params: {
+          fields: 'id,name,language,status,category,components,rejected_reason',
+          limit: 200,
+        },
         headers: { Authorization: `Bearer ${accessToken}` },
       },
     );
@@ -64,7 +89,13 @@ export class TemplatesService {
     for (const t of templates) {
       try {
         await this.prisma.messageTemplate.upsert({
-          where: { wabaId_name_language: { wabaId, name: t.name, language: t.language } },
+          where: {
+            wabaId_name_language: {
+              wabaId,
+              name: t.name,
+              language: t.language,
+            },
+          },
           create: {
             metaTemplateId: String(t.id),
             wabaId,
@@ -85,7 +116,9 @@ export class TemplatesService {
         });
         synced++;
       } catch (err: any) {
-        this.logger.warn(`Failed to upsert template ${t.name}/${t.language}: ${err.message}`);
+        this.logger.warn(
+          `Failed to upsert template ${t.name}/${t.language}: ${err.message}`,
+        );
       }
     }
 
@@ -101,12 +134,18 @@ export class TemplatesService {
     const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
       where: { userId, wabaId },
     });
-    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+    if (!userWhatsapp)
+      throw new NotFoundException('No connection found for this WABA');
 
-    const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
-    if (!waba) throw new NotFoundException('WABA not found in your organisation');
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, ssoOrgId },
+    });
+    if (!waba)
+      throw new NotFoundException('WABA not found in your organisation');
 
-    const accessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
+    const accessToken = this.encryptionService.decrypt(
+      userWhatsapp.accessToken,
+    );
 
     const payload: Record<string, unknown> = {
       name: dto.name,
@@ -121,7 +160,12 @@ export class TemplatesService {
       const response = await axios.post(
         `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/message_templates`,
         payload,
-        { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } },
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
       );
       metaData = response.data;
     } catch (err: any) {
@@ -133,7 +177,13 @@ export class TemplatesService {
     }
 
     const template = await this.prisma.messageTemplate.upsert({
-      where: { wabaId_name_language: { wabaId, name: dto.name, language: dto.language } },
+      where: {
+        wabaId_name_language: {
+          wabaId,
+          name: dto.name,
+          language: dto.language,
+        },
+      },
       create: {
         metaTemplateId: String(metaData.id),
         wabaId,
@@ -154,6 +204,266 @@ export class TemplatesService {
     });
 
     return this.toDto(template);
+  }
+
+  /**
+   * Browse Meta's Template Library — pre-written utility templates a business
+   * can adopt instead of drafting one and waiting on review.
+   *
+   * The library is a global Meta catalogue rather than something we hold, so
+   * this proxies straight through; the WABA is only here to resolve which
+   * access token to call with, and to prove the caller owns it.
+   */
+  async listLibrary(
+    userId: number,
+    ssoOrgId: string,
+    wabaId: string,
+    filters: ListTemplateLibraryDto,
+  ): Promise<LibraryTemplateDto[]> {
+    const { accessToken } = await this.resolveWabaContext(
+      userId,
+      ssoOrgId,
+      wabaId,
+    );
+
+    const params: Record<string, string> = { limit: '100' };
+    if (filters.search) params.search = filters.search;
+    if (filters.topic) params.topic = filters.topic;
+    if (filters.usecase) params.usecase = filters.usecase;
+    if (filters.industry) params.industry = filters.industry;
+    if (filters.language) params.language = filters.language;
+
+    try {
+      const response = await axios.get(
+        `https://graph.facebook.com/${this.metaApiVersion}/message_template_library`,
+        { params, headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      const rows: unknown[] = Array.isArray(response.data?.data)
+        ? response.data.data
+        : [];
+      return rows.map((row) => this.toLibraryDto(row));
+    } catch (err: unknown) {
+      const metaMessage = this.logMetaError(
+        'Meta template library lookup failed',
+        err,
+      );
+      throw new BadRequestException(
+        metaMessage || 'Failed to load the template library',
+      );
+    }
+  }
+
+  /**
+   * Adopt a library template into the caller's WABA.
+   *
+   * Meta copies the fixed content itself — we send the library name and only
+   * the inputs it asks for (a phone number to call, a URL to open), never the
+   * body, which cannot be edited. Library templates are always UTILITY.
+   */
+  async createFromLibrary(
+    userId: number,
+    ssoOrgId: string,
+    wabaId: string,
+    dto: CreateFromLibraryDto,
+  ): Promise<TemplateResponseDto> {
+    const { accessToken } = await this.resolveWabaContext(
+      userId,
+      ssoOrgId,
+      wabaId,
+    );
+
+    const payload: Record<string, unknown> = {
+      name: dto.name,
+      language: dto.language,
+      category: 'UTILITY',
+      library_template_name: dto.libraryTemplateName,
+    };
+    // Meta expects these as JSON-encoded strings on this endpoint, not objects.
+    if (dto.libraryTemplateButtonInputs?.length) {
+      payload.library_template_button_inputs = JSON.stringify(
+        dto.libraryTemplateButtonInputs,
+      );
+    }
+    if (
+      dto.libraryTemplateBodyInputs &&
+      Object.keys(dto.libraryTemplateBodyInputs).length > 0
+    ) {
+      payload.library_template_body_inputs = JSON.stringify(
+        dto.libraryTemplateBodyInputs,
+      );
+    }
+
+    let metaData: { id: string | number; status?: string; category?: string };
+    try {
+      const response = await axios.post(
+        `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/message_templates`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      metaData = response.data;
+    } catch (err: unknown) {
+      const metaMessage = this.logMetaError(
+        `Meta library template adoption failed for ${dto.libraryTemplateName} on WABA ${wabaId}`,
+        err,
+      );
+      throw new BadRequestException(
+        metaMessage || 'Failed to create template from the library',
+      );
+    }
+
+    const template = await this.prisma.messageTemplate.upsert({
+      where: {
+        wabaId_name_language: {
+          wabaId,
+          name: dto.name,
+          language: dto.language,
+        },
+      },
+      create: {
+        metaTemplateId: String(metaData.id),
+        wabaId,
+        name: dto.name,
+        language: dto.language,
+        category: this.mapCategory(metaData.category ?? 'UTILITY'),
+        status: this.mapStatus(metaData.status ?? 'PENDING'),
+        // Meta owns the components for a library template; they arrive on the
+        // next sync rather than being invented here.
+        components: [],
+        rejectedReason: null,
+      },
+      update: {
+        metaTemplateId: String(metaData.id),
+        category: this.mapCategory(metaData.category ?? 'UTILITY'),
+        status: this.mapStatus(metaData.status ?? 'PENDING'),
+        rejectedReason: null,
+      },
+    });
+
+    return this.toDto(template);
+  }
+
+  /**
+   * Copy approved templates from one WABA to another.
+   *
+   * Meta does the copying — this asks the destination WABA to pull from the
+   * source, so the caller must own both. Only APPROVED templates with a GREEN
+   * or UNKNOWN quality score are eligible; anything else comes back in
+   * `failed_templates` with Meta's reason, which is passed through unchanged
+   * rather than summarised, because the reason is the whole answer.
+   *
+   * The copies are then synced locally so they appear without waiting for a
+   * webhook.
+   */
+  async migrateTemplates(
+    userId: number,
+    ssoOrgId: string,
+    destinationWabaId: string,
+    dto: MigrateTemplatesDto,
+  ): Promise<MigrateTemplatesResultDto> {
+    if (dto.sourceWabaId === destinationWabaId) {
+      throw new BadRequestException(
+        'Source and destination must be different WABAs',
+      );
+    }
+
+    const { accessToken } = await this.resolveWabaContext(
+      userId,
+      ssoOrgId,
+      destinationWabaId,
+    );
+    // Ownership of the source matters too — otherwise this would copy another
+    // organisation's templates into the caller's account.
+    await this.resolveWabaContext(userId, ssoOrgId, dto.sourceWabaId);
+
+    const payload: Record<string, unknown> = {
+      source_waba_id: dto.sourceWabaId,
+    };
+    if (dto.pageNumber !== undefined) payload.page_number = dto.pageNumber;
+    if (dto.count !== undefined) payload.count = dto.count;
+    if (dto.templateIds?.length) payload.template_ids = dto.templateIds;
+
+    let data: Record<string, unknown>;
+    try {
+      const response = await axios.post(
+        `https://graph.facebook.com/${this.metaApiVersion}/${destinationWabaId}/migrate_message_templates`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      data = (response.data ?? {}) as Record<string, unknown>;
+    } catch (err: unknown) {
+      const metaMessage = this.logMetaError(
+        `Meta template migration failed from ${dto.sourceWabaId} to ${destinationWabaId}`,
+        err,
+      );
+      throw new BadRequestException(
+        metaMessage || 'Failed to migrate templates',
+      );
+    }
+
+    const migratedTemplates = Array.isArray(data.migrated_templates)
+      ? data.migrated_templates.map((id) => String(id))
+      : [];
+    const failedTemplates =
+      typeof data.failed_templates === 'object' &&
+      data.failed_templates !== null
+        ? (data.failed_templates as Record<string, string>)
+        : {};
+
+    // Pull the copies in so the destination's list is right immediately; a
+    // failure here must not make a successful migration look like it failed.
+    if (migratedTemplates.length > 0) {
+      try {
+        await this.syncTemplates(userId, ssoOrgId, destinationWabaId);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Migrated ${migratedTemplates.length} templates to ${destinationWabaId} but the follow-up sync failed: ${message}`,
+        );
+      }
+    }
+
+    return {
+      migratedTemplates,
+      failedTemplates,
+      migratedCount: migratedTemplates.length,
+      failedCount: Object.keys(failedTemplates).length,
+    };
+  }
+
+  /** Maps one library row, tolerating fields Meta omits. */
+  private toLibraryDto(row: unknown): LibraryTemplateDto {
+    const r = (row ?? {}) as Record<string, unknown>;
+    const strings = (value: unknown): string[] | undefined =>
+      Array.isArray(value)
+        ? value.filter((v): v is string => typeof v === 'string')
+        : undefined;
+
+    return {
+      id: String(r.id ?? ''),
+      name: typeof r.name === 'string' ? r.name : '',
+      language: typeof r.language === 'string' ? r.language : '',
+      category: typeof r.category === 'string' ? r.category : 'UTILITY',
+      topic: typeof r.topic === 'string' ? r.topic : undefined,
+      usecase: typeof r.usecase === 'string' ? r.usecase : undefined,
+      industry: strings(r.industry),
+      header: typeof r.header === 'string' ? r.header : undefined,
+      body: typeof r.body === 'string' ? r.body : '',
+      bodyParams: strings(r.body_params),
+      bodyParamTypes: strings(r.body_param_types),
+      buttons: Array.isArray(r.buttons)
+        ? (r.buttons as Record<string, unknown>[])
+        : undefined,
+    };
   }
 
   async findAll(
@@ -183,7 +493,13 @@ export class TemplatesService {
         this.prisma.messageTemplate.count({ where }),
       ]);
       const totalPages = Math.ceil(total / limit);
-      return BaseResponse.paginate(rows.map(this.toDto), total, totalPages, page, limit);
+      return BaseResponse.paginate(
+        rows.map(this.toDto),
+        total,
+        totalPages,
+        page,
+        limit,
+      );
     }
 
     const rows = await this.prisma.messageTemplate.findMany({
@@ -194,10 +510,14 @@ export class TemplatesService {
   }
 
   async findOne(ssoOrgId: string, id: number): Promise<TemplateResponseDto> {
-    const template = await this.prisma.messageTemplate.findUnique({ where: { id } });
+    const template = await this.prisma.messageTemplate.findUnique({
+      where: { id },
+    });
     if (!template) throw new NotFoundException('Template not found');
 
-    const waba = await this.prisma.waba.findFirst({ where: { wabaId: template.wabaId, ssoOrgId } });
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId: template.wabaId, ssoOrgId },
+    });
     if (!waba) throw new NotFoundException('Template not found');
 
     return this.toDto(template);
@@ -209,10 +529,16 @@ export class TemplatesService {
     id: number,
     dto: UpdateTemplateDto,
   ): Promise<TemplateResponseDto> {
-    const template = await this.prisma.messageTemplate.findUnique({ where: { id } });
+    const template = await this.prisma.messageTemplate.findUnique({
+      where: { id },
+    });
     if (!template) throw new NotFoundException('Template not found');
 
-    const { accessToken } = await this.resolveWabaContext(userId, ssoOrgId, template.wabaId);
+    const { accessToken } = await this.resolveWabaContext(
+      userId,
+      ssoOrgId,
+      template.wabaId,
+    );
 
     const payload: Record<string, unknown> = {};
     if (dto.category !== undefined) payload.category = dto.category;
@@ -226,7 +552,12 @@ export class TemplatesService {
       await axios.post(
         `https://graph.facebook.com/${this.metaApiVersion}/${template.metaTemplateId}`,
         payload,
-        { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } },
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
       );
     } catch (err: any) {
       const metaMessage = this.logMetaError(
@@ -240,18 +571,30 @@ export class TemplatesService {
       where: { id },
       data: {
         ...(dto.category !== undefined && { category: dto.category }),
-        ...(dto.components !== undefined && { components: dto.components as any }),
+        ...(dto.components !== undefined && {
+          components: dto.components as any,
+        }),
       },
     });
 
     return this.toDto(updated);
   }
 
-  async deleteTemplate(userId: number, ssoOrgId: string, id: number): Promise<void> {
-    const template = await this.prisma.messageTemplate.findUnique({ where: { id } });
+  async deleteTemplate(
+    userId: number,
+    ssoOrgId: string,
+    id: number,
+  ): Promise<void> {
+    const template = await this.prisma.messageTemplate.findUnique({
+      where: { id },
+    });
     if (!template) throw new NotFoundException('Template not found');
 
-    const { accessToken } = await this.resolveWabaContext(userId, ssoOrgId, template.wabaId);
+    const { accessToken } = await this.resolveWabaContext(
+      userId,
+      ssoOrgId,
+      template.wabaId,
+    );
 
     try {
       await axios.delete(
@@ -289,23 +632,39 @@ export class TemplatesService {
     const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
       where: { userId, wabaId },
     });
-    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+    if (!userWhatsapp)
+      throw new NotFoundException('No connection found for this WABA');
 
-    const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
-    if (!waba) throw new NotFoundException('WABA not found in your organisation');
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, ssoOrgId },
+    });
+    if (!waba)
+      throw new NotFoundException('WABA not found in your organisation');
 
-    return { wabaId, accessToken: this.encryptionService.decrypt(userWhatsapp.accessToken) };
+    return {
+      wabaId,
+      accessToken: this.encryptionService.decrypt(userWhatsapp.accessToken),
+    };
   }
 
-  private async resolveWabaIds(ssoOrgId: string, wabaId?: string): Promise<string[]> {
+  private async resolveWabaIds(
+    ssoOrgId: string,
+    wabaId?: string,
+  ): Promise<string[]> {
     if (wabaId) {
       // Verify the caller's org actually owns this WABA before scoping to it,
       // so a guessed wabaId can't read another organisation's templates.
-      const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
-      if (!waba) throw new NotFoundException('WABA not found in your organisation');
+      const waba = await this.prisma.waba.findFirst({
+        where: { wabaId, ssoOrgId },
+      });
+      if (!waba)
+        throw new NotFoundException('WABA not found in your organisation');
       return [wabaId];
     }
-    const wabas = await this.prisma.waba.findMany({ where: { ssoOrgId }, select: { wabaId: true } });
+    const wabas = await this.prisma.waba.findMany({
+      where: { ssoOrgId },
+      select: { wabaId: true },
+    });
     return wabas.map((w) => w.wabaId);
   }
 

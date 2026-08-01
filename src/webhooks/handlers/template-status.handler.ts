@@ -13,6 +13,10 @@ const STATUS_MAP: Record<string, TemplateStatus> = {
   IN_APPEAL: TemplateStatus.IN_APPEAL,
   PAUSED: TemplateStatus.PAUSED,
   PENDING_DELETION: TemplateStatus.PENDING_DELETION,
+  // Meta archives a template after 12 months of inactivity and deletes it 28
+  // days later; unarchiving restores the previous status.
+  ARCHIVED: TemplateStatus.ARCHIVED,
+  UNARCHIVED: TemplateStatus.APPROVED,
 };
 
 @Injectable()

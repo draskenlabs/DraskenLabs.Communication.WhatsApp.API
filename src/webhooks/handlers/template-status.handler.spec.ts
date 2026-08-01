@@ -62,6 +62,15 @@ describe('TemplateStatusHandler', () => {
     });
   });
 
+  it('maps an ARCHIVED event, which stops the template being sendable', async () => {
+    mockPrisma.messageTemplate.updateMany.mockResolvedValue({ count: 1 });
+    await handler.handle({ event: 'ARCHIVED', message_template_id: 791, message_template_name: 'promo', message_template_language: 'en_US', reason: 'NONE' });
+    expect(mockPrisma.messageTemplate.updateMany).toHaveBeenCalledWith({
+      where: { metaTemplateId: '791' },
+      data: { status: 'ARCHIVED' },
+    });
+  });
+
   it('does nothing for unknown event type', async () => {
     await handler.handle({ event: 'UNKNOWN_EVENT', message_template_id: 1 });
     expect(mockPrisma.messageTemplate.updateMany).not.toHaveBeenCalled();

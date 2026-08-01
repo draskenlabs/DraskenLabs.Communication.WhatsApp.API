@@ -144,16 +144,20 @@ describe('WebhooksService', () => {
       expect(mockPrisma.webhookEvent.findMany).not.toHaveBeenCalled();
     });
 
-    it('maps stored events to display kind and summary', async () => {
+    it('describes stored events in terms an operator can read', async () => {
       mockPrisma.waba.findFirst.mockResolvedValue({ id: 1, wabaId: 'waba1', ssoOrgId: 'org1' });
       const created = new Date('2026-07-27T10:00:00.000Z');
       mockPrisma.webhookEvent.findMany.mockResolvedValue([
         { id: 10, eventType: 'messages', wabaId: 'waba1', processed: true, error: null, createdAt: created,
-          payload: { statuses: [{ id: 'wamid.9', status: 'read' }] } },
+          payload: { statuses: [{ id: 'wamid.9', status: 'read', recipient_id: '919822010210',
+            conversation: { origin: { type: 'marketing' } } }] } },
         { id: 11, eventType: 'messages', wabaId: 'waba1', processed: true, error: null, createdAt: created,
-          payload: { messages: [{ from: '919822010210', type: 'text' }] } },
+          payload: {
+            contacts: [{ profile: { name: 'Aanya' } }],
+            messages: [{ from: '919822010210', id: 'wamid.in', type: 'text', text: { body: 'Where is my order?' } }],
+          } },
         { id: 12, eventType: 'message_template_status_update', wabaId: 'waba1', processed: false, error: 'x', createdAt: created,
-          payload: { message_template_name: 'order_confirmation', event: 'APPROVED' } },
+          payload: { message_template_name: 'order_confirmation', message_template_language: 'en_US', event: 'APPROVED', reason: 'NONE' } },
       ]);
 
       mockPrisma.webhookEvent.count.mockResolvedValue(3);
@@ -163,9 +167,51 @@ describe('WebhooksService', () => {
         expect.objectContaining({ where: { wabaId: 'waba1' }, orderBy: { createdAt: 'desc' } }),
       );
       expect(result.meta).toEqual({ total: 3, totalPages: 1, page: 1, limit: 20 });
-      expect(result.data[0]).toMatchObject({ kind: 'status_update', summary: 'Message wamid.9 → read' });
-      expect(result.data[1]).toMatchObject({ kind: 'inbound_message', summary: 'Inbound text from 919822010210' });
-      expect(result.data[2]).toMatchObject({ kind: 'template_status', summary: 'order_confirmation → APPROVED', error: 'x' });
+
+      // The wamid moves out of the headline into its own field — it is an id,
+      // not something to read.
+      expect(result.data[0]).toMatchObject({
+        kind: 'status_update',
+        title: 'Message read',
+        status: 'read',
+        recipient: '919822010210',
+        messageId: 'wamid.9',
+        detail: 'Marketing conversation',
+      });
+      expect(result.data[1]).toMatchObject({
+        kind: 'inbound_message',
+        title: 'Reply received',
+        recipient: '919822010210',
+        detail: 'Aanya: Where is my order?',
+      });
+      expect(result.data[2]).toMatchObject({
+        kind: 'template_status',
+        title: 'Template approved',
+        status: 'APPROVED',
+        detail: 'order_confirmation · en_US',
+        error: 'x',
+      });
+      // "NONE" is Meta's no-reason sentinel, not a reason.
+      expect(result.data[2].reason).toBeUndefined();
+    });
+
+    it('surfaces why a message failed', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ id: 1, wabaId: 'waba1', ssoOrgId: 'org1' });
+      mockPrisma.webhookEvent.findMany.mockResolvedValue([
+        { id: 13, eventType: 'messages', wabaId: 'waba1', processed: true, error: null, createdAt: new Date(),
+          payload: { statuses: [{ id: 'wamid.f', status: 'failed', recipient_id: '919822010210',
+            errors: [{ code: 131026, title: 'Message undeliverable',
+              error_data: { details: 'Receiver is incapable of receiving this message' } }] }] } },
+      ]);
+      mockPrisma.webhookEvent.count.mockResolvedValue(1);
+
+      const result = await service.getRecentEvents('org1', 'waba1');
+
+      expect(result.data[0]).toMatchObject({
+        title: 'Message failed',
+        status: 'failed',
+        reason: 'Message undeliverable — Receiver is incapable of receiving this message',
+      });
     });
 
     it('clamps the limit to at most 100 and paginates', async () => {
