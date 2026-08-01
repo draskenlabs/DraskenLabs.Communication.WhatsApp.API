@@ -50,7 +50,8 @@ Current overall status of the DraskenLabs WhatsApp Communication API.
 | Templates | ✅ Complete | 100% | Sync from Meta, list, get. Status updated by webhook handler. |
 | Contacts | ✅ Complete | 100% | CRUD, opt-out flag enforced at send time |
 | Webhooks | ✅ Complete | 100% | GET verification + POST HMAC-signed processing. Inbound, status, quality, account events. |
-| Analytics | ❌ Not Started | 0% | Depends on all other modules |
+| Analytics | ✅ Complete | 100% | Overview, messages, templates, contacts, phone numbers, CSV export |
+| Search | ✅ Complete | 100% | One query across contacts, messages, templates, numbers and WABAs |
 
 ---
 
@@ -93,6 +94,13 @@ Current overall status of the DraskenLabs WhatsApp Communication API.
 | DELETE | `/contacts/:id` | JWT | Delete a contact |
 | GET | `/webhooks` | None | Meta webhook verification challenge |
 | POST | `/webhooks` | HMAC-SHA256 | Meta webhook event ingestion |
+| GET | `/analytics/overview` | JWT | Headline stats, daily series, delivery funnel |
+| GET | `/analytics/messages` | JWT | Volume, type mix, failure reasons, send-time heatmap |
+| GET | `/analytics/templates` | JWT | Per-template rates and the approval funnel |
+| GET | `/analytics/contacts` | JWT | Growth and opt-out rate |
+| GET | `/analytics/phone-numbers` | JWT | Per-number volume, failure rate, quality history |
+| GET | `/analytics/export` | JWT | Any of the above as CSV |
+| GET | `/search` | JWT | Contacts, messages, templates, numbers and WABAs in one query |
 
 ---
 

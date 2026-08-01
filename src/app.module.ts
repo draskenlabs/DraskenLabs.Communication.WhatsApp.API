@@ -20,6 +20,7 @@ import { OrgModule } from './org/org.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { SearchModule } from './search/search.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import * as Joi from 'joi';
 
@@ -86,6 +87,7 @@ import * as Joi from 'joi';
     NotificationsModule,
     MailModule,
     AnalyticsModule,
+    SearchModule,
   ],
   controllers: [AppController],
   providers: [AppService],
