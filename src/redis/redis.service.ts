@@ -176,6 +176,29 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(`apiKey:${accessKey}`);
   }
 
+  // Subscription access — sub:{ssoOrgId} → "1" | "0".
+  //
+  // Short TTL *and* explicit invalidation: the webhook clears it so a
+  // cancellation or a failed debit takes effect at once, and the expiry is the
+  // backstop for a webhook that never arrives. Never cache this without a TTL.
+  async setSubscriptionAccess(
+    ssoOrgId: string,
+    allowed: boolean,
+    ttlSeconds = 60,
+  ): Promise<void> {
+    await this.client.set(`sub:${ssoOrgId}`, allowed ? '1' : '0', 'EX', ttlSeconds);
+  }
+
+  async getSubscriptionAccess(ssoOrgId: string): Promise<boolean | null> {
+    const raw = await this.client.get(`sub:${ssoOrgId}`);
+    if (raw === null) return null;
+    return raw === '1';
+  }
+
+  async invalidateSubscriptionAccess(ssoOrgId: string): Promise<void> {
+    await this.client.del(`sub:${ssoOrgId}`);
+  }
+
   // Mail digests — digest:{kind}:{userId} → a list of JSON items awaiting a
   // batched email. High-frequency events (failed sends, inbound replies) queue
   // here instead of mailing one message each; a scheduled flush drains them.

@@ -368,6 +368,88 @@ export class MailNotifications {
     });
   }
 
+  /* ---------------- Billing ---------------- */
+
+  /** A month was paid for — the receipt, and when the next debit falls. */
+  async subscriptionCharged(userId: number, paidUntil: Date): Promise<void> {
+    const [recipient] = await this.mail.recipientsByIds([userId]);
+    if (!recipient) return;
+
+    await this.mail.sendTo(recipient, {
+      kind: 'transactional',
+      template: 'subscription.charged',
+      subject: 'Your subscription is active',
+      heading: 'Your subscription is active',
+      intro:
+        'The payment went through and the Messaging API is open for your API keys.',
+      facts: [['Paid until', this.date(paidUntil)]],
+      paragraphs: [
+        'The next payment is taken automatically on that date. You can cancel at any time — the month you have paid for is always yours to use.',
+      ],
+      action: { label: 'View subscription', path: '/billing' },
+    });
+  }
+
+  /**
+   * A debit failed. `final` separates "we are retrying" from "we have stopped
+   * trying", because only the second one needs the customer to do something.
+   */
+  async subscriptionPaymentFailed(
+    userId: number,
+    final: boolean,
+    paidUntil: Date | null,
+  ): Promise<void> {
+    const [recipient] = await this.mail.recipientsByIds([userId]);
+    if (!recipient) return;
+
+    await this.mail.sendTo(recipient, {
+      kind: 'transactional',
+      template: final ? 'subscription.halted' : 'subscription.pending',
+      subject: final ? 'Your subscription has stopped' : 'A payment failed',
+      heading: final ? 'Your subscription has stopped' : 'We could not take a payment',
+      intro: final
+        ? 'The retries are exhausted, so the mandate has stopped. API keys will stop working once the month you paid for runs out.'
+        : 'The bank declined the payment. We will try again over the next few days — nothing changes for you in the meantime.',
+      facts: paidUntil ? [['API access until', this.date(paidUntil)]] : [],
+      paragraphs: [
+        final
+          ? 'Subscribe again in the console to carry on. Nothing in your account has been deleted.'
+          : 'If the card has expired or been replaced, subscribe again with the new one to avoid a gap.',
+      ],
+      action: { label: 'Manage subscription', path: '/billing' },
+    });
+  }
+
+  /** Cancelled by the customer — mostly a receipt for when access ends. */
+  async subscriptionCancelled(userId: number, paidUntil: Date | null): Promise<void> {
+    const [recipient] = await this.mail.recipientsByIds([userId]);
+    if (!recipient) return;
+
+    await this.mail.sendTo(recipient, {
+      kind: 'transactional',
+      template: 'subscription.cancelled',
+      subject: 'Your subscription has been cancelled',
+      heading: 'Your subscription has been cancelled',
+      intro: paidUntil
+        ? 'No further payments will be taken. The month you have already paid for runs its course.'
+        : 'No payments will be taken.',
+      facts: paidUntil ? [['API access until', this.date(paidUntil)]] : [],
+      paragraphs: [
+        'Your account, WABAs, templates and message history are untouched. The console keeps working; only API-key access ends.',
+      ],
+      action: { label: 'Subscribe again', path: '/billing' },
+    });
+  }
+
+  /** A date the way a customer would write it, not an ISO string. */
+  private date(value: Date): string {
+    return value.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+  }
+
   /* ---------------- Support ---------------- */
 
   /** A4 — the acknowledgement promised on the support page. */

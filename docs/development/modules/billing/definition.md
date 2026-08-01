@@ -1,0 +1,137 @@
+# Module: Billing – Definition
+
+## Purpose
+
+A flat monthly subscription per organisation, collected by Razorpay auto-debit,
+which is what entitles an organisation to call the Messaging API with an API
+key. The console itself is not sold and not gated.
+
+The rule the whole module exists to enforce: **a customer may register or
+cancel at any moment, and access lasts to the end of the month they have paid
+for.**
+
+---
+
+## Scope
+
+| Area | Included | Excluded |
+|------|----------|----------|
+| Monthly plan, one per organisation | ✅ Yes | — |
+| Register (mandate authorisation via Razorpay) | ✅ Yes | — |
+| Cancel at any time, access to end of paid month | ✅ Yes | — |
+| Auto-debit each cycle, with retries | ✅ Yes | Razorpay's own dunning schedule |
+| Webhook-driven state, hourly reconciliation | ✅ Yes | — |
+| Paywall on API-key traffic | ✅ Yes | Console (JWT) stays free |
+| Per-WABA or metered pricing | ❌ No | Flat per organisation |
+| Proration, upgrades, plan changes | ❌ No | One plan |
+| Refunds | ❌ No | Handled manually in Razorpay |
+| In-app card update | ❌ No | Re-register; Razorpay has no hosted portal |
+
+---
+
+## Endpoints
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/billing/subscription` | JWT | State: active, status, period, cancel flag, authorisation URL |
+| POST | `/billing/subscription` | JWT | Register. Returns Razorpay's hosted authorisation page. Throttled 5/min |
+| DELETE | `/billing/subscription` | JWT | Cancel. Keeps the paid month |
+| POST | `/billing/webhook` | HMAC signature | Razorpay events |
+
+---
+
+## Access rule
+
+`BillingService.grants()` is the single definition, used by the state endpoint
+and the paywall alike:
+
+1. `currentEnd` in the future → **allowed**, whatever the status. This is what
+   makes cancellation keep the paid month, and it also carries a customer
+   through a failed renewal while Razorpay retries.
+2. Otherwise `active` or `authenticated` → allowed.
+3. Otherwise refused.
+
+A subscription in `created` — registered but the mandate never authorised — has
+paid nothing and is refused.
+
+## Enforcement
+
+`SubscriptionMiddleware` runs after `MessagingAuthMiddleware` on the `/messages`
+routes, so `authType` is already set. Only API-key traffic is charged for;
+console requests carry a JWT and pass untouched. Someone who stops paying keeps
+their history, their exports and their ability to re-subscribe — ending a
+subscription is not locking someone out of their own account.
+
+Refusal is **402 Payment Required**, naming the console as the place to fix it.
+
+A deployment with no Razorpay credentials lets everything through, so
+development and self-hosting need no payment provider.
+
+## Caching
+
+`sub:{ssoOrgId}` in Redis holds the allow/deny answer for 60 seconds. Every
+webhook invalidates it, so a cancellation or a failed debit lands at once; the
+TTL is the backstop for a webhook that never arrives. Unlike the API-key cache,
+this one must never be written without an expiry.
+
+---
+
+## Razorpay specifics
+
+- **Plan** is created in the dashboard; `RAZORPAY_PLAN_ID` names it. Plans are
+  immutable, so a price change means a new plan id and a migration of existing
+  subscribers.
+- **`total_count: 120`** — their API has no "until cancelled", so ten years of
+  months stands in for it.
+- **Mandate** is registered by the customer on Razorpay's hosted page
+  (`short_url`). Nothing is charged until they complete it, and RBI's
+  additional-factor and pre-debit notification rules are handled on their side.
+- **Cancellation** uses `cancel_at_cycle_end: 1` when a paid month remains, and
+  an immediate cancel when the mandate was never authorised — there is nothing
+  to protect in that case.
+- **Webhook idempotency** keys on the `X-Razorpay-Event-Id` header, written to
+  `SubscriptionEvent` before anything is applied. Their webhooks retry, and a
+  replayed `subscription.charged` must not extend a month twice.
+- **`currentEnd` never moves backwards.** Events can arrive out of order, and a
+  late `authenticated` must not shorten a month a `charged` already paid for.
+
+### Events handled
+
+| Event | Effect |
+|-------|--------|
+| `subscription.authenticated` | Mandate registered; authorisation URL dropped |
+| `subscription.activated`, `subscription.charged` | `active`, period extended, receipt emailed |
+| `subscription.pending` | A debit failed, retries under way. Access continues on the paid month; customer emailed |
+| `subscription.halted` | Retries exhausted. Access still runs to `currentEnd`; customer emailed |
+| `subscription.cancelled`, `completed`, `expired` | Recorded; access runs to `currentEnd` |
+
+## Reconciliation
+
+`@Cron(EVERY_HOUR)` re-reads every subscription whose paid month has run out —
+or that never had one — straight from Razorpay. Webhooks get missed, and a
+missed `charged` reads exactly like a lapsed customer while a missed `halted`
+reads like a paying one. One unreachable subscription does not stop the sweep.
+
+---
+
+## Configuration
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Optional | API credentials. Absent → billing disabled |
+| `RAZORPAY_PLAN_ID` | Optional | The monthly plan to subscribe against |
+| `RAZORPAY_WEBHOOK_SECRET` | Optional | HMAC secret for `/billing/webhook` |
+
+All four are optional together: unset means no subscriptions are sold and no
+API traffic is charged for.
+
+## Business rules
+
+- One subscription per organisation. A second registration while one is running
+  is refused — two mandates would mean two debits a month.
+- Re-registering is allowed once the previous one has ended, and reuses the
+  Razorpay customer so payment history stays in one place.
+- Cancelling twice is refused rather than silently repeated.
+- The person who registered receives the billing emails.
+- Money is never taken by this codebase. Cards and mandates live at Razorpay;
+  nothing here stores an instrument.
