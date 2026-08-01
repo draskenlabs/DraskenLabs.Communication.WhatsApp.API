@@ -1,7 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  NotFoundException,
+} from '@nestjs/common';
 import { MessagingService } from './messaging.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { BillingService } from 'src/billing/billing.service';
+import { billingServiceDouble } from 'src/billing/billing.test-doubles';
 import { RedisService } from 'src/redis/redis.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { ContactsService } from 'src/contacts/contacts.service';
@@ -29,6 +37,7 @@ const mockEncryption = { decrypt: jest.fn().mockReturnValue('plain_token') };
 const mockContacts = { isOptedOut: jest.fn().mockResolvedValue(false) };
 
 const mockMailNotifications = mailNotificationsDouble();
+const mockBilling = billingServiceDouble();
 const mockMail = mailServiceDouble();
 
 describe('MessagingService', () => {
@@ -42,6 +51,7 @@ describe('MessagingService', () => {
         { provide: MailService, useValue: mockMail },
         MessagingService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: BillingService, useValue: mockBilling },
         { provide: RedisService, useValue: mockRedis },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: ContactsService, useValue: mockContacts },
@@ -89,6 +99,21 @@ describe('MessagingService', () => {
       const result = await service.sendMessage(1, 'sso_org_1', dto, 'w1');
 
       expect(result.id).toBe(7);
+    });
+
+    it('refuses a send on an account with no subscription, console included', async () => {
+      // The console reaches here without passing the API-key paywall, and must
+      // not be a free way to do the thing being sold.
+      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockBilling.requireAccess.mockRejectedValueOnce(
+        new HttpException('no subscription', HttpStatus.PAYMENT_REQUIRED),
+      );
+
+      await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toMatchObject({
+        status: 402,
+      });
+      expect(mockBilling.requireAccess).toHaveBeenCalledWith('w1');
+      expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
     it('throws BadRequestException if recipient has opted out', async () => {

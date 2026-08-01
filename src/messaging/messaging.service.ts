@@ -11,6 +11,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { ContactsService } from 'src/contacts/contacts.service';
+import { BillingService } from 'src/billing/billing.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import {
   isMetaAuthFailure,
@@ -32,6 +33,7 @@ export class MessagingService {
     private readonly encryptionService: EncryptionService,
     private readonly contactsService: ContactsService,
     private readonly mail: MailNotifications,
+    private readonly billing: BillingService,
   ) {}
 
   /**
@@ -64,6 +66,11 @@ export class MessagingService {
         `Phone number ${dto.phoneNumberId} belongs to WABA ${phoneCache.wabaId}; this API key is scoped to ${scopedWabaId}`,
       );
     }
+
+    // Sending is what the subscription buys, whoever is asking. The API-key
+    // middleware has already checked this for its own path; the console
+    // reaches here without passing it, and must not be a free way to send.
+    await this.billing.requireAccess(phoneCache.wabaId);
 
     const optedOut = await this.contactsService.isOptedOut(ssoOrgId, dto.to);
     if (optedOut) throw new BadRequestException(`Recipient ${dto.to} has opted out of messages`);

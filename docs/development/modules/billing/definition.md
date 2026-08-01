@@ -40,7 +40,8 @@ have paid for.**
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | GET | `/billing/subscriptions` | JWT | One row per connected account: active, status, period, cancel flag, authorisation URL |
-| POST | `/billing/subscriptions/:wabaId` | JWT | Subscribe that account. Returns Razorpay's hosted authorisation page. Throttled 5/min |
+| POST | `/billing/subscriptions/:wabaId` | JWT | Subscribe that account. Returns the subscription id to open Checkout with, the publishable key, and the hosted page as a fallback. Throttled 5/min |
+| POST | `/billing/subscriptions/:wabaId/confirm` | JWT | Record a mandate authorised in Checkout, signature-checked |
 | DELETE | `/billing/subscriptions/:wabaId` | JWT | Cancel that account. Keeps the paid month |
 | POST | `/billing/webhook` | HMAC signature | Razorpay events |
 
@@ -63,8 +64,19 @@ paid nothing and is refused.
 
 ## Enforcement
 
-`SubscriptionMiddleware` runs after `MessagingAuthMiddleware` on the `/messages`
-routes, so both `authType` and `apiKeyWabaId` are already set. The account
+The subscription buys the **account**, not one way of reaching it. Two layers:
+
+**`BillingService.requireAccess(wabaId)`** — called by the operations
+themselves, so the console pays too: sending a message, and syncing or creating
+templates. Gating only the API key would have left the console as a free way to
+do the very things being sold. Reads are deliberately not gated; someone who
+has stopped paying keeps their history, their exports and the ability to
+subscribe again.
+
+**`SubscriptionMiddleware`** runs after `MessagingAuthMiddleware` on the
+`/messages` routes, so both `authType` and `apiKeyWabaId` are already set. It
+covers the API-key path's reads as well, which the service-level check does not
+see. The account
 checked is the one the key names — there is no mapping to get wrong and no way
 for a key to ride on an account somebody else paid for. Only API-key traffic is
 charged for; console requests carry a JWT and pass untouched. Someone who stops paying keeps
@@ -92,9 +104,22 @@ this one must never be written without an expiry.
   subscribers.
 - **`total_count: 120`** — their API has no "until cancelled", so ten years of
   months stands in for it.
-- **Mandate** is registered by the customer on Razorpay's hosted page
-  (`short_url`). Nothing is charged until they complete it, and RBI's
-  additional-factor and pre-debit notification rules are handled on their side.
+- **Mandate** is registered by the customer in **Razorpay Checkout**, opened in
+  the console against `subscription_id`. Nothing is charged until they complete
+  it, and RBI's additional-factor and pre-debit notification rules are handled
+  on their side. The hosted page (`short_url`) is still returned and still
+  works, as a fallback for a browser that cannot run Checkout — and because
+  hosted pages depend on an account-level setting that Checkout does not.
+- **Checkout's success payload is not trusted.** The browser reports its own
+  success, so `/confirm` verifies the signature — HMAC over
+  `payment_id|subscription_id` under the key secret — before anything is
+  written, and then takes the actual period from Razorpay rather than from the
+  browser: the payload says a mandate exists, not what it bought. A signature
+  valid for a different subscription is rejected by comparing the id first.
+- **`/confirm` duplicates what `subscription.authenticated` and `charged` will
+  say, deliberately.** Waiting for a webhook would leave the customer looking at
+  "awaiting authorisation" seconds after paying. Both paths write through the
+  same method, so they cannot drift.
 - **Cancellation** uses `cancel_at_cycle_end: 1` when a paid month remains, and
   an immediate cancel when the mandate was never authorised — there is nothing
   to protect in that case.
@@ -113,6 +138,13 @@ this one must never be written without an expiry.
 | `subscription.pending` | A debit failed, retries under way. Access continues on the paid month; customer emailed |
 | `subscription.halted` | Retries exhausted. Access still runs to `currentEnd`; customer emailed |
 | `subscription.cancelled`, `completed`, `expired` | Recorded; access runs to `currentEnd` |
+
+## One writer
+
+`applyRemote()` is the only place a subscription's status and period are
+written — webhooks, checkout confirmations and the reconciliation sweep all go
+through it, so the three cannot disagree. It is also where `currentEnd` is
+stopped from moving backwards.
 
 ## Reconciliation
 
@@ -142,7 +174,10 @@ API traffic is charged for.
   cannot start a subscription against someone else's account.
 - One Razorpay **customer** per organisation, reused across accounts and across
   re-registrations, so a customer paying for three accounts has one payment
-  history rather than three.
+  history rather than three. Its name and email come from the **user row**, not
+  from the request — the auth middleware attaches only an id and an SSO id, so
+  reading them there produced blank customers. A reused customer is patched on
+  each subscribe, which fills in the ones created before this was true.
 - Each account authorises its own mandate. A customer with three accounts
   completes three authorisations and receives three debits a month.
 - Deleting a WABA leaves its subscription row behind as history, granting

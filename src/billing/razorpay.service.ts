@@ -1,5 +1,6 @@
 import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHmac, timingSafeEqual } from 'crypto';
 import axios, { AxiosError, AxiosInstance } from 'axios';
 
 /** The subscription entity as much of it as this module reads. */
@@ -28,12 +29,17 @@ export interface RazorpaySubscription {
 export class RazorpayService {
   private readonly logger = new Logger(RazorpayService.name);
   private readonly client: AxiosInstance | null;
+  private readonly keySecret: string | undefined;
+  /** Publishable: Checkout needs it in the browser. */
+  readonly keyId: string | undefined;
   readonly planId: string | undefined;
   readonly webhookSecret: string | undefined;
 
   constructor(private readonly config: ConfigService) {
     const keyId = config.get<string>('RAZORPAY_KEY_ID');
     const keySecret = config.get<string>('RAZORPAY_KEY_SECRET');
+    this.keyId = keyId;
+    this.keySecret = keySecret;
     this.planId = config.get<string>('RAZORPAY_PLAN_ID');
     this.webhookSecret = config.get<string>('RAZORPAY_WEBHOOK_SECRET');
 
@@ -56,6 +62,34 @@ export class RazorpayService {
   /** Whether subscriptions can be sold at all on this deployment. */
   isConfigured(): boolean {
     return this.client !== null && !!this.planId;
+  }
+
+  /**
+   * Whether Checkout's success payload really came from Razorpay.
+   *
+   * The browser reports its own success, so without this a crafted call could
+   * mark a subscription paid. For subscriptions the signature is over
+   * `payment_id|subscription_id` under the key secret.
+   */
+  verifyCheckoutSignature(input: {
+    paymentId: string;
+    subscriptionId: string;
+    signature: string;
+  }): boolean {
+    if (!this.keySecret) return false;
+
+    const expected = createHmac('sha256', this.keySecret)
+      .update(`${input.paymentId}|${input.subscriptionId}`)
+      .digest('hex');
+
+    const expectedBuf = Buffer.from(expected, 'hex');
+    const receivedBuf = Buffer.from(input.signature, 'hex');
+
+    // Length first: timingSafeEqual throws on a mismatch rather than returning.
+    return (
+      expectedBuf.length === receivedBuf.length &&
+      timingSafeEqual(expectedBuf, receivedBuf)
+    );
   }
 
   private api(): AxiosInstance {
@@ -89,6 +123,31 @@ export class RazorpayService {
       return data;
     } catch (err) {
       this.fail('Razorpay customer creation failed', err);
+    }
+  }
+
+  /**
+   * Fill in a customer's details.
+   *
+   * Used when an organisation's existing customer is reused: the first one may
+   * have been created before we had a name to give it, and an unnamed row in
+   * their dashboard is no use to anyone reconciling a payment.
+   */
+  async updateCustomer(
+    customerId: string,
+    input: { name?: string; email?: string },
+  ): Promise<void> {
+    if (!input.name && !input.email) return;
+
+    try {
+      await this.api().patch(`/customers/${customerId}`, input);
+    } catch (err) {
+      // Cosmetic: never let a failed tidy-up stop somebody subscribing.
+      const error = err as AxiosError<{ error?: { description?: string } }>;
+      this.logger.warn(
+        `Could not update Razorpay customer ${customerId}: ` +
+          (error.response?.data?.error?.description ?? error.message),
+      );
     }
   }
 

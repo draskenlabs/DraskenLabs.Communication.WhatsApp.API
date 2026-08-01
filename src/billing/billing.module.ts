@@ -34,6 +34,7 @@ export class BillingModule implements NestModule {
       .forRoutes(
         { path: 'billing/subscriptions', method: RequestMethod.GET },
         { path: 'billing/subscriptions/:wabaId', method: RequestMethod.POST },
+        { path: 'billing/subscriptions/:wabaId/confirm', method: RequestMethod.POST },
         { path: 'billing/subscriptions/:wabaId', method: RequestMethod.DELETE },
       );
   }

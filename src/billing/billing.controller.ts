@@ -15,7 +15,11 @@ import { ApiBearerAuth, ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestj
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { Request } from 'express';
 import { BillingService } from './billing.service';
-import { SubscriptionRegisteredDto, SubscriptionStateDto } from './dto/billing.dto';
+import {
+  ConfirmSubscriptionDto,
+  SubscriptionRegisteredDto,
+  SubscriptionStateDto,
+} from './dto/billing.dto';
 import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
 
 @ApiTags('Billing')
@@ -50,8 +54,9 @@ export class BillingController {
   @ApiOperation({
     summary: 'Subscribe one account',
     description:
-      'Creates the subscription and returns the Razorpay page where the ' +
-      'customer authorises the mandate. Nothing is charged until they do.',
+      'Creates the subscription and returns the id to open Razorpay Checkout ' +
+      'with, plus the hosted page as a fallback. Nothing is charged until the ' +
+      'customer authorises the mandate.',
   })
   @ApiWrappedOkResponse({
     dataDto: SubscriptionRegisteredDto,
@@ -65,10 +70,30 @@ export class BillingController {
     const orgId = (req as any).orgId;
     if (!user || !orgId) throw new UnauthorizedException('User not found in context');
 
-    return this.billing.register(user.id, orgId, wabaId, {
-      name: [user.firstName, user.lastName].filter(Boolean).join(' ') || undefined,
-      email: user.email,
-    });
+    // The name and email come from the user row, not from the request: this
+    // context holds only an id and an SSO id.
+    return this.billing.register(user.id, orgId, wabaId);
+  }
+
+  @Post('subscriptions/:wabaId/confirm')
+  @ApiBearerAuth()
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Record a mandate authorised in Checkout',
+    description:
+      "Verifies Checkout's signature and re-reads the subscription from " +
+      'Razorpay, so the console reflects the payment without waiting for the ' +
+      'webhook that says the same thing.',
+  })
+  @ApiWrappedOkResponse({ dataDto: SubscriptionStateDto, description: 'Subscription state' })
+  async confirm(
+    @Req() req: Request,
+    @Param('wabaId') wabaId: string,
+    @Body() dto: ConfirmSubscriptionDto,
+  ): Promise<SubscriptionStateDto> {
+    const orgId = (req as any).orgId;
+    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    return this.billing.confirm(orgId, wabaId, dto);
   }
 
   @Delete('subscriptions/:wabaId')
