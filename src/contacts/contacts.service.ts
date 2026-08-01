@@ -75,7 +75,12 @@ export class ContactsService {
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.email !== undefined && { email: dto.email }),
-        ...(dto.optedOut !== undefined && { optedOut: dto.optedOut }),
+        ...(dto.optedOut !== undefined && {
+          optedOut: dto.optedOut,
+          // The flag says what is true now; the date is what can be trended,
+          // and it cannot be recovered later. Cleared on opting back in.
+          optedOutAt: dto.optedOut ? (contact.optedOutAt ?? new Date()) : null,
+        }),
         ...(dto.metadata !== undefined && { metadata: dto.metadata }),
       },
     });

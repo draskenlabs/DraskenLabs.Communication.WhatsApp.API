@@ -46,7 +46,9 @@ describe('StatusUpdateHandler', () => {
     await handler.handle({ id: 'wamid.abc', status: 'delivered' });
     expect(mockPrisma.message.update).toHaveBeenCalledWith({
       where: { metaMessageId: 'wamid.abc' },
-      data: { status: 'delivered' },
+      // Stamped as well as set: `updatedAt` cannot say when a message was
+      // delivered once it has also been read.
+      data: { status: 'delivered', deliveredAt: expect.any(Date) as Date },
     });
   });
 
@@ -57,11 +59,58 @@ describe('StatusUpdateHandler', () => {
   });
 
   it('advances status to read', async () => {
-    mockPrisma.message.findUnique.mockResolvedValue({ id: 1, status: 'delivered' });
+    mockPrisma.message.findUnique.mockResolvedValue({
+      id: 1,
+      status: 'delivered',
+      deliveredAt: new Date('2026-08-01T10:00:00Z'),
+    });
     mockPrisma.message.update.mockResolvedValue({});
     await handler.handle({ id: 'wamid.abc', status: 'read' });
     expect(mockPrisma.message.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { status: 'read' } }),
+      expect.objectContaining({
+        data: {
+          status: 'read',
+          readAt: expect.any(Date) as Date,
+          // The existing delivery time is kept, not overwritten with now.
+          deliveredAt: new Date('2026-08-01T10:00:00Z'),
+        },
+      }),
+    );
+  });
+
+  it('treats a read as a delivery when Meta never reported one', async () => {
+    mockPrisma.message.findUnique.mockResolvedValue({
+      id: 1,
+      status: 'sent',
+      deliveredAt: null,
+    });
+    mockPrisma.message.update.mockResolvedValue({});
+
+    await handler.handle({ id: 'wamid.abc', status: 'read' });
+
+    const [call] = mockPrisma.message.update.mock.calls as [
+      [{ data: { deliveredAt: Date | null } }],
+    ];
+    expect(call[0].data.deliveredAt).toBeInstanceOf(Date);
+  });
+
+  it('records why a send failed, so causes can be ranked later', async () => {
+    mockPrisma.message.findUnique.mockResolvedValue({ id: 1, status: 'sent' });
+    mockPrisma.message.update.mockResolvedValue({});
+
+    await handler.handle({
+      id: 'wamid.abc',
+      status: 'failed',
+      errors: [{ title: 'Message undeliverable' }],
+    });
+
+    expect(mockPrisma.message.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          failureReason: 'Message undeliverable',
+          failedAt: expect.any(Date) as Date,
+        }),
+      }),
     );
   });
 

@@ -84,6 +84,12 @@ export class MessagingService {
         status: 'sent',
         userId,
         ssoOrgId,
+        // Denormalised out of the payload: per-template reporting cannot scan
+        // a JSON column, and this is the only moment the name is known cheaply.
+        templateName:
+          dto.type === MessageTypeEnum.template
+            ? (dto.templateName ?? null)
+            : null,
       },
     });
 

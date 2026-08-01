@@ -144,10 +144,27 @@ model Message {
   status        MessageStatus @default(sent)
   userId        Int
   ssoOrgId      String
+  /// Template used, for `type = template` only. Denormalised out of `payload`
+  /// because per-template analytics cannot scan a JSON column.
+  templateName  String?
+  /// When each status landed, written by the status webhook. `updatedAt` alone
+  /// cannot answer "how long until it was read" — it only holds the last change.
+  deliveredAt   DateTime?
+  readAt        DateTime?
+  failedAt      DateTime?
+  /// Meta's reason for a failure, so the analytics can rank causes instead of
+  /// just counting failures.
+  failureReason String?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
   user User @relation(fields: [userId], references: [id])
+
+  /// Every analytics query is "this organisation, this date range".
+  @@index([ssoOrgId, createdAt])
+  /// Per-number breakdowns, and the WABA filter, which joins through the number.
+  @@index([phoneNumberId])
+  @@index([ssoOrgId, templateName])
 }
 
 model MessageTemplate {
@@ -169,17 +186,22 @@ model MessageTemplate {
 }
 
 model Contact {
-  id        Int      @id @default(autoincrement())
-  ssoOrgId  String
-  phone     String
-  name      String?
-  email     String?
-  optedOut  Boolean  @default(false)
-  metadata  Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         Int       @id @default(autoincrement())
+  ssoOrgId   String
+  phone      String
+  name       String?
+  email      String?
+  optedOut   Boolean   @default(false)
+  /// When the opt-out happened. The flag alone cannot be trended — it says
+  /// what is true now, not when it became true, and that is not backfillable.
+  optedOutAt DateTime?
+  metadata   Json?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@unique([ssoOrgId, phone])
+  /// Contact growth over a date range.
+  @@index([ssoOrgId, createdAt])
 }
 
 model InboundMessage {
@@ -195,6 +217,28 @@ model InboundMessage {
   createdAt     DateTime @default(now())
 
   waba Waba @relation(fields: [wabaId], references: [wabaId])
+
+  /// Inbound volume per WABA over a date range.
+  @@index([wabaId, createdAt])
+}
+
+/// A quality rating as Meta reported it, kept as a series.
+///
+/// WabaPhoneNumber.qualityRating is overwritten on every sync, so the history
+/// is lost the moment it changes — and a drop from GREEN to RED matters mostly
+/// for when it happened. Written by the phone_number_quality_update webhook.
+model PhoneQualityEvent {
+  id            Int      @id @default(autoincrement())
+  phoneNumberId String
+  wabaId        String
+  /// GREEN / YELLOW / RED / UNKNOWN, as Meta words it.
+  qualityRating String
+  /// Meta's messaging limit tier at the time, when it sends one.
+  limitTier     String?
+  createdAt     DateTime @default(now())
+
+  @@index([phoneNumberId, createdAt])
+  @@index([wabaId, createdAt])
 }
 
 model WebhookEvent {
@@ -237,7 +281,7 @@ model DeviceToken {
 /// that never granted permission, or a deployment with no Firebase credentials
 /// must not lose the event. Push is the interruption; this table is the record.
 model Notification {
-  id        Int    @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   userId    Int
   /// Organisation the event belongs to, so switching organisation does not
   /// show another one's activity. Null means "not tied to an organisation" —
