@@ -11,6 +11,7 @@ const mockSsoService = {
   decodeUserInfo: jest.fn(),
   listOrganizations: jest.fn(),
   createOrganization: jest.fn(),
+  getProfile: jest.fn().mockResolvedValue(null),
 };
 
 const mockUserService = {
@@ -57,10 +58,36 @@ describe('AuthService', () => {
       const result = await service.handleCallback(dto);
 
       expect(mockRedisService.setSsoSession).toHaveBeenCalledWith('session-1', {
-        ssoId: 'sso_1', ssoAccessToken: 'sso_tok', email: 'a@b.com', firstName: 'A', lastName: 'B', orgs,
+        ssoId: 'sso_1', ssoAccessToken: 'sso_tok', email: 'a@b.com', firstName: 'A', lastName: 'B',
+        username: '', emailVerified: false, imageUrl: '', ssoCreatedAt: null, orgs,
       });
       expect(mockJwtService.signAsync).toHaveBeenCalledWith({ sub: 1, sessionId: 'session-1' });
       expect(result).toEqual({ access_token: 'signed_token', user: { id: 1, ssoId: 'sso_1', createdAt: expect.any(Date) }, organisations: orgs });
+    });
+
+    it('caches the SSO profile in preference to the token claims', async () => {
+      // The access token carries no name claims, so without /users/me the
+      // console falls back to showing the email address as the user's name.
+      mockSsoService.exchangeCode.mockResolvedValue({ accessToken: 'sso_tok' });
+      mockSsoService.decodeUserInfo.mockReturnValue({
+        ssoId: 'sso_1', email: 'a@b.com', firstName: '', lastName: '', ssoOrgId: null, role: null,
+      });
+      mockUserService.findOrCreateBySsoId.mockResolvedValue({ id: 1, ssoId: 'sso_1', createdAt: new Date() });
+      mockSsoService.listOrganizations.mockResolvedValue([]);
+      mockSsoService.getProfile.mockResolvedValue({
+        ssoId: 'sso_1', email: 'a@b.com', firstName: 'Ada', lastName: 'Lovelace',
+        username: 'ada', emailVerified: true, imageUrl: 'https://img/ada.png',
+        createdAt: '2026-05-01T00:00:00.000Z', updatedAt: null,
+      });
+
+      await service.handleCallback(dto);
+
+      expect(mockSsoService.getProfile).toHaveBeenCalledWith('sso_tok');
+      expect(mockRedisService.setSsoSession).toHaveBeenCalledWith('session-1', expect.objectContaining({
+        firstName: 'Ada', lastName: 'Lovelace', username: 'ada',
+        emailVerified: true, imageUrl: 'https://img/ada.png',
+        ssoCreatedAt: '2026-05-01T00:00:00.000Z',
+      }));
     });
 
     it('returns an empty org list for a user who belongs to none (no throw)', async () => {

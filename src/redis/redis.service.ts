@@ -15,6 +15,11 @@ export interface SsoSessionData {
   email?: string;
   firstName?: string;
   lastName?: string;
+  /** From `GET /users/me` — absent when that call failed at login. */
+  username?: string;
+  emailVerified?: boolean;
+  imageUrl?: string;
+  ssoCreatedAt?: string | null;
   orgs: { id: string; name: string; slug?: string }[];
 }
 

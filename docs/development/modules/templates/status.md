@@ -59,7 +59,7 @@ Without `page`/`limit` the full list is returned (no `meta`) — backward compat
 |-----------|-----------|--------|
 | `TemplatesService` | `templates.service.spec.ts` | ✅ sync / findAll (filters, pagination, ownership) / findOne / update / delete |
 | `TemplatesController` | `templates.controller.spec.ts` | ✅ all handlers |
-| `TemplateStatusHandler` | `webhooks/handlers/template-status.handler.spec.ts` | ✅ APPROVED / REJECTED / PAUSED / PENDING_DELETION / unknown |
+| `TemplateStatusHandler` | `webhooks/handlers/template-status.handler.spec.ts` | ✅ APPROVED / REJECTED / PAUSED / PENDING_DELETION / unknown / `"NONE"` sentinel |
 
 ---
 
@@ -71,3 +71,4 @@ Without `page`/`limit` the full list is returned (no `meta`) — backward compat
 | Template approval takes 24–48 hours | Medium | Approval status arrives asynchronously via webhook |
 | Meta Graph API version pinned to `v21.0` | Low | Defined as `metaApiVersion` in `templates.service.ts` |
 | `PAUSED` / `PENDING_DELETION` statuses | Info | Added to the enum + webhook map (migration `20260723000000_add_template_paused_pending_deletion`) |
+| Meta's `"NONE"` rejected reason | Info | Meta returns the string `"NONE"`, not null, for templates that were never rejected. Normalised to `null` at every boundary via `normalizeRejectedReason` (`src/common/utils/rejected-reason.ts`) — on sync, on the status webhook and on read. Rows written before the fix are cleared by migration `20260801000000_clear_none_rejected_reason` |

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { TemplateStatus } from '@prisma/client';
+import { Prisma, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { normalizeRejectedReason } from 'src/common/utils/rejected-reason';
 
 const STATUS_MAP: Record<string, TemplateStatus> = {
   PENDING: TemplateStatus.PENDING,
@@ -29,13 +30,18 @@ export class TemplateStatusHandler {
       return;
     }
 
+    // Meta sends `reason: "NONE"` on every non-rejection event, so only a
+    // normalised, non-null reason represents an actual rejection. An approval
+    // supersedes whatever reason a previous rejection left behind.
+    const rejectedReason = normalizeRejectedReason(reason);
+    const data: Prisma.MessageTemplateUpdateManyMutationInput = { status };
+    if (rejectedReason) data.rejectedReason = rejectedReason;
+    else if (status === TemplateStatus.APPROVED) data.rejectedReason = null;
+
     try {
       await this.prisma.messageTemplate.updateMany({
         where: { metaTemplateId: String(message_template_id) },
-        data: {
-          status,
-          ...(reason && reason !== 'NONE' ? { rejectedReason: reason } : {}),
-        },
+        data,
       });
       this.logger.log(`Template ${message_template_name}/${message_template_language} → ${status}`);
     } catch (err: any) {

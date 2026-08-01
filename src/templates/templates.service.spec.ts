@@ -73,6 +73,38 @@ describe('TemplatesService', () => {
       expect(result.wabaId).toBe('w1');
       expect(mockPrisma.messageTemplate.upsert).toHaveBeenCalledTimes(2);
     });
+
+    it('stores Meta\'s "NONE" rejected_reason sentinel as null', async () => {
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc' });
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: {
+          data: [
+            { id: '123', name: 'hello_world', language: 'en_US', status: 'APPROVED', category: 'UTILITY', components: [], rejected_reason: 'NONE' },
+            { id: '456', name: 'promo', language: 'en_US', status: 'REJECTED', category: 'MARKETING', components: [], rejected_reason: 'ABUSIVE_CONTENT' },
+          ],
+        },
+      });
+      mockPrisma.messageTemplate.upsert.mockResolvedValue({});
+
+      await service.syncTemplates(1, 'sso_org_1', 'w1');
+
+      const [approved, rejected] = mockPrisma.messageTemplate.upsert.mock.calls;
+      expect(approved[0].create.rejectedReason).toBeNull();
+      expect(approved[0].update.rejectedReason).toBeNull();
+      expect(rejected[0].create.rejectedReason).toBe('ABUSIVE_CONTENT');
+      expect(rejected[0].update.rejectedReason).toBe('ABUSIVE_CONTENT');
+    });
+
+    it('does not leak the sentinel out of rows written before the fix', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'w1' }]);
+      mockPrisma.messageTemplate.findMany.mockResolvedValue([
+        { ...baseTemplate, rejectedReason: 'NONE' },
+      ]);
+
+      const result = await service.findAll('sso_org_1');
+      expect(result.data?.[0].rejectedReason).toBeUndefined();
+    });
   });
 
   describe('findAll', () => {

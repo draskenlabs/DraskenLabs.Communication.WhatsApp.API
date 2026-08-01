@@ -29,14 +29,22 @@ export class AuthService {
 
     const user = await this.userService.findOrCreateBySsoId(ssoUser.ssoId);
     const organisations = await this.ssoService.listOrganizations(tokens.accessToken);
+    // The access token has no name claims, so the display name has to come
+    // from the SSO profile endpoint. Best-effort: login still succeeds without
+    // it, falling back to what the token does carry.
+    const profile = await this.ssoService.getProfile(tokens.accessToken);
 
     const sessionId = await this.redisService.createSessionId();
     await this.redisService.setSsoSession(sessionId, {
       ssoId: ssoUser.ssoId,
       ssoAccessToken: tokens.accessToken,
-      email: ssoUser.email,
-      firstName: ssoUser.firstName,
-      lastName: ssoUser.lastName,
+      email: profile?.email || ssoUser.email,
+      firstName: profile?.firstName || ssoUser.firstName,
+      lastName: profile?.lastName || ssoUser.lastName,
+      username: profile?.username ?? '',
+      emailVerified: profile?.emailVerified ?? false,
+      imageUrl: profile?.imageUrl ?? '',
+      ssoCreatedAt: profile?.createdAt ?? null,
       orgs: organisations,
     });
 

@@ -23,6 +23,22 @@ export interface SsoUserInfo {
   role: string | null;
 }
 
+/**
+ * The full profile from `GET /users/me`. The access token only carries `sub`
+ * and `email`, so everything else here can be obtained no other way.
+ */
+export interface SsoProfile {
+  ssoId: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  emailVerified: boolean;
+  imageUrl: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
 @Injectable()
 export class SsoService {
   private readonly apiBase: string;
@@ -112,6 +128,39 @@ export class SsoService {
       const status = error.response?.status ?? 500;
       if (status === 401 || status === 403) throw new UnauthorizedException(msg);
       throw new BadRequestException(msg);
+    }
+  }
+
+  /**
+   * Fetches the user's profile from the SSO (`GET /users/me`).
+   *
+   * The SSO access token carries only `sub` and `email` — no name claims — so
+   * without this call `firstName`/`lastName` decode to empty strings and the
+   * console falls back to displaying the email address as the user's name.
+   *
+   * Best-effort by design: the caller (login) must still succeed when the SSO
+   * profile endpoint is unavailable, falling back to the token claims.
+   */
+  async getProfile(ssoAccessToken: string): Promise<SsoProfile | null> {
+    try {
+      const { data } = await axios.get(`${this.apiBase}/users/me`, {
+        headers: { Authorization: `Bearer ${ssoAccessToken}` },
+      });
+      const u = (data?.data ?? data) as Record<string, unknown> | undefined;
+      if (!u || typeof u.id !== 'string') return null;
+      return {
+        ssoId: u.id,
+        email: (u.email as string) ?? '',
+        firstName: (u.firstName as string) ?? '',
+        lastName: (u.lastName as string) ?? '',
+        username: (u.username as string) ?? '',
+        emailVerified: u.emailVerified === true,
+        imageUrl: (u.imageUrl as string) ?? '',
+        createdAt: (u.createdAt as string) ?? null,
+        updatedAt: (u.updatedAt as string) ?? null,
+      };
+    } catch {
+      return null;
     }
   }
 
