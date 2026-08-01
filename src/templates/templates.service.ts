@@ -21,6 +21,10 @@ import {
   LibraryTemplateDto,
   ListTemplateLibraryDto,
 } from './dto/template-library.dto';
+import {
+  MigrateTemplatesDto,
+  MigrateTemplatesResultDto,
+} from './dto/template-migration.dto';
 
 /** Options for {@link TemplatesService.findAll}. */
 export interface FindTemplatesOptions {
@@ -341,6 +345,99 @@ export class TemplatesService {
     });
 
     return this.toDto(template);
+  }
+
+  /**
+   * Copy approved templates from one WABA to another.
+   *
+   * Meta does the copying — this asks the destination WABA to pull from the
+   * source, so the caller must own both. Only APPROVED templates with a GREEN
+   * or UNKNOWN quality score are eligible; anything else comes back in
+   * `failed_templates` with Meta's reason, which is passed through unchanged
+   * rather than summarised, because the reason is the whole answer.
+   *
+   * The copies are then synced locally so they appear without waiting for a
+   * webhook.
+   */
+  async migrateTemplates(
+    userId: number,
+    ssoOrgId: string,
+    destinationWabaId: string,
+    dto: MigrateTemplatesDto,
+  ): Promise<MigrateTemplatesResultDto> {
+    if (dto.sourceWabaId === destinationWabaId) {
+      throw new BadRequestException(
+        'Source and destination must be different WABAs',
+      );
+    }
+
+    const { accessToken } = await this.resolveWabaContext(
+      userId,
+      ssoOrgId,
+      destinationWabaId,
+    );
+    // Ownership of the source matters too — otherwise this would copy another
+    // organisation's templates into the caller's account.
+    await this.resolveWabaContext(userId, ssoOrgId, dto.sourceWabaId);
+
+    const payload: Record<string, unknown> = {
+      source_waba_id: dto.sourceWabaId,
+    };
+    if (dto.pageNumber !== undefined) payload.page_number = dto.pageNumber;
+    if (dto.count !== undefined) payload.count = dto.count;
+    if (dto.templateIds?.length) payload.template_ids = dto.templateIds;
+
+    let data: Record<string, unknown>;
+    try {
+      const response = await axios.post(
+        `https://graph.facebook.com/${this.metaApiVersion}/${destinationWabaId}/migrate_message_templates`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      data = (response.data ?? {}) as Record<string, unknown>;
+    } catch (err: unknown) {
+      const metaMessage = this.logMetaError(
+        `Meta template migration failed from ${dto.sourceWabaId} to ${destinationWabaId}`,
+        err,
+      );
+      throw new BadRequestException(
+        metaMessage || 'Failed to migrate templates',
+      );
+    }
+
+    const migratedTemplates = Array.isArray(data.migrated_templates)
+      ? data.migrated_templates.map((id) => String(id))
+      : [];
+    const failedTemplates =
+      typeof data.failed_templates === 'object' &&
+      data.failed_templates !== null
+        ? (data.failed_templates as Record<string, string>)
+        : {};
+
+    // Pull the copies in so the destination's list is right immediately; a
+    // failure here must not make a successful migration look like it failed.
+    if (migratedTemplates.length > 0) {
+      try {
+        await this.syncTemplates(userId, ssoOrgId, destinationWabaId);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Migrated ${migratedTemplates.length} templates to ${destinationWabaId} but the follow-up sync failed: ${message}`,
+        );
+      }
+    }
+
+    return {
+      migratedTemplates,
+      failedTemplates,
+      migratedCount: migratedTemplates.length,
+      failedCount: Object.keys(failedTemplates).length,
+    };
   }
 
   /** Maps one library row, tolerating fields Meta omits. */

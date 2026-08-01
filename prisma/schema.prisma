@@ -108,6 +108,7 @@ enum TemplateStatus {
   IN_APPEAL
   PAUSED
   PENDING_DELETION
+  ARCHIVED
 }
 
 enum TemplateCategory {

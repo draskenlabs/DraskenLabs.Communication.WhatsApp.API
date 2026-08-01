@@ -32,6 +32,10 @@ import {
   LibraryTemplateDto,
   ListTemplateLibraryDto,
 } from './dto/template-library.dto';
+import {
+  MigrateTemplatesDto,
+  MigrateTemplatesResultDto,
+} from './dto/template-migration.dto';
 import { PaginationMetaDto } from 'src/common/responses/swagger-response.dto';
 import { BaseResponse } from 'src/common/responses/base-response';
 import {
@@ -91,6 +95,39 @@ export class TemplatesController {
     const orgId = (req as any).orgId;
     if (!user || !orgId) throw new UnauthorizedException();
     return this.templatesService.createTemplate(user.id, orgId, wabaId, dto);
+  }
+
+  @Post('migrate/:destinationWabaId')
+  @ApiOperation({
+    summary: 'Migrate approved templates from another WABA',
+    description:
+      'Asks the destination WABA to copy templates from a source WABA (`POST /{waba-id}/migrate_message_templates`). ' +
+      'The caller must own both. Only APPROVED templates with a GREEN or UNKNOWN quality score are eligible; ' +
+      'anything Meta refuses is returned with its reason. Copies are synced locally on success.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: MigrateTemplatesResultDto,
+    description: 'What was migrated, and what Meta refused',
+  })
+  @ApiStandardErrorResponses({
+    unauthorized: true,
+    badRequest: true,
+    validation: true,
+  })
+  async migrate(
+    @Req() req: Request,
+    @Param('destinationWabaId') destinationWabaId: string,
+    @Body() dto: MigrateTemplatesDto,
+  ): Promise<MigrateTemplatesResultDto> {
+    const user = (req as any).user;
+    const orgId = (req as any).orgId;
+    if (!user || !orgId) throw new UnauthorizedException();
+    return this.templatesService.migrateTemplates(
+      user.id,
+      orgId,
+      destinationWabaId,
+      dto,
+    );
   }
 
   @Get('library/:wabaId')

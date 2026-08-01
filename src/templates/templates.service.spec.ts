@@ -331,4 +331,69 @@ describe('TemplatesService', () => {
       ).rejects.toThrow('Library template not found');
     });
   });
+
+  describe('migrateTemplates', () => {
+    beforeEach(() => {
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc' });
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'dest' });
+    });
+
+    it('refuses to migrate a WABA into itself', async () => {
+      await expect(
+        service.migrateTemplates(1, 'sso_org_1', 'w1', { sourceWabaId: 'w1' }),
+      ).rejects.toThrow('Source and destination must be different');
+    });
+
+    it('reports what Meta copied and what it refused', async () => {
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: {
+          migrated_templates: ['111', '222'],
+          failed_templates: { '333': 'Template is not approved' },
+        },
+      });
+      // The follow-up sync runs against the destination.
+      mockedAxios.get = jest.fn().mockResolvedValue({ data: { data: [] } });
+      mockPrisma.messageTemplate.upsert.mockResolvedValue({});
+
+      const result = await service.migrateTemplates(1, 'sso_org_1', 'dest', {
+        sourceWabaId: 'src',
+        count: 100,
+      });
+
+      const [url, body] = (mockedAxios.post as jest.Mock).mock.calls[0];
+      expect(url).toContain('/dest/migrate_message_templates');
+      expect(body).toEqual({ source_waba_id: 'src', count: 100 });
+      expect(result).toEqual({
+        migratedTemplates: ['111', '222'],
+        failedTemplates: { '333': 'Template is not approved' },
+        migratedCount: 2,
+        failedCount: 1,
+      });
+    });
+
+    it('still reports success when the follow-up sync fails', async () => {
+      // A migration that worked must not look like it failed because the
+      // convenience sync afterwards did.
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { migrated_templates: ['111'], failed_templates: {} },
+      });
+      mockedAxios.get = jest.fn().mockRejectedValue(new Error('Graph API down'));
+
+      const result = await service.migrateTemplates(1, 'sso_org_1', 'dest', {
+        sourceWabaId: 'src',
+      });
+
+      expect(result.migratedCount).toBe(1);
+    });
+
+    it('surfaces Meta\'s rejection', async () => {
+      mockedAxios.post = jest.fn().mockRejectedValue({
+        response: { status: 400, data: { error: { message: 'Source WABA not owned by this business' } } },
+      });
+
+      await expect(
+        service.migrateTemplates(1, 'sso_org_1', 'dest', { sourceWabaId: 'src' }),
+      ).rejects.toThrow('Source WABA not owned by this business');
+    });
+  });
 });
