@@ -1,4 +1,11 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma, Subscription, SubscriptionStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -128,6 +135,29 @@ export class BillingService {
     const allowed = BillingService.grants(await this.find(wabaId));
     await this.redis.setSubscriptionAccess(wabaId, allowed);
     return allowed;
+  }
+
+  /**
+   * Refuse an operation on an account nobody has paid for.
+   *
+   * The subscription buys the *account*, not one way of reaching it: sending,
+   * creating templates and registering numbers all cost the same whether they
+   * come from an API key or from someone clicking in the console. Gating only
+   * the key would leave the console as a free way to do the very things being
+   * sold.
+   *
+   * Reads are deliberately not gated. Someone who has stopped paying can still
+   * see their history, export it and subscribe again — ending a subscription is
+   * not locking someone out of their own data.
+   */
+  async requireAccess(wabaId: string): Promise<void> {
+    if (!this.razorpay.isConfigured()) return;
+    if (await this.hasAccess(wabaId)) return;
+
+    throw new HttpException(
+      `WhatsApp Business Account ${wabaId} has no active subscription. Subscribe in the console to use it.`,
+      HttpStatus.PAYMENT_REQUIRED,
+    );
   }
 
   /**

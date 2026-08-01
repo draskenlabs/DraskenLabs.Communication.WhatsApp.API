@@ -7,6 +7,7 @@ import {
 import axios from 'axios';
 import { Prisma, TemplateCategory, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { BillingService } from 'src/billing/billing.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import {
   isMetaAuthFailure,
@@ -56,6 +57,7 @@ export class TemplatesService {
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
     private readonly mail: MailNotifications,
+    private readonly billing: BillingService,
   ) {}
 
   async syncTemplates(
@@ -74,6 +76,10 @@ export class TemplatesService {
     });
     if (!waba)
       throw new NotFoundException('WABA not found in your organisation');
+
+    // Managing an account's templates is one of the things the subscription
+    // pays for, in the console as much as through a key.
+    await this.billing.requireAccess(wabaId);
 
     const accessToken = this.encryptionService.decrypt(
       userWhatsapp.accessToken,
@@ -163,6 +169,10 @@ export class TemplatesService {
     });
     if (!waba)
       throw new NotFoundException('WABA not found in your organisation');
+
+    // Managing an account's templates is one of the things the subscription
+    // pays for, in the console as much as through a key.
+    await this.billing.requireAccess(wabaId);
 
     const accessToken = this.encryptionService.decrypt(
       userWhatsapp.accessToken,

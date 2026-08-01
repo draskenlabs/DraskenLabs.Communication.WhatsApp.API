@@ -17,9 +17,12 @@
 - `GET /billing/subscriptions` (one row per connected account, subscribed or
   not) and `POST`/`DELETE /billing/subscriptions/:wabaId` behind the JWT;
   `POST /billing/webhook` behind an HMAC signature check.
-- `SubscriptionMiddleware` on `/messages`: an API key needs its *own* account
-  subscribed, console traffic needs nothing, and `402` is the refusal — naming
-  the account, so the message says which subscription is missing.
+- The paywall covers the operation, not just the key: `requireAccess()` gates
+  sending and template sync/creation whoever asks, so the console cannot be
+  used to do for free what an API key is charged for.
+- `SubscriptionMiddleware` on `/messages` additionally covers the API-key
+  path's reads. `402` is the refusal, naming the account so the message says
+  which subscription is missing.
 - Billing emails: charged, payment failed (retrying vs stopped), cancelled.
 - **Razorpay Checkout** rather than the hosted page: register returns the
   subscription id and publishable key, and `POST /confirm` verifies Checkout's
@@ -71,8 +74,9 @@
   it, offer eNACH.
 - Nothing dunning-related is ours: retry cadence and pre-debit notices are
   Razorpay's.
-- The paywall covers `/messages` only, which is the whole of the API-key
-  surface today. Any future API-key route must be added to it.
+- Gated so far: sending, and template sync/create. Not yet gated: template
+  edit and delete, phone-number registration and sync, and contact operations —
+  each needs the same one-line check at the point it reaches Meta.
 - Reconciliation takes 100 subscriptions an hour; that is ample now and will
   need a cursor long before it is not.
 

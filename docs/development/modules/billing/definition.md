@@ -64,8 +64,19 @@ paid nothing and is refused.
 
 ## Enforcement
 
-`SubscriptionMiddleware` runs after `MessagingAuthMiddleware` on the `/messages`
-routes, so both `authType` and `apiKeyWabaId` are already set. The account
+The subscription buys the **account**, not one way of reaching it. Two layers:
+
+**`BillingService.requireAccess(wabaId)`** — called by the operations
+themselves, so the console pays too: sending a message, and syncing or creating
+templates. Gating only the API key would have left the console as a free way to
+do the very things being sold. Reads are deliberately not gated; someone who
+has stopped paying keeps their history, their exports and the ability to
+subscribe again.
+
+**`SubscriptionMiddleware`** runs after `MessagingAuthMiddleware` on the
+`/messages` routes, so both `authType` and `apiKeyWabaId` are already set. It
+covers the API-key path's reads as well, which the service-level check does not
+see. The account
 checked is the one the key names — there is no mapping to get wrong and no way
 for a key to ride on an account somebody else paid for. Only API-key traffic is
 charged for; console requests carry a JWT and pass untouched. Someone who stops paying keeps

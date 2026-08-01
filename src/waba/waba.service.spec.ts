@@ -98,9 +98,28 @@ describe('WabaService', () => {
     });
 
     it('updates WABA when requester is the owner', async () => {
-      mockPrisma.waba.findUnique.mockResolvedValue({ wabaId: 'w1', userId: 1 });
+      mockPrisma.waba.findUnique.mockResolvedValue({
+        wabaId: 'w1',
+        userId: 1,
+        ssoOrgId: 'sso_org_1',
+      });
       mockPrisma.waba.upsert.mockResolvedValue({ ...data });
       await expect(service.createOrUpdateWaba(data)).resolves.toBeDefined();
+    });
+
+    it('refuses to connect an account already connected in another organisation', async () => {
+      // The row is unique on wabaId, so this used to update the other
+      // organisation's copy: the account appeared to reconnect over there and
+      // never arrived here.
+      mockPrisma.waba.findUnique.mockResolvedValue({
+        wabaId: 'w1',
+        userId: 1,
+        ssoOrgId: 'sso_org_other',
+      });
+
+      const { ConflictException } = await import('@nestjs/common');
+      await expect(service.createOrUpdateWaba(data)).rejects.toThrow(ConflictException);
+      expect(mockPrisma.waba.upsert).not.toHaveBeenCalled();
     });
 
     it('throws ForbiddenException when WABA belongs to another user', async () => {

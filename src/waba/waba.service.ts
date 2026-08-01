@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -168,6 +169,18 @@ export class WabaService {
     const existing = await this.prisma.waba.findUnique({ where: { wabaId: data.wabaId } });
     if (existing && existing.userId !== data.userId) {
       throw new ForbiddenException('WABA belongs to another account');
+    }
+
+    // A WABA row is unique on `wabaId` alone, so connecting one that is
+    // already connected in another organisation would update that row rather
+    // than create one here — the account would appear to reconnect over there
+    // and never arrive here. Refused explicitly until the row can be held per
+    // organisation; silently doing nothing visible is worse than saying so.
+    if (existing && existing.ssoOrgId !== data.ssoOrgId) {
+      throw new ConflictException(
+        'This WhatsApp Business Account is already connected in another of your organisations. ' +
+          'Disconnect it there first, or use that organisation to manage it.',
+      );
     }
 
     return this.prisma.waba.upsert({

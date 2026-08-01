@@ -161,6 +161,28 @@ describe('BillingService', () => {
     });
   });
 
+  describe('requireAccess', () => {
+    it('passes when the account is paid for', async () => {
+      mockRedis.getSubscriptionAccess.mockResolvedValue(true);
+
+      await expect(service.requireAccess('waba_1')).resolves.toBeUndefined();
+    });
+
+    it('answers 402 when it is not', async () => {
+      mockRedis.getSubscriptionAccess.mockResolvedValue(false);
+
+      await expect(service.requireAccess('waba_1')).rejects.toMatchObject({ status: 402 });
+    });
+
+    it('lets everything through where no payment provider is configured', async () => {
+      // Development and self-hosting must not need one.
+      mockRazorpay.isConfigured.mockReturnValue(false);
+
+      await expect(service.requireAccess('waba_1')).resolves.toBeUndefined();
+      expect(mockRedis.getSubscriptionAccess).not.toHaveBeenCalled();
+    });
+  });
+
   describe('register', () => {
     beforeEach(() => {
       mockRazorpay.createCustomer.mockResolvedValue({ id: 'cust_1' });

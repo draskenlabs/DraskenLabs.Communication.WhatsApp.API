@@ -1,7 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { HttpException, HttpStatus } from '@nestjs/common';
 import { NotFoundException } from '@nestjs/common';
 import { TemplatesService } from './templates.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { BillingService } from 'src/billing/billing.service';
+import { billingServiceDouble } from 'src/billing/billing.test-doubles';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import axios from 'axios';
 import { MailNotifications } from 'src/mail/mail.notifications';
@@ -32,6 +35,7 @@ const baseTemplate = {
 };
 
 const mockMailNotifications = mailNotificationsDouble();
+const mockBilling = billingServiceDouble();
 
 describe('TemplatesService', () => {
   let service: TemplatesService;
@@ -43,6 +47,7 @@ describe('TemplatesService', () => {
         { provide: MailNotifications, useValue: mockMailNotifications },
         TemplatesService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: BillingService, useValue: mockBilling },
         { provide: EncryptionService, useValue: mockEncryption },
       ],
     }).compile();
@@ -462,6 +467,23 @@ describe('TemplatesService', () => {
       expect(mockPrisma.messageTemplate.groupBy).toHaveBeenCalledWith(
         expect.objectContaining({ where: { wabaId: { in: ['w1'] } } }),
       );
+    });
+  });
+
+  describe('paywall', () => {
+    it('refuses a sync on an account with no subscription', async () => {
+      // Managing an account's templates is part of what the subscription buys,
+      // in the console as much as through an API key.
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc' });
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1', ssoOrgId: 'org_1' });
+      mockBilling.requireAccess.mockRejectedValueOnce(
+        new HttpException('no subscription', HttpStatus.PAYMENT_REQUIRED),
+      );
+
+      await expect(service.syncTemplates(1, 'org_1', 'w1')).rejects.toMatchObject({
+        status: 402,
+      });
+      expect(mockBilling.requireAccess).toHaveBeenCalledWith('w1');
     });
   });
 });
