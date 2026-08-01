@@ -155,4 +155,40 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(`apiKey:${accessKey}`);
   }
 
+  // Mail digests — digest:{kind}:{userId} → a list of JSON items awaiting a
+  // batched email. High-frequency events (failed sends, inbound replies) queue
+  // here instead of mailing one message each; a scheduled flush drains them.
+  async queueDigestItem(
+    kind: string,
+    userId: number,
+    item: unknown,
+    ttlSeconds = 172800,
+  ): Promise<void> {
+    const key = `digest:${kind}:${userId}`;
+    await this.client.rpush(key, JSON.stringify(item));
+    // Expiry is a backstop: if the flush job stops, queues do not grow forever.
+    await this.client.expire(key, ttlSeconds);
+  }
+
+  /** Every queue with something in it, as [kind, userId] pairs. */
+  async listDigestQueues(kind: string): Promise<number[]> {
+    const keys = await this.client.keys(`digest:${kind}:*`);
+    return keys
+      .map((key) => Number(key.split(':')[2]))
+      .filter((id) => Number.isFinite(id));
+  }
+
+  /**
+   * Read and clear one queue in a single round trip, so a flush running twice
+   * cannot send the same digest twice.
+   */
+  async drainDigest(kind: string, userId: number): Promise<unknown[]> {
+    const key = `digest:${kind}:${userId}`;
+    const [[, raw]] = (await this.client
+      .multi()
+      .lrange(key, 0, -1)
+      .del(key)
+      .exec()) as [[Error | null, string[]], [Error | null, number]];
+    return (raw ?? []).map((entry) => JSON.parse(entry) as unknown);
+  }
 }

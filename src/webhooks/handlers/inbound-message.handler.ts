@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { MailService } from 'src/mail/mail.service';
 
 /** A short, readable stand-in for a message that has no text of its own. */
 const TYPE_SUMMARY: Record<string, string> = {
@@ -21,6 +22,7 @@ export class InboundMessageHandler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
   ) {}
 
   async handle(
@@ -56,12 +58,46 @@ export class InboundMessageHandler {
       // A reply we could not store is still worth telling someone about.
     }
 
+    const preview = this.preview(type, payload);
+
     await this.notifications.notifyWaba(wabaId, 'inboundMessage', {
       title: senderName || `New message from ${from}`,
-      body: this.preview(type, payload),
+      body: preview,
       link: '/messages',
       data: { wabaId, kind: 'inboundMessage' },
     });
+
+    await this.queueEmailDigest(wabaId, from, senderName, preview);
+  }
+
+  /**
+   * Queue the reply for the hourly email digest, for the people on this WABA
+   * who have no device registered for push — otherwise they would be told
+   * twice about the same message.
+   */
+  private async queueEmailDigest(
+    wabaId: string,
+    from: string,
+    senderName: string | undefined,
+    preview: string,
+  ): Promise<void> {
+    try {
+      const recipients = await this.mail.recipientsForWaba(wabaId);
+      for (const recipient of recipients) {
+        const devices = await this.prisma.deviceToken.count({
+          where: { userId: recipient.userId },
+        });
+        if (devices > 0) continue;
+        await this.mail.queueInboundMessage(recipient.userId, {
+          from,
+          senderName,
+          preview,
+        });
+      }
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Could not queue an inbound digest item: ${detail}`);
+    }
   }
 
   /** One line of the message, or a description of what kind it was. */

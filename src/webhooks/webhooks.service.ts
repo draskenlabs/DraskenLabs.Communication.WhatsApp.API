@@ -289,13 +289,13 @@ export class WebhooksService {
         await this.templateStatusHandler.handle(value);
         break;
       case 'account_update':
-        await this.accountHandler.handleAccountUpdate(value);
+        await this.accountHandler.handleAccountUpdate(value, wabaId);
         break;
       case 'phone_number_quality_update':
-        await this.accountHandler.handlePhoneQualityUpdate(value);
+        await this.accountHandler.handlePhoneQualityUpdate(value, wabaId);
         break;
       case 'phone_number_name_update':
-        await this.accountHandler.handlePhoneNameUpdate(value);
+        await this.accountHandler.handlePhoneNameUpdate(value, wabaId);
         break;
       default:
         this.logger.log(`Unhandled webhook field: ${field}`);

@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { TemplateStatusHandler } from './template-status.handler';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 
 const mockPrisma = {
   messageTemplate: { updateMany: jest.fn(), findFirst: jest.fn() },
@@ -12,6 +14,8 @@ const mockNotifications = {
   notifyUsers: jest.fn().mockResolvedValue(undefined),
 };
 
+const mockMailNotifications = mailNotificationsDouble();
+
 describe('TemplateStatusHandler', () => {
   let handler: TemplateStatusHandler;
 
@@ -19,6 +23,7 @@ describe('TemplateStatusHandler', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
         TemplateStatusHandler,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications }],
@@ -108,6 +113,7 @@ describe('TemplateStatusHandler notifications', () => {
     });
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
         TemplateStatusHandler,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications },

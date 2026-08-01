@@ -4,6 +4,7 @@ import axios from 'axios';
 import { UserWhatsappService } from 'src/user/user-whatsapp.service';
 import { WabaService } from 'src/waba/waba.service';
 import { WabaPhoneNumberService } from 'src/waba-phone-number/waba-phone-number.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
 import {
   ConnectWhatsAppRequestDTO,
   ConnectWhatsAppResponseDTO,
@@ -19,6 +20,7 @@ export class ConnectService {
     private readonly userWhatsappService: UserWhatsappService,
     private readonly wabaService: WabaService,
     private readonly wabaPhoneNumberService: WabaPhoneNumberService,
+    private readonly mail: MailNotifications,
   ) {}
 
   /**
@@ -90,6 +92,10 @@ export class ConnectService {
     );
 
     await this.wabaService.subscribeAppToWaba(body.wabaId, rawAccessToken);
+
+    // Confirms the connection, and doubles as the welcome for a first WABA.
+    const connectedName = (wabaMeta as { name?: string }).name ?? null;
+    void this.mail.wabaConnected(userId, body.wabaId, connectedName);
 
     return {
       wabaId: body.wabaId,
@@ -171,6 +177,10 @@ export class ConnectService {
     //    inbound messages actually arrive. Non-fatal — connecting still succeeds
     //    if the token lacks whatsapp_business_management (logged for diagnosis).
     await this.wabaService.subscribeAppToWaba(body.wabaId, rawAccessToken);
+
+    // Confirms the connection, and doubles as the welcome for a first WABA.
+    const connectedName = (wabaMeta as { name?: string }).name ?? null;
+    void this.mail.wabaConnected(userId, body.wabaId, connectedName);
 
     return {
       wabaId: body.wabaId,

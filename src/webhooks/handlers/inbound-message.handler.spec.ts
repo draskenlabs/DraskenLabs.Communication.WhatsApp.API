@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { InboundMessageHandler } from './inbound-message.handler';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { MailService } from 'src/mail/mail.service';
+import { mailServiceDouble } from 'src/mail/mail.test-doubles';
 
 const mockPrisma = {
   inboundMessage: { upsert: jest.fn() },
@@ -12,6 +14,8 @@ const mockNotifications = {
   notifyUsers: jest.fn().mockResolvedValue(undefined),
 };
 
+const mockMail = mailServiceDouble();
+
 describe('InboundMessageHandler', () => {
   let handler: InboundMessageHandler;
 
@@ -19,6 +23,7 @@ describe('InboundMessageHandler', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailService, useValue: mockMail },
         InboundMessageHandler,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications }],
@@ -89,6 +94,7 @@ describe('InboundMessageHandler notifications', () => {
     mockPrisma.inboundMessage.upsert.mockResolvedValue({});
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailService, useValue: mockMail },
         InboundMessageHandler,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications },

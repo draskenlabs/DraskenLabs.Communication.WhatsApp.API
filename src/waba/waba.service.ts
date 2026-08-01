@@ -4,6 +4,7 @@ import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
 import axios from 'axios';
 import { Waba } from '@prisma/client';
+import { MailNotifications } from 'src/mail/mail.notifications';
 
 @Injectable()
 export class WabaService {
@@ -14,6 +15,7 @@ export class WabaService {
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
     private readonly redisService: RedisService,
+    private readonly mail: MailNotifications,
   ) {}
 
   /**
@@ -140,6 +142,10 @@ export class WabaService {
       select: { phoneNumberId: true },
     });
     await Promise.all(phoneNumbers.map((p) => this.redisService.invalidatePhoneCache(p.phoneNumberId)));
+
+    // Everyone who used this WABA is told, before the connection goes — after
+    // the delete there is nobody left to look up.
+    void this.mail.wabaDisconnected(wabaId, waba.name);
 
     // Remove the connection (access token) — Waba and WabaPhoneNumber records are preserved for audit
     await this.prisma.userWhatsapp.delete({

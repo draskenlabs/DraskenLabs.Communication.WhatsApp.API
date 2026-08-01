@@ -87,6 +87,13 @@ describe('NotificationsService', () => {
         inboundMessage: true,
         templateStatus: true,
         messageFailed: true,
+        // Email defaults differ on purpose: nothing that would mail on every
+        // reply, and no marketing until it is asked for.
+        emailInboundMessage: false,
+        emailTemplateStatus: true,
+        emailMessageFailed: true,
+        emailWeeklySummary: false,
+        emailProductNews: false,
         deviceCount: 2,
         pushEnabled: true,
       });

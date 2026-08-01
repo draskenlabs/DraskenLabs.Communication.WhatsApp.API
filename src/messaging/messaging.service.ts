@@ -10,6 +10,11 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { ContactsService } from 'src/contacts/contacts.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import {
+  isMetaAuthFailure,
+  metaErrorMessage,
+} from 'src/mail/meta-auth-failure';
 import { SendMessageDto, MessageTypeEnum, InteractiveTypeEnum } from './dto/send-message.dto';
 import { SendMessageResponseDto, MessageListItemDto } from './dto/message-response.dto';
 import { MessageAnalyticsDto } from './dto/message-analytics.dto';
@@ -25,6 +30,7 @@ export class MessagingService {
     private readonly redisService: RedisService,
     private readonly encryptionService: EncryptionService,
     private readonly contactsService: ContactsService,
+    private readonly mail: MailNotifications,
   ) {}
 
   async sendMessage(userId: number, ssoOrgId: string, dto: SendMessageDto): Promise<SendMessageResponseDto> {
@@ -63,6 +69,7 @@ export class MessagingService {
       const metaMessage = this.logMetaError(
         `Meta send failed for ${dto.type} to ${dto.to} on phone ${dto.phoneNumberId}`,
         err,
+        phoneCache.wabaId,
       );
       throw new BadRequestException(metaMessage || 'Failed to send message');
     }
@@ -202,7 +209,12 @@ export class MessagingService {
    * Keeps the diagnostic detail (code/subcode/fbtrace_id) server-side while
    * surfacing a friendly message to the caller.
    */
-  private logMetaError(context: string, err: any): string {
+  /**
+   * Log a Meta failure, and when Meta rejected our credentials rather than the
+   * message, email whoever owns the account: sending stays broken until they
+   * reconnect, and nobody reads server logs.
+   */
+  private logMetaError(context: string, err: any, wabaId?: string): string {
     const metaError = err?.response?.data?.error;
     const userMessage =
       metaError?.error_user_msg ?? metaError?.message ?? err?.message;
@@ -219,6 +231,11 @@ export class MessagingService {
     } else {
       this.logger.warn(`${context}: ${userMessage}`);
     }
+
+    if (wabaId && isMetaAuthFailure(err)) {
+      void this.mail.metaTokenRejected(wabaId, metaErrorMessage(err));
+    }
+
     return userMessage;
   }
 

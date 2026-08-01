@@ -1,31 +1,91 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
 
 @Injectable()
 export class AccountHandler {
   private readonly logger = new Logger(AccountHandler.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mail: MailNotifications,
+  ) {}
 
-  async handleAccountUpdate(value: any): Promise<void> {
-    this.logger.warn(`Account update: phone=${value.phone_number}, event=${value.event}`);
+  /**
+   * Meta reports bans, restrictions and other account-level changes here.
+   * A ban stops sending outright, so it is worth an email rather than a log
+   * line nobody reads.
+   */
+  handleAccountUpdate(value: unknown, wabaId?: string): void {
+    const update = (value ?? {}) as {
+      phone_number?: string;
+      event?: string;
+      ban_info?: { waba_ban_state?: string };
+    };
+    this.logger.warn(
+      `Account update: phone=${update.phone_number}, event=${update.event}`,
+    );
+
+    const banState = update.ban_info?.waba_ban_state;
+    const event = String(update.event ?? '');
+    const restricted = !!banState || /BAN|RESTRICT|DISABLE/i.test(event);
+
+    if (restricted && wabaId) {
+      void this.mail.wabaBanned(wabaId, banState ?? event);
+    }
   }
 
-  async handlePhoneQualityUpdate(value: any): Promise<void> {
-    const { display_phone_number, event, current_limit } = value;
-    this.logger.log(`Phone quality update: ${display_phone_number} → ${event} (limit: ${current_limit})`);
+  async handlePhoneQualityUpdate(
+    value: unknown,
+    wabaId?: string,
+  ): Promise<void> {
+    const { display_phone_number, event, current_limit } = (value ?? {}) as {
+      display_phone_number?: string;
+      event?: string;
+      current_limit?: string;
+    };
+    this.logger.log(
+      `Phone quality update: ${display_phone_number} → ${event} (limit: ${current_limit})`,
+    );
+
+    if (wabaId) {
+      void this.mail.phoneQualityChanged({
+        wabaId,
+        displayPhoneNumber: String(display_phone_number ?? ''),
+        event: String(event ?? ''),
+        currentLimit: current_limit ? String(current_limit) : undefined,
+      });
+    }
 
     try {
       await this.prisma.wabaPhoneNumber.updateMany({
         where: { displayPhoneNumber: display_phone_number },
         data: { qualityRating: current_limit ?? event },
       });
-    } catch (err: any) {
-      this.logger.error(`Failed to update phone quality for ${display_phone_number}: ${err.message}`);
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Failed to update phone quality for ${display_phone_number}: ${detail}`,
+      );
     }
   }
 
-  async handlePhoneNameUpdate(value: any): Promise<void> {
+  handlePhoneNameUpdate(value: unknown, wabaId?: string): void {
     this.logger.log(`Phone name update: ${JSON.stringify(value)}`);
+
+    const update = (value ?? {}) as {
+      display_phone_number?: string;
+      decision?: string;
+      requested_verified_name?: string;
+    };
+
+    if (wabaId) {
+      void this.mail.displayNameDecision({
+        wabaId,
+        displayPhoneNumber: update.display_phone_number,
+        decision: update.decision,
+        requestedName: update.requested_verified_name,
+      });
+    }
   }
 }

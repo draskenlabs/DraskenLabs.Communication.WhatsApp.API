@@ -4,6 +4,8 @@ import { TemplatesService } from './templates.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import axios from 'axios';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -29,6 +31,8 @@ const baseTemplate = {
   components: [], rejectedReason: null, createdAt: new Date(), updatedAt: new Date(),
 };
 
+const mockMailNotifications = mailNotificationsDouble();
+
 describe('TemplatesService', () => {
   let service: TemplatesService;
 
@@ -36,6 +40,7 @@ describe('TemplatesService', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
         TemplatesService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: EncryptionService, useValue: mockEncryption },

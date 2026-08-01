@@ -17,6 +17,13 @@ const DEFAULT_PREFERENCES = {
   inboundMessage: true,
   templateStatus: true,
   messageFailed: true,
+  // Email defaults match the schema: nothing that would mail on every reply,
+  // and no marketing until it is asked for.
+  emailInboundMessage: false,
+  emailTemplateStatus: true,
+  emailMessageFailed: true,
+  emailWeeklySummary: false,
+  emailProductNews: false,
 };
 
 @Injectable()
@@ -76,6 +83,16 @@ export class NotificationsService {
       inboundMessage: row?.inboundMessage ?? DEFAULT_PREFERENCES.inboundMessage,
       templateStatus: row?.templateStatus ?? DEFAULT_PREFERENCES.templateStatus,
       messageFailed: row?.messageFailed ?? DEFAULT_PREFERENCES.messageFailed,
+      emailInboundMessage:
+        row?.emailInboundMessage ?? DEFAULT_PREFERENCES.emailInboundMessage,
+      emailTemplateStatus:
+        row?.emailTemplateStatus ?? DEFAULT_PREFERENCES.emailTemplateStatus,
+      emailMessageFailed:
+        row?.emailMessageFailed ?? DEFAULT_PREFERENCES.emailMessageFailed,
+      emailWeeklySummary:
+        row?.emailWeeklySummary ?? DEFAULT_PREFERENCES.emailWeeklySummary,
+      emailProductNews:
+        row?.emailProductNews ?? DEFAULT_PREFERENCES.emailProductNews,
       deviceCount,
       pushEnabled: this.firebase.enabled,
     };

@@ -3,6 +3,7 @@ import { Prisma, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { normalizeRejectedReason } from 'src/common/utils/rejected-reason';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
 
 const STATUS_MAP: Record<string, TemplateStatus> = {
   PENDING: TemplateStatus.PENDING,
@@ -37,6 +38,7 @@ export class TemplateStatusHandler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly mail: MailNotifications,
   ) {}
 
   async handle(value: any): Promise<void> {
@@ -93,6 +95,14 @@ export class TemplateStatusHandler {
       select: { id: true, wabaId: true, name: true },
     });
     if (!template) return;
+
+    void this.mail.templateDecision({
+      wabaId: template.wabaId,
+      templateId: template.id,
+      name: template.name || name,
+      status,
+      reason: rejectedReason,
+    });
 
     await this.notifications.notifyWaba(template.wabaId, 'templateStatus', {
       title: headline,

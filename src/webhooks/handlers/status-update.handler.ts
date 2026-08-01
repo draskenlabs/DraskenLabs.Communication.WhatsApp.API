@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { MessageStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { MailService } from 'src/mail/mail.service';
 
 const STATUS_ORDER: Record<string, number> = {
   sent: 0,
@@ -17,6 +18,7 @@ export class StatusUpdateHandler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
   ) {}
 
   async handle(statusUpdate: any): Promise<void> {
@@ -47,6 +49,12 @@ export class StatusUpdateHandler {
       // are the happy path and would be constant noise.
       if (status === 'failed') {
         const reason = this.failureReason(statusUpdate);
+        // Queued rather than mailed: a bad campaign can fail hundreds of
+        // messages, and that must arrive as one email, not hundreds.
+        void this.mail.queueFailedSend(existing.userId, {
+          to: existing.to,
+          reason,
+        });
         await this.notifications.notifyUsers(
           [existing.userId],
           'messageFailed',

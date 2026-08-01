@@ -65,6 +65,31 @@ export class UpdateNotificationPreferencesDto {
   @IsOptional()
   @IsBoolean()
   messageFailed?: boolean;
+
+  @ApiPropertyOptional({ description: 'Email: a summary of new customer messages' })
+  @IsOptional()
+  @IsBoolean()
+  emailInboundMessage?: boolean;
+
+  @ApiPropertyOptional({ description: 'Email: template decisions and account changes' })
+  @IsOptional()
+  @IsBoolean()
+  emailTemplateStatus?: boolean;
+
+  @ApiPropertyOptional({ description: 'Email: a summary of failed sends' })
+  @IsOptional()
+  @IsBoolean()
+  emailMessageFailed?: boolean;
+
+  @ApiPropertyOptional({ description: 'Email: the weekly activity summary' })
+  @IsOptional()
+  @IsBoolean()
+  emailWeeklySummary?: boolean;
+
+  @ApiPropertyOptional({ description: 'Email: product news and onboarding tips' })
+  @IsOptional()
+  @IsBoolean()
+  emailProductNews?: boolean;
 }
 
 export class NotificationPreferencesDto {
@@ -76,6 +101,21 @@ export class NotificationPreferencesDto {
 
   @ApiProperty()
   messageFailed: boolean;
+
+  @ApiProperty({ description: 'Email: a summary of new customer messages' })
+  emailInboundMessage: boolean;
+
+  @ApiProperty({ description: 'Email: template decisions and account changes' })
+  emailTemplateStatus: boolean;
+
+  @ApiProperty({ description: 'Email: a summary of failed sends' })
+  emailMessageFailed: boolean;
+
+  @ApiProperty({ description: 'Email: the weekly activity summary' })
+  emailWeeklySummary: boolean;
+
+  @ApiProperty({ description: 'Email: product news and onboarding tips' })
+  emailProductNews: boolean;
 
   @ApiProperty({
     description: 'Devices currently registered for push on this account',
