@@ -34,4 +34,10 @@ export class DeleteAccountResultDto {
 
   @ApiProperty({ description: 'Stored webhook events for those WABAs' })
   webhookEvents: number;
+
+  @ApiProperty({
+    description:
+      'Devices unregistered from push notifications, along with the notification preferences',
+  })
+  devices: number;
 }

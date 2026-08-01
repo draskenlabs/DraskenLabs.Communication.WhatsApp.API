@@ -1,9 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TemplateStatusHandler } from './template-status.handler';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 const mockPrisma = {
-  messageTemplate: { updateMany: jest.fn() },
+  messageTemplate: { updateMany: jest.fn(), findFirst: jest.fn() },
+};
+
+const mockNotifications = {
+  notifyWaba: jest.fn().mockResolvedValue(undefined),
+  notifyUsers: jest.fn().mockResolvedValue(undefined),
 };
 
 describe('TemplateStatusHandler', () => {
@@ -12,7 +18,10 @@ describe('TemplateStatusHandler', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [TemplateStatusHandler, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [
+        TemplateStatusHandler,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: NotificationsService, useValue: mockNotifications }],
     }).compile();
     handler = module.get<TemplateStatusHandler>(TemplateStatusHandler);
   });
@@ -74,5 +83,78 @@ describe('TemplateStatusHandler', () => {
   it('does nothing for unknown event type', async () => {
     await handler.handle({ event: 'UNKNOWN_EVENT', message_template_id: 1 });
     expect(mockPrisma.messageTemplate.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('TemplateStatusHandler notifications', () => {
+  let handler: TemplateStatusHandler;
+
+  const event = (over: Record<string, unknown> = {}) => ({
+    event: 'APPROVED',
+    message_template_id: '123',
+    message_template_name: 'order_shipped',
+    message_template_language: 'en_US',
+    reason: 'NONE',
+    ...over,
+  });
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockPrisma.messageTemplate.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.messageTemplate.findFirst.mockResolvedValue({
+      id: 12,
+      wabaId: 'waba1',
+      name: 'order_shipped',
+    });
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TemplateStatusHandler,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: NotificationsService, useValue: mockNotifications },
+      ],
+    }).compile();
+    handler = module.get<TemplateStatusHandler>(TemplateStatusHandler);
+  });
+
+  it('links an approval straight to the template', async () => {
+    await handler.handle(event());
+
+    expect(mockNotifications.notifyWaba).toHaveBeenCalledWith(
+      'waba1',
+      'templateStatus',
+      expect.objectContaining({
+        title: 'Template approved',
+        link: '/templates/12',
+      }),
+    );
+  });
+
+  it("carries Meta's reason on a rejection", async () => {
+    await handler.handle(
+      event({ event: 'REJECTED', reason: 'INVALID_FORMAT' }),
+    );
+
+    expect(mockNotifications.notifyWaba).toHaveBeenCalledWith(
+      'waba1',
+      'templateStatus',
+      expect.objectContaining({
+        title: 'Template rejected',
+        body: 'order_shipped: INVALID_FORMAT',
+      }),
+    );
+  });
+
+  it('stays quiet for PENDING — that is housekeeping, not news', async () => {
+    await handler.handle(event({ event: 'PENDING' }));
+
+    expect(mockNotifications.notifyWaba).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing when the template is not one of ours', async () => {
+    mockPrisma.messageTemplate.findFirst.mockResolvedValue(null);
+
+    await handler.handle(event({ message_template_id: 'unknown' }));
+
+    expect(mockNotifications.notifyWaba).not.toHaveBeenCalled();
   });
 });

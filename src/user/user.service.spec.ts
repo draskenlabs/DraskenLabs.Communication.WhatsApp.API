@@ -13,6 +13,8 @@ const mockTx = {
   userWhatsapp: { deleteMany: deleteMany() },
   message: { deleteMany: deleteMany() },
   userApiKey: { deleteMany: deleteMany() },
+  deviceToken: { deleteMany: deleteMany() },
+  notificationPreference: { deleteMany: deleteMany() },
   contact: { deleteMany: deleteMany() },
   waba: { deleteMany: deleteMany() },
   user: { delete: jest.fn().mockResolvedValue({ id: 1 }) },

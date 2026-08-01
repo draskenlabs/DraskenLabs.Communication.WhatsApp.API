@@ -17,6 +17,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { TemplatesModule } from './templates/templates.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { OrgModule } from './org/org.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import * as Joi from 'joi';
 
 @Module({
@@ -38,6 +39,10 @@ import * as Joi from 'joi';
         SSO_CLIENT_SECRET: Joi.string().required(),
         SSO_API_URL: Joi.string().required(),
         SSO_REDIRECT_URI: Joi.string().required(),
+        // Firebase Cloud Messaging — optional. Without it the API runs
+        // normally and push is simply disabled, so a deployment that does not
+        // want notifications needs no extra configuration.
+        FIREBASE_SERVICE_ACCOUNT_BASE64: Joi.string().base64().optional(),
       }),
     }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
@@ -55,6 +60,7 @@ import * as Joi from 'joi';
     TemplatesModule,
     ContactsModule,
     OrgModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

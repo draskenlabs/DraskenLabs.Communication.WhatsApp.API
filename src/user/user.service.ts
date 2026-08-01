@@ -99,6 +99,10 @@ export class UserService {
       });
       const messages = await tx.message.deleteMany({ where: { userId } });
       const keys = await tx.userApiKey.deleteMany({ where: { userId } });
+      // Push registrations and preferences are per-user, so they go with the
+      // account — otherwise a device would keep a foreign key to a dead row.
+      const devices = await tx.deviceToken.deleteMany({ where: { userId } });
+      await tx.notificationPreference.deleteMany({ where: { userId } });
       const contacts = orphanedOrgs.length
         ? await tx.contact.deleteMany({
             where: { ssoOrgId: { in: orphanedOrgs } },
@@ -118,6 +122,7 @@ export class UserService {
         metaConnections: connections.count,
         contacts: contacts.count,
         webhookEvents: events.count,
+        devices: devices.count,
       };
     });
 

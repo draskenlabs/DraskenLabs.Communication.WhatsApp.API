@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { StatusUpdateHandler } from './status-update.handler';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 const mockPrisma = {
   message: {
@@ -9,13 +10,21 @@ const mockPrisma = {
   },
 };
 
+const mockNotifications = {
+  notifyWaba: jest.fn().mockResolvedValue(undefined),
+  notifyUsers: jest.fn().mockResolvedValue(undefined),
+};
+
 describe('StatusUpdateHandler', () => {
   let handler: StatusUpdateHandler;
 
   beforeEach(async () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [StatusUpdateHandler, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [
+        StatusUpdateHandler,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: NotificationsService, useValue: mockNotifications }],
     }).compile();
     handler = module.get<StatusUpdateHandler>(StatusUpdateHandler);
   });
@@ -55,5 +64,61 @@ describe('StatusUpdateHandler', () => {
     mockPrisma.message.findUnique.mockResolvedValue({ id: 1, status: 'sent' });
     await handler.handle({ id: 'wamid.abc', status: 'unknown_status' });
     expect(mockPrisma.message.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('StatusUpdateHandler notifications', () => {
+  let handler: StatusUpdateHandler;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        StatusUpdateHandler,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: NotificationsService, useValue: mockNotifications },
+      ],
+    }).compile();
+    handler = module.get<StatusUpdateHandler>(StatusUpdateHandler);
+  });
+
+  it("notifies the sender when a message fails, quoting Meta's reason", async () => {
+    mockPrisma.message.findUnique.mockResolvedValue({
+      id: 5,
+      status: 'sent',
+      userId: 9,
+      to: '447911111111',
+    });
+    mockPrisma.message.update.mockResolvedValue({});
+
+    await handler.handle({
+      id: 'wamid.1',
+      status: 'failed',
+      errors: [{ title: 'Message undeliverable' }],
+    });
+
+    expect(mockNotifications.notifyUsers).toHaveBeenCalledWith(
+      [9],
+      'messageFailed',
+      expect.objectContaining({
+        title: 'Message failed to deliver',
+        body: 'To 447911111111: Message undeliverable',
+        link: '/messages/5',
+      }),
+    );
+  });
+
+  it('says nothing for sent, delivered or read — that would be constant noise', async () => {
+    mockPrisma.message.findUnique.mockResolvedValue({
+      id: 5,
+      status: 'sent',
+      userId: 9,
+      to: '447911111111',
+    });
+    mockPrisma.message.update.mockResolvedValue({});
+
+    await handler.handle({ id: 'wamid.1', status: 'delivered' });
+
+    expect(mockNotifications.notifyUsers).not.toHaveBeenCalled();
   });
 });

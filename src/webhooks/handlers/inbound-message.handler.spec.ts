@@ -1,9 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { InboundMessageHandler } from './inbound-message.handler';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 const mockPrisma = {
   inboundMessage: { upsert: jest.fn() },
+};
+
+const mockNotifications = {
+  notifyWaba: jest.fn().mockResolvedValue(undefined),
+  notifyUsers: jest.fn().mockResolvedValue(undefined),
 };
 
 describe('InboundMessageHandler', () => {
@@ -12,7 +18,10 @@ describe('InboundMessageHandler', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [InboundMessageHandler, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [
+        InboundMessageHandler,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: NotificationsService, useValue: mockNotifications }],
     }).compile();
     handler = module.get<InboundMessageHandler>(InboundMessageHandler);
   });
@@ -60,5 +69,97 @@ describe('InboundMessageHandler', () => {
     mockPrisma.inboundMessage.upsert.mockRejectedValue(new Error('DB error'));
     const msg = { id: 'wamid.fail', from: '111', timestamp: '1700000000', type: 'text', text: {} };
     await expect(handler.handle('w', 'p', msg, undefined)).resolves.toBeUndefined();
+  });
+});
+
+describe('InboundMessageHandler notifications', () => {
+  let handler: InboundMessageHandler;
+
+  const message = (over: Record<string, unknown> = {}) => ({
+    id: 'wamid.n1',
+    from: '447911111111',
+    timestamp: '1700000000',
+    type: 'text',
+    text: { body: 'Where is my order?' },
+    ...over,
+  });
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockPrisma.inboundMessage.upsert.mockResolvedValue({});
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        InboundMessageHandler,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: NotificationsService, useValue: mockNotifications },
+      ],
+    }).compile();
+    handler = module.get<InboundMessageHandler>(InboundMessageHandler);
+  });
+
+  it('notifies the WABA with the sender name and a text preview', async () => {
+    await handler.handle('waba1', 'phone1', message(), 'Alice');
+
+    expect(mockNotifications.notifyWaba).toHaveBeenCalledWith(
+      'waba1',
+      'inboundMessage',
+      expect.objectContaining({
+        title: 'Alice',
+        body: 'Where is my order?',
+        link: '/messages',
+      }),
+    );
+  });
+
+  it('falls back to the number when WhatsApp gives no profile name', async () => {
+    await handler.handle('waba1', 'phone1', message(), undefined);
+
+    expect(mockNotifications.notifyWaba).toHaveBeenCalledWith(
+      'waba1',
+      'inboundMessage',
+      expect.objectContaining({ title: 'New message from 447911111111' }),
+    );
+  });
+
+  it('describes a media message that carries no text', async () => {
+    await handler.handle(
+      'waba1',
+      'phone1',
+      message({ type: 'image', text: undefined, image: { id: 'media1' } }),
+      'Alice',
+    );
+
+    expect(mockNotifications.notifyWaba).toHaveBeenCalledWith(
+      'waba1',
+      'inboundMessage',
+      expect.objectContaining({ body: 'Sent a photo' }),
+    );
+  });
+
+  it('truncates a long message rather than pushing an essay', async () => {
+    await handler.handle(
+      'waba1',
+      'phone1',
+      message({ text: { body: 'x'.repeat(400) } }),
+      'Alice',
+    );
+
+    const calls = mockNotifications.notifyWaba.mock.calls as unknown as [
+      string,
+      string,
+      { body: string },
+    ][];
+    const push = calls[0][2];
+    expect(push.body).toHaveLength(118);
+    expect(push.body.endsWith('…')).toBe(true);
+  });
+
+  it('still notifies when the message could not be stored', async () => {
+    // The customer replied whether or not our database accepted the row.
+    mockPrisma.inboundMessage.upsert.mockRejectedValue(new Error('DB error'));
+
+    await handler.handle('waba1', 'phone1', message(), 'Alice');
+
+    expect(mockNotifications.notifyWaba).toHaveBeenCalled();
   });
 });
