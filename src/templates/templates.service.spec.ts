@@ -241,4 +241,94 @@ describe('TemplatesService', () => {
       expect(result.name).toBe('hello_world');
     });
   });
+
+  describe('template library', () => {
+    beforeEach(() => {
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc' });
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
+    });
+
+    it('passes the filters through and normalises Meta\'s rows', async () => {
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: {
+          data: [
+            {
+              id: '714701', name: 'low_balance_warning_1', language: 'en_US', category: 'UTILITY',
+              topic: 'PAYMENTS', usecase: 'LOW_BALANCE_WARNING', industry: ['FINANCIAL_SERVICES'],
+              header: 'Your account balance is low',
+              body: 'Hi {{1}}, your {{2}} is below {{3}}.',
+              body_params: ['Jim', 'balance', '$75.00'],
+              body_param_types: ['TEXT', 'TEXT', 'AMOUNT'],
+              buttons: [{ type: 'URL', text: 'Make a deposit', url: 'https://example.com/' }],
+            },
+          ],
+        },
+      });
+
+      const result = await service.listLibrary(1, 'sso_org_1', 'w1', { search: 'balance', topic: 'PAYMENTS' });
+
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        expect.stringContaining('/message_template_library'),
+        expect.objectContaining({
+          params: expect.objectContaining({ search: 'balance', topic: 'PAYMENTS' }),
+        }),
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        id: '714701',
+        name: 'low_balance_warning_1',
+        bodyParams: ['Jim', 'balance', '$75.00'],
+        bodyParamTypes: ['TEXT', 'TEXT', 'AMOUNT'],
+      });
+    });
+
+    it('omits filters the caller did not set', async () => {
+      mockedAxios.get = jest.fn().mockResolvedValue({ data: { data: [] } });
+      await service.listLibrary(1, 'sso_org_1', 'w1', {});
+      const params = (mockedAxios.get as jest.Mock).mock.calls[0][1].params;
+      expect(params).toEqual({ limit: '100' });
+    });
+
+    it('sends only the library name and button inputs when adopting', async () => {
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { id: '99', status: 'PENDING', category: 'UTILITY' } });
+      mockPrisma.messageTemplate.upsert.mockResolvedValue({
+        ...baseTemplate, id: 5, name: 'my_delivery_update', status: 'PENDING',
+      });
+
+      await service.createFromLibrary(1, 'sso_org_1', 'w1', {
+        name: 'my_delivery_update',
+        language: 'en_US',
+        libraryTemplateName: 'delivery_update_1',
+        libraryTemplateButtonInputs: [
+          { type: 'URL', url: { base_url: 'https://example.com/{{1}}', url_suffix_example: 'https://example.com/123' } },
+        ],
+      });
+
+      const [, body] = (mockedAxios.post as jest.Mock).mock.calls[0];
+      expect(body).toMatchObject({
+        name: 'my_delivery_update',
+        language: 'en_US',
+        category: 'UTILITY',
+        library_template_name: 'delivery_update_1',
+      });
+      // Meta wants these JSON-encoded on this endpoint, not as nested objects.
+      expect(typeof body.library_template_button_inputs).toBe('string');
+      expect(JSON.parse(body.library_template_button_inputs)[0].type).toBe('URL');
+      // The body is fixed by Meta — we must never send one.
+      expect(body).not.toHaveProperty('components');
+      expect(body).not.toHaveProperty('body');
+    });
+
+    it('surfaces Meta\'s rejection message', async () => {
+      mockedAxios.post = jest.fn().mockRejectedValue({
+        response: { status: 400, data: { error: { message: 'Library template not found' } } },
+      });
+
+      await expect(
+        service.createFromLibrary(1, 'sso_org_1', 'w1', {
+          name: 'x', language: 'en_US', libraryTemplateName: 'nope',
+        }),
+      ).rejects.toThrow('Library template not found');
+    });
+  });
 });
