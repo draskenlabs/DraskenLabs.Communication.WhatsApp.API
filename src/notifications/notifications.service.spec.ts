@@ -16,6 +16,13 @@ const mockPrisma = {
     upsert: jest.fn(),
   },
   userWhatsapp: { findMany: jest.fn() },
+  waba: { findUnique: jest.fn() },
+  notification: {
+    createMany: jest.fn(),
+    findMany: jest.fn(),
+    count: jest.fn(),
+    updateMany: jest.fn(),
+  },
 };
 
 const mockFirebase = {
@@ -38,6 +45,11 @@ describe('NotificationsService', () => {
     });
     mockPrisma.deviceToken.count.mockResolvedValue(1);
     mockPrisma.notificationPreference.findMany.mockResolvedValue([]);
+    mockPrisma.waba.findUnique.mockResolvedValue({ ssoOrgId: 'org_1' });
+    mockPrisma.notification.createMany.mockResolvedValue({ count: 1 });
+    mockPrisma.notification.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.notification.count.mockResolvedValue(0);
+    mockPrisma.notification.findMany.mockResolvedValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -163,14 +175,160 @@ describe('NotificationsService', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('does not query anything when push is not configured', async () => {
+    it('records the feed entry but sends nothing when push is not configured', async () => {
       mockFirebase.enabled = false;
       mockPrisma.userWhatsapp.findMany.mockResolvedValue([{ userId: 1 }]);
 
       await service.notifyWaba('w1', 'inboundMessage', MESSAGE);
 
+      // The event still happened, and the bell is where someone finds out.
+      expect(mockPrisma.notification.createMany).toHaveBeenCalled();
       expect(mockPrisma.deviceToken.findMany).not.toHaveBeenCalled();
       expect(mockFirebase.sendToTokens).not.toHaveBeenCalled();
+    });
+
+    it('writes one feed entry per recipient, stamped with the WABA’s organisation', async () => {
+      mockPrisma.userWhatsapp.findMany.mockResolvedValue([
+        { userId: 1 },
+        { userId: 2 },
+      ]);
+      mockPrisma.deviceToken.findMany.mockResolvedValue([{ token: 'a' }]);
+
+      await service.notifyWaba('w1', 'inboundMessage', {
+        ...MESSAGE,
+        link: '/messages',
+      });
+
+      expect(mockPrisma.notification.createMany).toHaveBeenCalledWith({
+        data: [
+          {
+            userId: 1,
+            ssoOrgId: 'org_1',
+            kind: 'inboundMessage',
+            title: 'Hi',
+            body: 'There',
+            link: '/messages',
+          },
+          {
+            userId: 2,
+            ssoOrgId: 'org_1',
+            kind: 'inboundMessage',
+            title: 'Hi',
+            body: 'There',
+            link: '/messages',
+          },
+        ],
+      });
+    });
+
+    it('still pushes when the feed write fails', async () => {
+      mockPrisma.userWhatsapp.findMany.mockResolvedValue([{ userId: 1 }]);
+      mockPrisma.deviceToken.findMany.mockResolvedValue([{ token: 'a' }]);
+      mockPrisma.notification.createMany.mockRejectedValue(new Error('db'));
+
+      await service.notifyWaba('w1', 'inboundMessage', MESSAGE);
+
+      expect(mockFirebase.sendToTokens).toHaveBeenCalled();
+    });
+
+    it('records the entry even for someone who switched the push off', async () => {
+      // The preference silences the interruption, not the record — otherwise
+      // turning push off would quietly empty the bell too.
+      mockPrisma.userWhatsapp.findMany.mockResolvedValue([{ userId: 2 }]);
+      mockPrisma.notificationPreference.findMany.mockResolvedValue([
+        { userId: 2 },
+      ]);
+
+      await service.notifyWaba('w1', 'inboundMessage', MESSAGE);
+
+      expect(mockPrisma.notification.createMany).toHaveBeenCalledWith({
+        data: [expect.objectContaining({ userId: 2 })],
+      });
+      expect(mockFirebase.sendToTokens).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the feed', () => {
+    const ROW = {
+      id: 4,
+      kind: 'inboundMessage',
+      title: 'Ada',
+      body: 'Hello',
+      link: '/messages',
+      readAt: null,
+      createdAt: new Date('2026-08-01T10:00:00Z'),
+    };
+
+    it('returns one organisation’s entries, newest first, with page metadata', async () => {
+      mockPrisma.notification.findMany.mockResolvedValue([ROW]);
+      mockPrisma.notification.count.mockResolvedValue(31);
+
+      const result = await service.list(7, 'org_1', { page: 2, limit: 10 });
+
+      expect(mockPrisma.notification.findMany).toHaveBeenCalledWith({
+        // Entries belonging to no organisation stay visible whichever one is
+        // selected — an account-level notice is not about a WABA.
+        where: { userId: 7, OR: [{ ssoOrgId: 'org_1' }, { ssoOrgId: null }] },
+        orderBy: { createdAt: 'desc' },
+        skip: 10,
+        take: 10,
+      });
+      expect(result.data).toEqual([ROW]);
+      expect(result.meta).toEqual({
+        total: 31,
+        totalPages: 4,
+        page: 2,
+        limit: 10,
+      });
+    });
+
+    it('clamps a nonsense page size rather than reading the whole table', async () => {
+      await service.list(7, 'org_1', { page: 0, limit: 5000 });
+
+      expect(mockPrisma.notification.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 0, take: 100 }),
+      );
+    });
+
+    it('counts only what is unread', async () => {
+      mockPrisma.notification.count.mockResolvedValue(3);
+
+      await expect(service.unreadCount(7, 'org_1')).resolves.toBe(3);
+      expect(mockPrisma.notification.count).toHaveBeenCalledWith({
+        where: {
+          userId: 7,
+          OR: [{ ssoOrgId: 'org_1' }, { ssoOrgId: null }],
+          readAt: null,
+        },
+      });
+    });
+
+    it('marks the named entries read and reports what is left', async () => {
+      mockPrisma.notification.updateMany.mockResolvedValue({ count: 2 });
+      mockPrisma.notification.count.mockResolvedValue(1);
+
+      await expect(service.markRead(7, 'org_1', [4, 5])).resolves.toEqual({
+        updated: 2,
+        unread: 1,
+      });
+      expect(mockPrisma.notification.updateMany).toHaveBeenCalledWith({
+        where: {
+          userId: 7,
+          OR: [{ ssoOrgId: 'org_1' }, { ssoOrgId: null }],
+          readAt: null,
+          id: { in: [4, 5] },
+        },
+        data: { readAt: expect.any(Date) as Date },
+      });
+    });
+
+    it('marks the whole feed read when no ids are given', async () => {
+      await service.markRead(7, 'org_1');
+
+      const [call] = mockPrisma.notification.updateMany.mock.calls as [
+        [{ where: Record<string, unknown> }],
+      ];
+      expect(call[0].where).not.toHaveProperty('id');
     });
   });
 

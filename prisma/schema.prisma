@@ -26,6 +26,7 @@ model User {
   Waba         Waba[]
   Message      Message[]
   DeviceToken  DeviceToken[]
+  Notification Notification[]
 
   NotificationPreference NotificationPreference?
 }
@@ -227,6 +228,38 @@ model DeviceToken {
 
   @@index([userId])
   @@index([ssoOrgId])
+}
+
+/// One entry in a person's notification feed — what the bell in the console
+/// shows.
+///
+/// Written whether or not a push was delivered: a device asleep, a browser
+/// that never granted permission, or a deployment with no Firebase credentials
+/// must not lose the event. Push is the interruption; this table is the record.
+model Notification {
+  id        Int    @id @default(autoincrement())
+  userId    Int
+  /// Organisation the event belongs to, so switching organisation does not
+  /// show another one's activity. Null means "not tied to an organisation" —
+  /// those appear whichever one is selected.
+  ssoOrgId  String?
+  /// Matches the preference columns — inboundMessage, templateStatus,
+  /// messageFailed — plus 'system' for anything outside those three.
+  kind      String
+  title     String
+  body      String
+  /// Where clicking it should land, e.g. "/messages/42".
+  link      String?
+  /// Null until the person has seen it. Drives the unread count on the bell.
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  /// The feed query: this user's rows, newest first.
+  @@index([userId, createdAt])
+  /// The unread count, which runs on every page load.
+  @@index([userId, readAt])
 }
 
 /// Per-user opt-outs. A missing row means every notification is on, so a new

@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FirebaseService, PushMessage } from './firebase.service';
+import { BaseResponse } from 'src/common/responses/base-response';
 import {
+  NotificationDto,
   NotificationPreferencesDto,
   RegisterDeviceTokenDto,
   UpdateNotificationPreferencesDto,
@@ -141,14 +143,22 @@ export class NotificationsService {
     message: PushMessage,
   ): Promise<void> {
     try {
-      const connections = await this.prisma.userWhatsapp.findMany({
-        where: { wabaId },
-        select: { userId: true },
-      });
+      const [connections, waba] = await Promise.all([
+        this.prisma.userWhatsapp.findMany({
+          where: { wabaId },
+          select: { userId: true },
+        }),
+        // Stamped on the feed entry so the console shows the activity of the
+        // organisation being viewed, not every organisation at once.
+        this.prisma.waba.findUnique({
+          where: { wabaId },
+          select: { ssoOrgId: true },
+        }),
+      ]);
       const userIds = [...new Set(connections.map((c) => c.userId))];
       if (userIds.length === 0) return;
 
-      await this.notifyUsers(userIds, kind, message);
+      await this.notifyUsers(userIds, kind, message, waba?.ssoOrgId);
     } catch (err: unknown) {
       // A webhook must still be acknowledged even if we cannot notify anyone.
       const detail = err instanceof Error ? err.message : String(err);
@@ -161,8 +171,17 @@ export class NotificationsService {
     userIds: number[],
     kind: NotificationKind,
     message: PushMessage,
+    ssoOrgId?: string | null,
   ): Promise<void> {
-    if (!this.firebase.enabled || userIds.length === 0) return;
+    if (userIds.length === 0) return;
+
+    // The feed is written first and for everyone: it is the record of what
+    // happened, so it must survive a server with no Firebase credentials, a
+    // browser that never registered, and a person who switched the push off.
+    // The preference below governs the interruption, not the record.
+    await this.record(userIds, kind, message, ssoOrgId);
+
+    if (!this.firebase.enabled) return;
 
     try {
       // Only users who explicitly opted out have a row saying so.
@@ -188,6 +207,124 @@ export class NotificationsService {
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.error(`Could not send ${kind} notification: ${detail}`);
     }
+  }
+
+  // --- The feed behind the bell -------------------------------------------
+
+  /**
+   * Write one entry per recipient. Never throws: a webhook must still be
+   * acknowledged even if the feed cannot be written.
+   */
+  private async record(
+    userIds: number[],
+    kind: string,
+    message: PushMessage,
+    ssoOrgId?: string | null,
+  ): Promise<void> {
+    try {
+      await this.prisma.notification.createMany({
+        data: userIds.map((userId) => ({
+          userId,
+          ssoOrgId: ssoOrgId ?? null,
+          kind,
+          title: message.title,
+          body: message.body,
+          link: message.link ?? null,
+        })),
+      });
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Could not record ${kind} notification: ${detail}`);
+    }
+  }
+
+  /**
+   * A page of someone's feed, newest first.
+   *
+   * Scoped to the organisation being viewed, plus entries belonging to no
+   * organisation — an account-level notice should not disappear because of
+   * which organisation happens to be selected.
+   */
+  async list(
+    userId: number,
+    ssoOrgId: string,
+    opts: { page?: number; limit?: number } = {},
+  ): Promise<BaseResponse<NotificationDto[]>> {
+    const page = Math.max(1, Math.floor(opts.page ?? 1));
+    const limit = Math.min(100, Math.max(1, Math.floor(opts.limit ?? 20)));
+    const where = this.scope(userId, ssoOrgId);
+
+    const [rows, total] = await Promise.all([
+      this.prisma.notification.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.notification.count({ where }),
+    ]);
+
+    return BaseResponse.paginate(
+      rows.map((row) => this.toDto(row)),
+      total,
+      Math.max(1, Math.ceil(total / limit)),
+      page,
+      limit,
+    );
+  }
+
+  /** What the bell's badge shows. */
+  async unreadCount(userId: number, ssoOrgId: string): Promise<number> {
+    return this.prisma.notification.count({
+      where: { ...this.scope(userId, ssoOrgId), readAt: null },
+    });
+  }
+
+  /**
+   * Mark specific notifications read, or the whole organisation's feed when no
+   * ids are given. Already-read rows are left alone so `updated` reports what
+   * actually changed.
+   */
+  async markRead(
+    userId: number,
+    ssoOrgId: string,
+    ids?: number[],
+  ): Promise<{ updated: number; unread: number }> {
+    const { count } = await this.prisma.notification.updateMany({
+      where: {
+        ...this.scope(userId, ssoOrgId),
+        readAt: null,
+        ...(ids && ids.length > 0 && { id: { in: ids } }),
+      },
+      data: { readAt: new Date() },
+    });
+
+    return { updated: count, unread: await this.unreadCount(userId, ssoOrgId) };
+  }
+
+  /** One person's feed for one organisation, plus their org-less entries. */
+  private scope(userId: number, ssoOrgId: string) {
+    return { userId, OR: [{ ssoOrgId }, { ssoOrgId: null }] };
+  }
+
+  private toDto(row: {
+    id: number;
+    kind: string;
+    title: string;
+    body: string;
+    link: string | null;
+    readAt: Date | null;
+    createdAt: Date;
+  }): NotificationDto {
+    return {
+      id: row.id,
+      kind: row.kind,
+      title: row.title,
+      body: row.body,
+      link: row.link,
+      readAt: row.readAt,
+      createdAt: row.createdAt,
+    };
   }
 
   /** Send, then drop the tokens Firebase reported as dead. */
