@@ -18,6 +18,55 @@ const SUBSCRIBED_FIELDS = [
   'phone_number_name_update',
 ];
 
+/** The display fields the console renders for one stored webhook event. */
+interface DescribedEvent {
+  kind: WebhookEventKind;
+  title: string;
+  detail?: string;
+  status?: string;
+  recipient?: string;
+  messageId?: string;
+  reason?: string;
+}
+
+/** Narrowing helpers — webhook payloads are untrusted and loosely shaped. */
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/** "marketing" → "Marketing", "TIER_1K" → "Tier 1k". */
+function humanise(value: string): string {
+  const words = value.replace(/_/g, ' ').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** A short preview of what the customer actually sent. */
+function inboundPreview(
+  message: Record<string, unknown>,
+  senderName?: string,
+): string | undefined {
+  const body =
+    asString(asObject(message.text)?.body) ??
+    asString(asObject(message.button)?.text) ??
+    asString(asObject(asObject(message.interactive)?.button_reply)?.title) ??
+    asString(asObject(asObject(message.interactive)?.list_reply)?.title) ??
+    asString(asObject(message.image)?.caption) ??
+    asString(asObject(message.video)?.caption);
+
+  const preview = body && body.length > 140 ? `${body.slice(0, 139)}…` : body;
+  return [senderName, preview].filter(Boolean).join(': ') || undefined;
+}
+
 @Injectable()
 export class WebhooksService {
   private readonly logger = new Logger(WebhooksService.name);
@@ -85,148 +134,120 @@ export class WebhooksService {
    * Turn a stored Meta change payload into something a human can read.
    *
    * The raw payload is all ids — a `wamid` is 60-odd characters of base64 and
-   * tells an operator nothing. What they actually want to know is: what
-   * happened, to which number, and why it failed. Everything below is pulled
-   * out into named fields so the console can lay it out rather than parse a
-   * sentence back apart.
+   * tells an operator nothing. What they want to know is what happened, to
+   * which number, and why it failed. Everything below is pulled out into named
+   * fields so the console can lay it out rather than parse a sentence back
+   * apart.
+   *
+   * Payloads are untrusted input from a webhook, so every access is narrowed
+   * rather than asserted.
    */
   private describeEvent(
     eventType: string,
     payload: unknown,
-  ): {
-    kind: WebhookEventKind;
-    title: string;
-    detail?: string;
-    status?: string;
-    recipient?: string;
-    messageId?: string;
-    reason?: string;
-  } {
-    const value = (payload ?? {}) as Record<string, any>;
+  ): DescribedEvent {
+    const value = asObject(payload) ?? {};
 
     switch (eventType) {
       case 'messages': {
-        const statuses = value.statuses as any[] | undefined;
-        if (statuses?.length) {
-          const s = statuses[0];
-          const status = typeof s.status === 'string' ? s.status : undefined;
-          // Meta reports a failure reason as an array; the title is the short
-          // form ("Message undeliverable"), the message adds the detail.
-          const err = Array.isArray(s.errors) ? s.errors[0] : undefined;
-          const reason = err
-            ? [err.title, err.error_data?.details ?? err.message]
-                .filter((part: unknown): part is string => typeof part === 'string' && part !== '')
-                .join(' — ')
-            : undefined;
-          return {
-            kind: 'status_update',
-            title: status ? `Message ${status}` : 'Message status updated',
-            status,
-            recipient: typeof s.recipient_id === 'string' ? s.recipient_id : undefined,
-            messageId: typeof s.id === 'string' ? s.id : undefined,
-            reason,
-            detail: this.conversationDetail(s),
-          };
-        }
+        const status = asObject(asArray(value.statuses)[0]);
+        if (status) return this.describeStatus(status);
 
-        const messages = value.messages as any[] | undefined;
-        if (messages?.length) {
-          const m = messages[0];
-          const type = typeof m.type === 'string' ? m.type : 'message';
-          const contact = (value.contacts as any[] | undefined)?.[0];
-          const senderName = contact?.profile?.name as string | undefined;
+        const message = asObject(asArray(value.messages)[0]);
+        if (message) {
+          const contact = asObject(asArray(value.contacts)[0]);
+          const senderName = asString(asObject(contact?.profile)?.name);
+          const type = asString(message.type) ?? 'message';
           return {
             kind: 'inbound_message',
             title: type === 'text' ? 'Reply received' : `Inbound ${type}`,
-            recipient: typeof m.from === 'string' ? m.from : undefined,
-            messageId: typeof m.id === 'string' ? m.id : undefined,
-            detail: this.inboundDetail(m, senderName),
+            recipient: asString(message.from),
+            messageId: asString(message.id),
+            detail: inboundPreview(message, senderName),
           };
         }
         return { kind: 'status_update', title: 'Message event' };
       }
 
       case 'message_template_status_update': {
-        const event = typeof value.event === 'string' ? value.event : undefined;
-        const name = (value.message_template_name as string) ?? 'Template';
-        const reason =
-          typeof value.reason === 'string' && value.reason.toUpperCase() !== 'NONE'
-            ? value.reason
-            : undefined;
+        const event = asString(value.event);
+        const reason = asString(value.reason);
         return {
           kind: 'template_status',
           title: event ? `Template ${event.toLowerCase()}` : 'Template updated',
           status: event,
-          reason,
-          detail: [name, value.message_template_language]
-            .filter((part: unknown): part is string => typeof part === 'string' && part !== '')
+          // "NONE" is Meta's no-reason sentinel, not a reason.
+          reason: reason && reason.toUpperCase() !== 'NONE' ? reason : undefined,
+          detail: [asString(value.message_template_name), asString(value.message_template_language)]
+            .filter((part): part is string => part !== undefined)
             .join(' · '),
         };
       }
 
-      case 'phone_number_quality_update':
+      case 'phone_number_quality_update': {
+        const limit = asString(value.current_limit);
         return {
           kind: 'account_update',
           title: 'Number quality changed',
-          status: (value.event as string) ?? undefined,
-          recipient: (value.display_phone_number as string) ?? undefined,
-          detail: value.current_limit
-            ? `Messaging limit now ${String(value.current_limit).replace(/_/g, ' ').toLowerCase()}`
-            : undefined,
+          status: asString(value.event),
+          recipient: asString(value.display_phone_number),
+          detail: limit ? `Messaging limit now ${humanise(limit)}` : undefined,
         };
+      }
 
       case 'phone_number_name_update':
         return {
           kind: 'account_update',
           title: 'Display name review',
-          status: (value.decision as string) ?? undefined,
-          recipient: (value.display_phone_number as string) ?? undefined,
-          detail: (value.requested_verified_name as string) ?? undefined,
+          status: asString(value.decision),
+          recipient: asString(value.display_phone_number),
+          detail: asString(value.requested_verified_name),
         };
 
-      case 'account_update':
+      case 'account_update': {
+        const event = asString(value.event);
         return {
           kind: 'account_update',
-          title: value.event
-            ? `Account ${String(value.event).replace(/_/g, ' ').toLowerCase()}`
-            : 'Account updated',
-          status: (value.event as string) ?? undefined,
-          detail: (value.ban_info?.waba_ban_state as string) ?? undefined,
+          title: event ? `Account ${humanise(event)}` : 'Account updated',
+          status: event,
+          detail: asString(asObject(value.ban_info)?.waba_ban_state),
         };
+      }
 
       default:
-        return {
-          kind: 'account_update',
-          title: eventType.replace(/_/g, ' '),
-        };
+        return { kind: 'account_update', title: eventType.replace(/_/g, ' ') };
     }
   }
 
-  /** "Marketing conversation" / "Free conversation" from a status payload. */
-  private conversationDetail(status: Record<string, any>): string | undefined {
-    const category = status.conversation?.origin?.type as string | undefined;
-    if (!category) return undefined;
-    const readable = category.replace(/_/g, ' ');
-    return status.pricing?.billable === false
-      ? `${readable} conversation · free`
-      : `${readable} conversation`;
-  }
+  /** A delivery status update: who it was for, and why it failed. */
+  private describeStatus(status: Record<string, unknown>): DescribedEvent {
+    const state = asString(status.status);
+    // Meta reports a failure as an array; the title is the short form
+    // ("Message undeliverable") and the details add the specifics.
+    const error = asObject(asArray(status.errors)[0]);
+    const reason = error
+      ? [asString(error.title), asString(asObject(error.error_data)?.details) ?? asString(error.message)]
+          .filter((part): part is string => part !== undefined)
+          .join(' — ')
+      : undefined;
 
-  /** A short preview of what the customer actually sent. */
-  private inboundDetail(
-    message: Record<string, any>,
-    senderName?: string,
-  ): string | undefined {
-    const body =
-      (message.text?.body as string | undefined) ??
-      (message.button?.text as string | undefined) ??
-      (message.interactive?.button_reply?.title as string | undefined) ??
-      (message.interactive?.list_reply?.title as string | undefined) ??
-      (message.image?.caption as string | undefined) ??
-      (message.video?.caption as string | undefined);
+    const category = asString(asObject(asObject(status.conversation)?.origin)?.type);
+    const billable = asObject(status.pricing)?.billable;
+    const detail = category
+      ? billable === false
+        ? `${humanise(category)} conversation · free`
+        : `${humanise(category)} conversation`
+      : undefined;
 
-    const preview = body ? (body.length > 140 ? `${body.slice(0, 139)}…` : body) : undefined;
-    return [senderName, preview].filter(Boolean).join(': ') || undefined;
+    return {
+      kind: 'status_update',
+      title: state ? `Message ${state}` : 'Message status updated',
+      status: state,
+      recipient: asString(status.recipient_id),
+      messageId: asString(status.id),
+      reason: reason || undefined,
+      detail,
+    };
   }
 
   async processPayload(body: any): Promise<void> {

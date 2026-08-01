@@ -176,7 +176,7 @@ describe('WebhooksService', () => {
         status: 'read',
         recipient: '919822010210',
         messageId: 'wamid.9',
-        detail: 'marketing conversation',
+        detail: 'Marketing conversation',
       });
       expect(result.data[1]).toMatchObject({
         kind: 'inbound_message',
