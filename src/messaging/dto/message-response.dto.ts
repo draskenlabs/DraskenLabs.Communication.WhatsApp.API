@@ -19,6 +19,15 @@ export class SendMessageResponseDto {
   @ApiProperty()
   status: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Template used, for template messages sent after the name started being ' +
+      'recorded. Lets a list say which template went out rather than just ' +
+      '"template".',
+    example: 'order_shipped',
+  })
+  templateName?: string;
+
   @ApiProperty()
   createdAt: Date;
 }
@@ -41,6 +50,15 @@ export class MessageListItemDto {
 
   @ApiProperty()
   status: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Template used, for template messages sent after the name started being ' +
+      'recorded. Lets a list say which template went out rather than just ' +
+      '"template".',
+    example: 'order_shipped',
+  })
+  templateName?: string;
 
   @ApiProperty()
   createdAt: Date;

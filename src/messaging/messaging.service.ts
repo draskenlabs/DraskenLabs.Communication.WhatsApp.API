@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import axios from 'axios';
+import { Message } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
@@ -135,7 +136,7 @@ export class MessagingService {
     return BaseResponse.success(messages.map(this.toListItem));
   }
 
-  private toListItem(m: any): MessageListItemDto {
+  private toListItem(m: Message): MessageListItemDto {
     return {
       id: m.id,
       metaMessageId: m.metaMessageId ?? undefined,
@@ -143,6 +144,10 @@ export class MessagingService {
       to: m.to,
       type: m.type,
       status: m.status,
+      // Only set for template sends, and only for those sent since the name
+      // started being recorded — a list can say which template went out rather
+      // than just "template".
+      templateName: m.templateName ?? undefined,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
     };
