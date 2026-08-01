@@ -4,6 +4,8 @@ import { ApiKeyService } from './api-key.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 
 const mockPrisma = {
   userApiKey: {
@@ -17,6 +19,8 @@ const mockPrisma = {
 const mockEncryption = { encrypt: jest.fn().mockReturnValue('enc_secret'), decrypt: jest.fn() };
 const mockRedis = { setApiKeyCache: jest.fn(), deleteApiKeyCache: jest.fn() };
 
+const mockMailNotifications = mailNotificationsDouble();
+
 describe('ApiKeyService', () => {
   let service: ApiKeyService;
 
@@ -24,6 +28,7 @@ describe('ApiKeyService', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
         ApiKeyService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: EncryptionService, useValue: mockEncryption },

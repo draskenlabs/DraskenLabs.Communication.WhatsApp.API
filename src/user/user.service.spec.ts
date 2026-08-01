@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { UserService } from './user.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 
 const deleteMany = () => jest.fn().mockResolvedValue({ count: 0 });
 
@@ -13,6 +15,8 @@ const mockTx = {
   userWhatsapp: { deleteMany: deleteMany() },
   message: { deleteMany: deleteMany() },
   userApiKey: { deleteMany: deleteMany() },
+  deviceToken: { deleteMany: deleteMany() },
+  notificationPreference: { deleteMany: deleteMany() },
   contact: { deleteMany: deleteMany() },
   waba: { deleteMany: deleteMany() },
   user: { delete: jest.fn().mockResolvedValue({ id: 1 }) },
@@ -22,6 +26,7 @@ const mockPrisma = {
   user: {
     findUnique: jest.fn(),
     create: jest.fn(),
+    upsert: jest.fn(),
   },
   waba: { findMany: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) },
   userApiKey: { findMany: jest.fn().mockResolvedValue([]) },
@@ -36,6 +41,8 @@ const mockRedis = {
   invalidatePhoneCache: jest.fn(),
 };
 
+const mockMailNotifications = mailNotificationsDouble();
+
 describe('UserService', () => {
   let service: UserService;
 
@@ -43,6 +50,7 @@ describe('UserService', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
         UserService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: RedisService, useValue: mockRedis },
@@ -80,21 +88,51 @@ describe('UserService', () => {
   });
 
   describe('findOrCreateBySsoId', () => {
-    it('returns existing user if found', async () => {
+    it('upserts on the SSO id, so a returning user is not duplicated', async () => {
       const existing = { id: 1, ssoId: 'sso_1', createdAt: new Date() };
-      mockPrisma.user.findUnique.mockResolvedValue(existing);
+      mockPrisma.user.upsert.mockResolvedValue(existing);
+
       const result = await service.findOrCreateBySsoId('sso_1');
+
       expect(result).toEqual(existing);
-      expect(mockPrisma.user.create).not.toHaveBeenCalled();
+      expect(mockPrisma.user.upsert).toHaveBeenCalledWith({
+        where: { ssoId: 'sso_1' },
+        create: { ssoId: 'sso_1' },
+        update: {},
+      });
     });
 
-    it('creates and returns new user when not found', async () => {
+    it('stores the contact details SSO gave us, for later emails', async () => {
       const created = { id: 2, ssoId: 'sso_1', createdAt: new Date() };
-      mockPrisma.user.findUnique.mockResolvedValue(null);
-      mockPrisma.user.create.mockResolvedValue(created);
-      const result = await service.findOrCreateBySsoId('sso_1');
-      expect(result).toEqual(created);
-      expect(mockPrisma.user.create).toHaveBeenCalledWith({ data: { ssoId: 'sso_1' } });
+      mockPrisma.user.upsert.mockResolvedValue(created);
+
+      await service.findOrCreateBySsoId('sso_1', {
+        email: 'a@b.com',
+        firstName: 'Ada',
+        lastName: 'Lovelace',
+      });
+
+      expect(mockPrisma.user.upsert).toHaveBeenCalledWith({
+        where: { ssoId: 'sso_1' },
+        create: {
+          ssoId: 'sso_1',
+          email: 'a@b.com',
+          firstName: 'Ada',
+          lastName: 'Lovelace',
+        },
+        // An existing row is refreshed: people change their email in SSO.
+        update: { email: 'a@b.com', firstName: 'Ada', lastName: 'Lovelace' },
+      });
+    });
+
+    it('does not blank stored details when SSO returns nothing', async () => {
+      mockPrisma.user.upsert.mockResolvedValue({ id: 3, ssoId: 'sso_2' });
+
+      await service.findOrCreateBySsoId('sso_2', { email: undefined });
+
+      expect(mockPrisma.user.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: {} }),
+      );
     });
   });
 

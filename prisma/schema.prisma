@@ -13,12 +13,21 @@ datasource db {
 model User {
   id        Int      @id @default(autoincrement())
   ssoId     String   @unique
+  /// Contact details copied from SSO at sign-in. Held locally because every
+  /// notification email is triggered by a webhook or a scheduled job, where
+  /// there is no user token to read the SSO profile with.
+  email     String?
+  firstName String?
+  lastName  String?
   createdAt DateTime @default(now())
 
   UserWhatsapp UserWhatsapp[]
   UserApiKey   UserApiKey[]
   Waba         Waba[]
   Message      Message[]
+  DeviceToken  DeviceToken[]
+
+  NotificationPreference NotificationPreference?
 }
 
 model UserWhatsapp {
@@ -37,16 +46,16 @@ model UserWhatsapp {
 }
 
 model Waba {
-  id                       Int               @id @default(autoincrement())
-  wabaId                   String            @unique
+  id                       Int      @id @default(autoincrement())
+  wabaId                   String   @unique
   name                     String?
   currency                 String?
   timezoneId               String?
   messageTemplateNamespace String?
   userId                   Int
   ssoOrgId                 String
-  createdAt                DateTime          @default(now())
-  updatedAt                DateTime          @updatedAt
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 
   user            User              @relation(fields: [userId], references: [id])
   UserWhatsapp    UserWhatsapp[]
@@ -56,8 +65,8 @@ model Waba {
 }
 
 model WabaPhoneNumber {
-  id                     Int      @id @default(autoincrement())
-  phoneNumberId          String   @unique
+  id                     Int       @id @default(autoincrement())
+  phoneNumberId          String    @unique
   verifiedName           String
   codeVerificationStatus String
   displayPhoneNumber     String
@@ -66,8 +75,8 @@ model WabaPhoneNumber {
   throughputLevel        String
   lastOnboardedTime      DateTime?
   wabaId                 String
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   waba Waba @relation(fields: [wabaId], references: [wabaId])
 }
@@ -195,4 +204,88 @@ model WebhookEvent {
   processed Boolean  @default(false)
   error     String?
   createdAt DateTime @default(now())
+}
+
+/// A browser (or app) registration for Firebase Cloud Messaging. One row per
+/// device: the same person signed in on a laptop and a phone has two.
+model DeviceToken {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  /// Organisation the device was registered under, so a push about one
+  /// organisation never reaches a device signed in to another.
+  ssoOrgId   String
+  /// The FCM registration token. Unique because Firebase reissues the same
+  /// token to the same browser, and re-registering must update, not duplicate.
+  token      String   @unique
+  platform   String   @default("web")
+  userAgent  String?
+  /// Refreshed on every registration, so stale devices can be pruned.
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([ssoOrgId])
+}
+
+/// Per-user opt-outs. A missing row means every notification is on, so a new
+/// user needs no seeding.
+model NotificationPreference {
+  id                  Int      @id @default(autoincrement())
+  userId              Int      @unique
+  /// A customer replied on WhatsApp.
+  inboundMessage      Boolean  @default(true)
+  /// Meta approved, rejected or paused a template.
+  templateStatus      Boolean  @default(true)
+  /// An outbound message failed to deliver.
+  messageFailed       Boolean  @default(true)
+  /// The same three, by email. Separate columns rather than one switch: a
+  /// person may want a push for every reply but only an email when Meta
+  /// rejects a template.
+  emailInboundMessage Boolean  @default(false)
+  emailTemplateStatus Boolean  @default(true)
+  emailMessageFailed  Boolean  @default(true)
+  /// A weekly activity summary, off until asked for.
+  emailWeeklySummary  Boolean  @default(false)
+  /// Product news and onboarding tips — marketing, so opt-in and unsubscribable.
+  emailProductNews    Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+/// Addresses SES told us to stop mailing. Bounces and complaints arrive on the
+/// SNS feedback topic; sending to a suppressed address again damages the
+/// domain's reputation, so every send checks this table first.
+model MailSuppression {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  /// bounce | complaint | unsubscribe | manual
+  reason    String
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// One row per email we send, so a support question ("did I get told?") has an
+/// answer, and so a retry cannot double-send a digest.
+model MailLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  email     String
+  /// The template key, e.g. "template.status" or "digest.failed-sends".
+  kind      String
+  subject   String
+  /// sent | suppressed | skipped | failed
+  status    String
+  /// SES message id, for tracing a delivery with AWS support.
+  messageId String?
+  error     String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([kind, createdAt])
 }

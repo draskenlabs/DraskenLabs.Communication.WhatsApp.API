@@ -21,3 +21,21 @@ data:
   SSO_REDIRECT_URI: "https://wa.draskenapis.com/auth/callback"
   # Meta OAuth redirect (must match the Meta App config)
   META_REDIRECT_URI: "https://api.example.com/connect/callback"
+  # Amazon SES — non-secret settings. Credentials live in the Secret, or are
+  # omitted entirely when the pod uses an IAM role (IRSA).
+  AWS_REGION: "eu-west-1"
+  # Must be a verified SES identity, with DKIM, SPF and DMARC published.
+  SES_FROM_ADDRESS: "no-reply@draskenlabs.com"
+  SES_FROM_NAME: "WhatsApp Console"
+  SES_REPLY_TO: "support@draskenlabs.com"
+  # Configuration set wired to an SNS topic that posts to /mail/events, so
+  # bounces and complaints suppress the address.
+  SES_CONFIGURATION_SET: "whatsapp-console"
+  # Absolute console URL, used for links inside emails.
+  APP_BASE_URL: "https://wa.draskenapis.com"
+  # Mailboxes the support form delivers to.
+  SUPPORT_EMAIL: "support@draskenlabs.com"
+  PRIVACY_EMAIL: "privacy@draskenlabs.com"
+  SECURITY_EMAIL: "security@draskenlabs.com"
+  ABUSE_EMAIL: "abuse@draskenlabs.com"
+  LEGAL_EMAIL: "legal@draskenlabs.com"

@@ -6,9 +6,13 @@ import { UserWhatsappService } from 'src/user/user-whatsapp.service';
 import { WabaService } from 'src/waba/waba.service';
 import { WabaPhoneNumberService } from 'src/waba-phone-number/waba-phone-number.service';
 import axios from 'axios';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
+
+const mockMailNotifications = mailNotificationsDouble();
 
 describe('ConnectService', () => {
   let service: ConnectService;
@@ -20,6 +24,7 @@ describe('ConnectService', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
         ConnectService,
         { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue('test-value') } },
         { provide: UserWhatsappService, useValue: { createOrUpdate: jest.fn() } },

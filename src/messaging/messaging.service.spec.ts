@@ -7,6 +7,9 @@ import { EncryptionService } from 'src/common/services/crypto.service';
 import { ContactsService } from 'src/contacts/contacts.service';
 import { MessageTypeEnum } from './dto/send-message.dto';
 import axios from 'axios';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import { MailService } from 'src/mail/mail.service';
+import { mailNotificationsDouble, mailServiceDouble } from 'src/mail/mail.test-doubles';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -24,6 +27,9 @@ const mockRedis = { getPhoneCache: jest.fn() };
 const mockEncryption = { decrypt: jest.fn().mockReturnValue('plain_token') };
 const mockContacts = { isOptedOut: jest.fn().mockResolvedValue(false) };
 
+const mockMailNotifications = mailNotificationsDouble();
+const mockMail = mailServiceDouble();
+
 describe('MessagingService', () => {
   let service: MessagingService;
 
@@ -31,6 +37,8 @@ describe('MessagingService', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
+        { provide: MailService, useValue: mockMail },
         MessagingService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: RedisService, useValue: mockRedis },

@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { MessageStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { MailService } from 'src/mail/mail.service';
 
 const STATUS_ORDER: Record<string, number> = {
   sent: 0,
@@ -13,7 +15,11 @@ const STATUS_ORDER: Record<string, number> = {
 export class StatusUpdateHandler {
   private readonly logger = new Logger(StatusUpdateHandler.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
+  ) {}
 
   async handle(statusUpdate: any): Promise<void> {
     const { id: metaMessageId, status } = statusUpdate;
@@ -26,7 +32,7 @@ export class StatusUpdateHandler {
     try {
       const existing = await this.prisma.message.findUnique({
         where: { metaMessageId },
-        select: { id: true, status: true },
+        select: { id: true, status: true, userId: true, to: true },
       });
 
       if (!existing) return;
@@ -38,8 +44,41 @@ export class StatusUpdateHandler {
         where: { metaMessageId },
         data: { status: status as MessageStatus },
       });
+
+      // Only a failure is worth interrupting someone for; sent/delivered/read
+      // are the happy path and would be constant noise.
+      if (status === 'failed') {
+        const reason = this.failureReason(statusUpdate);
+        // Queued rather than mailed: a bad campaign can fail hundreds of
+        // messages, and that must arrive as one email, not hundreds.
+        void this.mail.queueFailedSend(existing.userId, {
+          to: existing.to,
+          reason,
+        });
+        await this.notifications.notifyUsers(
+          [existing.userId],
+          'messageFailed',
+          {
+            title: 'Message failed to deliver',
+            body: reason
+              ? `To ${existing.to}: ${reason}`
+              : `WhatsApp could not deliver your message to ${existing.to}.`,
+            link: `/messages/${existing.id}`,
+            data: { kind: 'messageFailed' },
+          },
+        );
+      }
     } catch (err: any) {
       this.logger.error(`Failed to update status for ${metaMessageId}: ${err.message}`);
     }
+  }
+
+  /** Meta's own words for why a send failed, when it gives any. */
+  private failureReason(statusUpdate: unknown): string | null {
+    const { errors } = (statusUpdate ?? {}) as { errors?: unknown };
+    if (!Array.isArray(errors) || errors.length === 0) return null;
+    const first = errors[0] as { title?: unknown; message?: unknown };
+    const text: unknown = first.title ?? first.message;
+    return typeof text === 'string' && text.trim() ? text : null;
   }
 }

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
 import { RedisService } from 'src/redis/redis.service';
 import * as crypto from 'crypto';
 import { CreateApiKeyDto, ApiKeyResponseDto } from './dto/api-key.dto';
@@ -10,6 +11,7 @@ export class ApiKeyService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
+    private readonly mail: MailNotifications,
     private readonly redisService: RedisService,
   ) {}
 
@@ -23,6 +25,10 @@ export class ApiKeyService {
     });
 
     await this.redisService.setApiKeyCache(accessKey, userId, ssoOrgId, encryptedSecretKey);
+
+    // The secret is shown once in the console and never emailed; this is the
+    // alert that catches a key somebody else created.
+    void this.mail.apiKeyCreated(userId, accessKey);
 
     return { accessKey, secretKey };
   }
@@ -47,5 +53,7 @@ export class ApiKeyService {
     });
 
     await this.redisService.deleteApiKeyCache(key.accessKey);
+
+    void this.mail.apiKeyRevoked(userId, key.accessKey);
   }
 }

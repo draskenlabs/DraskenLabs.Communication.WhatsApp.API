@@ -7,11 +7,17 @@ import {
 import axios from 'axios';
 import { Prisma, TemplateCategory, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import {
+  isMetaAuthFailure,
+  metaErrorMessage,
+} from 'src/mail/meta-auth-failure';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { BaseResponse } from 'src/common/responses/base-response';
 import { normalizeRejectedReason } from 'src/common/utils/rejected-reason';
 import {
   TemplateResponseDto,
+  TemplateStatusCountsDto,
   TemplateSyncResponseDto,
 } from './dto/template.dto';
 import { CreateTemplateDto } from './dto/create-template.dto';
@@ -49,6 +55,7 @@ export class TemplatesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
+    private readonly mail: MailNotifications,
   ) {}
 
   async syncTemplates(
@@ -172,6 +179,7 @@ export class TemplatesService {
       const metaMessage = this.logMetaError(
         `Meta template create failed for ${dto.name} on WABA ${wabaId}`,
         err,
+        wabaId,
       );
       throw new BadRequestException(metaMessage || 'Failed to create template');
     }
@@ -310,6 +318,7 @@ export class TemplatesService {
       const metaMessage = this.logMetaError(
         `Meta library template adoption failed for ${dto.libraryTemplateName} on WABA ${wabaId}`,
         err,
+        wabaId,
       );
       throw new BadRequestException(
         metaMessage || 'Failed to create template from the library',
@@ -404,6 +413,7 @@ export class TemplatesService {
       const metaMessage = this.logMetaError(
         `Meta template migration failed from ${dto.sourceWabaId} to ${destinationWabaId}`,
         err,
+        destinationWabaId,
       );
       throw new BadRequestException(
         metaMessage || 'Failed to migrate templates',
@@ -509,6 +519,33 @@ export class TemplatesService {
     return BaseResponse.success(rows.map(this.toDto));
   }
 
+  /**
+   * Template counts per status for the organisation (optionally one WABA).
+   * Deliberately ignores category and pagination: the console shows these
+   * beside its status filter, so they must describe everything behind it.
+   */
+  async statusCounts(
+    ssoOrgId: string,
+    wabaId?: string,
+  ): Promise<TemplateStatusCountsDto> {
+    const wabaIds = await this.resolveWabaIds(ssoOrgId, wabaId);
+
+    const grouped = await this.prisma.messageTemplate.groupBy({
+      by: ['status'],
+      where: { wabaId: { in: wabaIds } },
+      _count: { _all: true },
+    });
+
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    for (const row of grouped) {
+      byStatus[row.status] = row._count._all;
+      total += row._count._all;
+    }
+
+    return { total, byStatus };
+  }
+
   async findOne(ssoOrgId: string, id: number): Promise<TemplateResponseDto> {
     const template = await this.prisma.messageTemplate.findUnique({
       where: { id },
@@ -563,6 +600,7 @@ export class TemplatesService {
       const metaMessage = this.logMetaError(
         `Meta template edit failed for ${template.name}`,
         err,
+        template.wabaId,
       );
       throw new BadRequestException(metaMessage || 'Failed to update template');
     }
@@ -609,6 +647,7 @@ export class TemplatesService {
       const metaMessage = this.logMetaError(
         `Meta template delete failed for ${template.name}`,
         err,
+        template.wabaId,
       );
       throw new BadRequestException(metaMessage || 'Failed to delete template');
     }
@@ -703,7 +742,12 @@ export class TemplatesService {
    * Meta support needs to investigate. We surface the friendly message to the
    * caller but keep the diagnostic detail server-side.
    */
-  private logMetaError(context: string, err: any): string {
+  /**
+   * Log a Meta failure and, when it is our credentials that were rejected,
+   * tell whoever owns the account — sending is down until they reconnect, and
+   * a log line does not reach them.
+   */
+  private logMetaError(context: string, err: any, wabaId?: string): string {
     const metaError = err?.response?.data?.error;
     const userMessage =
       metaError?.error_user_msg ?? metaError?.message ?? err?.message;
@@ -720,6 +764,10 @@ export class TemplatesService {
     } else {
       this.logger.warn(`${context}: ${userMessage}`);
     }
+    if (wabaId && isMetaAuthFailure(err)) {
+      void this.mail.metaTokenRejected(wabaId, metaErrorMessage(err));
+    }
+
     return userMessage;
   }
 

@@ -27,12 +27,19 @@ export class AuthService {
     const tokens = await this.ssoService.exchangeCode(dto.code, dto.codeVerifier);
     const ssoUser = this.ssoService.decodeUserInfo(tokens.accessToken);
 
-    const user = await this.userService.findOrCreateBySsoId(ssoUser.ssoId);
     const organisations = await this.ssoService.listOrganizations(tokens.accessToken);
     // The access token has no name claims, so the display name has to come
     // from the SSO profile endpoint. Best-effort: login still succeeds without
     // it, falling back to what the token does carry.
     const profile = await this.ssoService.getProfile(tokens.accessToken);
+
+    // Contact details are stored locally so background jobs and webhooks can
+    // email this person without a token of theirs to call SSO with.
+    const user = await this.userService.findOrCreateBySsoId(ssoUser.ssoId, {
+      email: profile?.email || ssoUser.email,
+      firstName: profile?.firstName || ssoUser.firstName,
+      lastName: profile?.lastName || ssoUser.lastName,
+    });
 
     const sessionId = await this.redisService.createSessionId();
     await this.redisService.setSsoSession(sessionId, {

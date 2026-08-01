@@ -23,6 +23,7 @@ import { TemplateCategory, TemplateStatus } from '@prisma/client';
 import { TemplatesService } from './templates.service';
 import {
   TemplateResponseDto,
+  TemplateStatusCountsDto,
   TemplateSyncResponseDto,
 } from './dto/template.dto';
 import { CreateTemplateDto } from './dto/create-template.dto';
@@ -268,6 +269,33 @@ export class TemplatesController {
       page: page !== undefined ? Number(page) : undefined,
       limit: limit !== undefined ? Number(limit) : undefined,
     });
+  }
+
+  // Declared before `:id` so "status-counts" is not read as a template id.
+  @Get('status-counts')
+  @ApiOperation({
+    summary: 'Count templates per status',
+    description:
+      'Counts across every page, so a paginated list can still show how many ' +
+      'templates sit behind each status. Ignores the category filter.',
+  })
+  @ApiQuery({
+    name: 'wabaId',
+    required: false,
+    description: 'Limit the counts to one WABA',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: TemplateStatusCountsDto,
+    description: 'Totals per status',
+  })
+  @ApiStandardErrorResponses({ unauthorized: true })
+  async statusCounts(
+    @Req() req: Request,
+    @Query('wabaId') wabaId?: string,
+  ): Promise<TemplateStatusCountsDto> {
+    const orgId = (req as any).orgId;
+    if (!orgId) throw new UnauthorizedException();
+    return this.templatesService.statusCounts(orgId, wabaId);
   }
 
   @Get(':id')

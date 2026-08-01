@@ -8,9 +8,10 @@ import { AccountHandler } from './handlers/account.handler';
 import { TemplateStatusHandler } from './handlers/template-status.handler';
 import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
 import { UserModule } from 'src/user/user.module';
+import { NotificationsModule } from 'src/notifications/notifications.module';
 
 @Module({
-  imports: [UserModule],
+  imports: [UserModule, NotificationsModule],
   controllers: [WebhooksController],
   providers: [
     WebhooksService,

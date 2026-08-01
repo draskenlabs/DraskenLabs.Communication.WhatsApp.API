@@ -4,6 +4,8 @@ import { TemplatesService } from './templates.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import axios from 'axios';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -17,6 +19,7 @@ const mockPrisma = {
     findUnique: jest.fn(),
     update: jest.fn(),
     count: jest.fn(),
+    groupBy: jest.fn(),
   },
   $transaction: jest.fn(),
 };
@@ -28,6 +31,8 @@ const baseTemplate = {
   components: [], rejectedReason: null, createdAt: new Date(), updatedAt: new Date(),
 };
 
+const mockMailNotifications = mailNotificationsDouble();
+
 describe('TemplatesService', () => {
   let service: TemplatesService;
 
@@ -35,6 +40,7 @@ describe('TemplatesService', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
         TemplatesService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: EncryptionService, useValue: mockEncryption },
@@ -394,6 +400,42 @@ describe('TemplatesService', () => {
       await expect(
         service.migrateTemplates(1, 'sso_org_1', 'dest', { sourceWabaId: 'src' }),
       ).rejects.toThrow('Source WABA not owned by this business');
+    });
+  });
+
+  describe('statusCounts', () => {
+    it('totals every status across the org, ignoring pagination', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'w1' },
+        { wabaId: 'w2' },
+      ]);
+      mockPrisma.messageTemplate.groupBy.mockResolvedValue([
+        { status: 'APPROVED', _count: { _all: 12 } },
+        { status: 'REJECTED', _count: { _all: 3 } },
+      ]);
+
+      const result = await service.statusCounts('sso_org_1');
+
+      expect(mockPrisma.messageTemplate.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { wabaId: { in: ['w1', 'w2'] } } }),
+      );
+      expect(result).toEqual({
+        total: 15,
+        byStatus: { APPROVED: 12, REJECTED: 3 },
+      });
+    });
+
+    it('scopes the counts to one WABA when asked, checking ownership', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
+      mockPrisma.messageTemplate.groupBy.mockResolvedValue([]);
+
+      const result = await service.statusCounts('sso_org_1', 'w1');
+
+      expect(mockPrisma.waba.findFirst).toHaveBeenCalledWith({
+        where: { wabaId: 'w1', ssoOrgId: 'sso_org_1' },
+      });
+      // No templates yet is a zero, not a missing block the console has to guess at.
+      expect(result).toEqual({ total: 0, byStatus: {} });
     });
   });
 });

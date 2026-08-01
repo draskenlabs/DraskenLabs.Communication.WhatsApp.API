@@ -5,6 +5,8 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
 import axios from 'axios';
+import { MailNotifications } from 'src/mail/mail.notifications';
+import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -18,6 +20,8 @@ const mockPrisma = {
 const mockEncryption = { decrypt: jest.fn().mockReturnValue('plain_token') };
 const mockRedis = { invalidatePhoneCache: jest.fn() };
 
+const mockMailNotifications = mailNotificationsDouble();
+
 describe('WabaService', () => {
   let service: WabaService;
 
@@ -25,6 +29,7 @@ describe('WabaService', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: MailNotifications, useValue: mockMailNotifications },
         WabaService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: EncryptionService, useValue: mockEncryption },

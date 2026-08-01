@@ -3,6 +3,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { User } from '@prisma/client';
 import { RedisService } from 'src/redis/redis.service';
 import { DeleteAccountResultDto } from './dto/delete-account.dto';
+import { MailNotifications } from 'src/mail/mail.notifications';
 
 @Injectable()
 export class UserService {
@@ -11,6 +12,7 @@ export class UserService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
+    private readonly mail: MailNotifications,
   ) {}
 
   async findById(id: number): Promise<User | null> {
@@ -21,10 +23,27 @@ export class UserService {
     return this.prisma.user.findUnique({ where: { ssoId } });
   }
 
-  async findOrCreateBySsoId(ssoId: string): Promise<User> {
-    const existing = await this.prisma.user.findUnique({ where: { ssoId } });
-    if (existing) return existing;
-    return this.prisma.user.create({ data: { ssoId } });
+  /**
+   * Find or create the local user, refreshing the contact details copied from
+   * SSO. The email is held here because every notification email is triggered
+   * by a webhook or a scheduled job, where there is no user token to read the
+   * SSO profile with.
+   */
+  async findOrCreateBySsoId(
+    ssoId: string,
+    contact?: { email?: string; firstName?: string; lastName?: string },
+  ): Promise<User> {
+    const details = {
+      ...(contact?.email ? { email: contact.email } : {}),
+      ...(contact?.firstName ? { firstName: contact.firstName } : {}),
+      ...(contact?.lastName ? { lastName: contact.lastName } : {}),
+    };
+
+    return this.prisma.user.upsert({
+      where: { ssoId },
+      create: { ssoId, ...details },
+      update: details,
+    });
   }
 
   /**
@@ -47,6 +66,13 @@ export class UserService {
     userId: number,
     sessionId?: string,
   ): Promise<DeleteAccountResultDto> {
+    // Read before the row goes: after the transaction there is no address to
+    // send the receipt to.
+    const account = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+
     const wabas = await this.prisma.waba.findMany({
       where: { userId },
       select: { wabaId: true, ssoOrgId: true },
@@ -99,6 +125,10 @@ export class UserService {
       });
       const messages = await tx.message.deleteMany({ where: { userId } });
       const keys = await tx.userApiKey.deleteMany({ where: { userId } });
+      // Push registrations and preferences are per-user, so they go with the
+      // account — otherwise a device would keep a foreign key to a dead row.
+      const devices = await tx.deviceToken.deleteMany({ where: { userId } });
+      await tx.notificationPreference.deleteMany({ where: { userId } });
       const contacts = orphanedOrgs.length
         ? await tx.contact.deleteMany({
             where: { ssoOrgId: { in: orphanedOrgs } },
@@ -118,6 +148,7 @@ export class UserService {
         metaConnections: connections.count,
         contacts: contacts.count,
         webhookEvents: events.count,
+        devices: devices.count,
       };
     });
 
@@ -142,6 +173,16 @@ export class UserService {
     this.logger.log(
       `Deleted account for user ${userId}: ${JSON.stringify(result)}`,
     );
+
+    // The user's record of exactly what was removed — the Data Deletion page
+    // promises this in writing.
+    if (account?.email) {
+      void this.mail.accountDeleted(
+        account.email,
+        result as unknown as Record<string, number>,
+      );
+    }
+
     return result;
   }
 }
