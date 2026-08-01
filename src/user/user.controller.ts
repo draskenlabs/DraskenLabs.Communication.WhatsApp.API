@@ -1,10 +1,11 @@
-import { Controller, ForbiddenException, Get, Post, Req, UseGuards, UnauthorizedException } from '@nestjs/common';
+import { Controller, Delete, ForbiddenException, Get, Post, Req, UseGuards, UnauthorizedException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { UserService } from './user.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { UserProfileDto } from './dto/user-profile.dto';
+import { DeleteAccountResultDto } from './dto/delete-account.dto';
 import { RedisService } from 'src/redis/redis.service';
 import { SsoService } from 'src/auth/sso.service';
 import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
@@ -59,6 +60,25 @@ export class UserController {
       imageUrl: live?.imageUrl ?? session?.imageUrl ?? '',
       createdAt: live?.createdAt ?? session?.ssoCreatedAt ?? null,
     };
+  }
+
+  @Delete('account')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Delete this platform account and all of its WhatsApp data',
+    description:
+      'Removes everything WA Console holds for the caller — WABA connections, Meta access tokens, phone numbers, templates, messages and API keys. The DraskenLabs SSO account is NOT deleted (sign-in elsewhere is unaffected), and the WhatsApp Business Account itself stays with Meta. Irreversible.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: DeleteAccountResultDto,
+    description: 'What was deleted',
+  })
+  async deleteAccount(@Req() req: Request): Promise<DeleteAccountResultDto> {
+    const user = (req as any).user;
+    if (!user) {
+      throw new UnauthorizedException('User not found in context');
+    }
+    return this.userService.deleteAccount(user.id, (req as any).sessionId);
   }
 
   @Post('test-token')

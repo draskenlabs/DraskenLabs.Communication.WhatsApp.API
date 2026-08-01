@@ -23,6 +23,7 @@
 | A.5 | API Key Auth Middleware | ✅ Complete | `ApiKeyAuthMiddleware` — Redis-first lookup, validates secret |
 | A.6 | API Key Listing | ✅ Complete | `GET /api-keys` live |
 | A.7 | API Key Revocation | ✅ Complete | `DELETE /api-keys/:id` — deactivates in DB, removes Redis cache entry |
+| A.8 | Account Deletion | ✅ Complete | `DELETE /user/account` — transactional delete of everything this platform holds for the user (WABAs, Meta tokens, phone numbers, templates, messages, inbound messages, webhook events, API keys), plus a Redis purge. The SSO account is NOT deleted, and the WABA stays with Meta. Contacts are org-scoped, so they only go when no other user of this platform remains in the organisation |
 
 ---
 

@@ -7,7 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { RedisService } from 'src/redis/redis.service';
 import { SsoService } from 'src/auth/sso.service';
 
-const mockUserService = { findById: jest.fn() };
+const mockUserService = { findById: jest.fn(), deleteAccount: jest.fn() };
 const mockJwtService = { signAsync: jest.fn().mockResolvedValue('signed_token') };
 const mockConfigService = { get: jest.fn() };
 const mockRedisService = { getSsoSession: jest.fn() };
@@ -136,6 +136,22 @@ describe('UserController', () => {
       expect(result.access_token).toBe('signed_token');
       expect(result.user.id).toBe(1);
       expect(mockJwtService.signAsync).toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteAccount', () => {
+    it('deletes the caller\'s platform data and reports what went', async () => {
+      const summary = { wabas: 1, phoneNumbers: 2, templates: 3, messages: 4, inboundMessages: 5, apiKeys: 1, metaConnections: 1, contacts: 0, webhookEvents: 0 };
+      mockUserService.deleteAccount.mockResolvedValue(summary);
+      const req = { user: { id: 1, ssoId: 'sso_1' }, sessionId: 'sess_1' } as any;
+
+      await expect(controller.deleteAccount(req)).resolves.toEqual(summary);
+      expect(mockUserService.deleteAccount).toHaveBeenCalledWith(1, 'sess_1');
+    });
+
+    it('throws UnauthorizedException when user is missing', async () => {
+      await expect(controller.deleteAccount({} as any)).rejects.toThrow(UnauthorizedException);
+      expect(mockUserService.deleteAccount).not.toHaveBeenCalled();
     });
   });
 });
