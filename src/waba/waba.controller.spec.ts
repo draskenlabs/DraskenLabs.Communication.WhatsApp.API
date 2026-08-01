@@ -8,6 +8,7 @@ const mockWabaService = {
   getWabaDetailsFromMeta: jest.fn(),
   createOrUpdateWaba: jest.fn(),
   disconnectWaba: jest.fn(),
+  deleteWaba: jest.fn(),
   subscribeExistingWaba: jest.fn().mockResolvedValue(true),
 };
 
@@ -83,6 +84,38 @@ describe('WabaController', () => {
 
     it('throws UnauthorizedException when user or org missing', async () => {
       await expect(controller.disconnect('w1', {} as any)).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('remove', () => {
+    it('deletes the account and reports what went', async () => {
+      const req = {
+        user: { id: 1 },
+        orgId: 'sso_org_1',
+      } as unknown as Parameters<typeof controller.remove>[1];
+      const counts = {
+        phoneNumbers: 2,
+        templates: 14,
+        messages: 320,
+        inboundMessages: 187,
+        metaConnections: 1,
+        webhookEvents: 512,
+      };
+      mockWabaService.deleteWaba.mockResolvedValue(counts);
+
+      await expect(controller.remove('w1', req)).resolves.toEqual(counts);
+      expect(mockWabaService.deleteWaba).toHaveBeenCalledWith(
+        1,
+        'sso_org_1',
+        'w1',
+      );
+    });
+
+    it('throws UnauthorizedException when user or org missing', async () => {
+      const req = {} as Parameters<typeof controller.remove>[1];
+      await expect(controller.remove('w1', req)).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
   });
 });

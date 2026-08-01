@@ -52,6 +52,34 @@ export class WabaResponseDto {
   connected: boolean;
 }
 
+/** What a WABA deletion removed. Every count is our copy, never Meta's. */
+export class DeleteWabaResultDto {
+  @ApiProperty({ example: 2, description: 'Phone numbers removed' })
+  phoneNumbers: number;
+
+  @ApiProperty({ example: 14, description: 'Message templates removed' })
+  templates: number;
+
+  @ApiProperty({
+    example: 320,
+    description: "Sent messages removed, found through this account's numbers",
+  })
+  messages: number;
+
+  @ApiProperty({ example: 187, description: 'Received messages removed' })
+  inboundMessages: number;
+
+  @ApiProperty({
+    example: 1,
+    description:
+      "Meta access tokens removed — every member's, not just the caller's",
+  })
+  metaConnections: number;
+
+  @ApiProperty({ example: 512, description: 'Stored webhook events removed' })
+  webhookEvents: number;
+}
+
 export class MetaWabaDetailsDto {
   @ApiProperty({ example: '1610143633542913' })
   id: string;
