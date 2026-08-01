@@ -14,7 +14,7 @@ import { MailNotifications } from 'src/mail/mail.notifications';
 import {
   isMetaAuthFailure,
   metaErrorMessage,
-} from 'src/mail/meta-auth-failure';
+} from 'src/common/utils/meta-error';
 import { SendMessageDto, MessageTypeEnum, InteractiveTypeEnum } from './dto/send-message.dto';
 import { SendMessageResponseDto, MessageListItemDto } from './dto/message-response.dto';
 import { MessageAnalyticsDto } from './dto/message-analytics.dto';

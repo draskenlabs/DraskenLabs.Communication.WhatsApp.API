@@ -28,3 +28,24 @@ export function metaErrorMessage(err: unknown): string | undefined {
   )?.response?.data?.error;
   return error?.error_user_msg ?? error?.message;
 }
+
+/**
+ * The message to show a person when a Graph call fails.
+ *
+ * Meta's own wording is far more useful than "Unexpected server error" — it
+ * names the missing permission, the invalidated session or the unknown object.
+ * Falls back to a caller-supplied line when Meta says nothing useful.
+ */
+export function metaFailureMessage(err: unknown, fallback: string): string {
+  const message = metaErrorMessage(err);
+  if (message) return message;
+
+  const status = (err as { response?: { status?: number } })?.response?.status;
+  if (status === 404) {
+    return 'Meta does not recognise this account any more. It may have been deleted or moved to another business.';
+  }
+  if (status === 403) {
+    return 'Meta refused the request. The connected account may no longer grant us permission.';
+  }
+  return fallback;
+}

@@ -25,10 +25,11 @@ describe('WabaController', () => {
 
   describe('findAll', () => {
     it('returns WABAs for the org', async () => {
-      const req = { orgId: 'sso_org_1' } as any;
+      const req = { orgId: 'sso_org_1', user: { id: 1 } } as any;
       mockWabaService.findAllByOrgId.mockResolvedValue([{ wabaId: 'w1' }]);
       await expect(controller.findAll(req)).resolves.toEqual([{ wabaId: 'w1' }]);
-      expect(mockWabaService.findAllByOrgId).toHaveBeenCalledWith('sso_org_1');
+      // The user id decides whether each WABA counts as connected for them.
+      expect(mockWabaService.findAllByOrgId).toHaveBeenCalledWith('sso_org_1', 1);
     });
 
     it('throws UnauthorizedException when orgId missing', async () => {
@@ -56,7 +57,12 @@ describe('WabaController', () => {
       mockWabaService.getWabaDetailsFromMeta.mockResolvedValue(metaDetails);
       mockWabaService.createOrUpdateWaba.mockResolvedValue({ wabaId: 'w1' });
 
-      await expect(controller.syncWaba('w1', req)).resolves.toEqual({ wabaId: 'w1' });
+      // A successful sync proves the caller's token works, so the result is
+      // reported as connected.
+      await expect(controller.syncWaba('w1', req)).resolves.toEqual({
+        wabaId: 'w1',
+        connected: true,
+      });
       expect(mockWabaService.createOrUpdateWaba).toHaveBeenCalledWith(
         expect.objectContaining({ wabaId: 'w1', userId: 1, ssoOrgId: 'sso_org_1' }),
       );
