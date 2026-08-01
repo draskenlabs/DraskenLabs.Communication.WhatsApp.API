@@ -65,12 +65,11 @@ export class WebhooksService {
     ]);
 
     const data = events.map((e) => {
-      const { kind, summary } = this.describeEvent(e.eventType, e.payload);
+      const described = this.describeEvent(e.eventType, e.payload);
       return {
         id: e.id,
         eventType: e.eventType,
-        kind,
-        summary,
+        ...described,
         wabaId: e.wabaId,
         processed: e.processed,
         error: e.error ?? undefined,
@@ -82,11 +81,27 @@ export class WebhooksService {
     return BaseResponse.paginate(data, total, totalPages, page, limit);
   }
 
-  /** Derive a display kind + one-line summary from a stored change payload. */
+  /**
+   * Turn a stored Meta change payload into something a human can read.
+   *
+   * The raw payload is all ids — a `wamid` is 60-odd characters of base64 and
+   * tells an operator nothing. What they actually want to know is: what
+   * happened, to which number, and why it failed. Everything below is pulled
+   * out into named fields so the console can lay it out rather than parse a
+   * sentence back apart.
+   */
   private describeEvent(
     eventType: string,
     payload: unknown,
-  ): { kind: WebhookEventKind; summary: string } {
+  ): {
+    kind: WebhookEventKind;
+    title: string;
+    detail?: string;
+    status?: string;
+    recipient?: string;
+    messageId?: string;
+    reason?: string;
+  } {
     const value = (payload ?? {}) as Record<string, any>;
 
     switch (eventType) {
@@ -94,44 +109,124 @@ export class WebhooksService {
         const statuses = value.statuses as any[] | undefined;
         if (statuses?.length) {
           const s = statuses[0];
+          const status = typeof s.status === 'string' ? s.status : undefined;
+          // Meta reports a failure reason as an array; the title is the short
+          // form ("Message undeliverable"), the message adds the detail.
+          const err = Array.isArray(s.errors) ? s.errors[0] : undefined;
+          const reason = err
+            ? [err.title, err.error_data?.details ?? err.message]
+                .filter((part: unknown): part is string => typeof part === 'string' && part !== '')
+                .join(' — ')
+            : undefined;
           return {
             kind: 'status_update',
-            summary: `Message ${s.id ?? ''} → ${s.status ?? 'update'}`.trim(),
+            title: status ? `Message ${status}` : 'Message status updated',
+            status,
+            recipient: typeof s.recipient_id === 'string' ? s.recipient_id : undefined,
+            messageId: typeof s.id === 'string' ? s.id : undefined,
+            reason,
+            detail: this.conversationDetail(s),
           };
         }
+
         const messages = value.messages as any[] | undefined;
         if (messages?.length) {
           const m = messages[0];
+          const type = typeof m.type === 'string' ? m.type : 'message';
+          const contact = (value.contacts as any[] | undefined)?.[0];
+          const senderName = contact?.profile?.name as string | undefined;
           return {
             kind: 'inbound_message',
-            summary: `Inbound ${m.type ?? 'message'} from ${m.from ?? 'unknown'}`,
+            title: type === 'text' ? 'Reply received' : `Inbound ${type}`,
+            recipient: typeof m.from === 'string' ? m.from : undefined,
+            messageId: typeof m.id === 'string' ? m.id : undefined,
+            detail: this.inboundDetail(m, senderName),
           };
         }
-        return { kind: 'status_update', summary: 'Message event' };
+        return { kind: 'status_update', title: 'Message event' };
       }
-      case 'message_template_status_update':
+
+      case 'message_template_status_update': {
+        const event = typeof value.event === 'string' ? value.event : undefined;
+        const name = (value.message_template_name as string) ?? 'Template';
+        const reason =
+          typeof value.reason === 'string' && value.reason.toUpperCase() !== 'NONE'
+            ? value.reason
+            : undefined;
         return {
           kind: 'template_status',
-          summary: `${value.message_template_name ?? 'Template'} → ${value.event ?? 'updated'}`,
+          title: event ? `Template ${event.toLowerCase()}` : 'Template updated',
+          status: event,
+          reason,
+          detail: [name, value.message_template_language]
+            .filter((part: unknown): part is string => typeof part === 'string' && part !== '')
+            .join(' · '),
         };
+      }
+
       case 'phone_number_quality_update':
         return {
           kind: 'account_update',
-          summary: `Phone quality → ${value.current_limit ?? value.event ?? 'updated'}`,
+          title: 'Number quality changed',
+          status: (value.event as string) ?? undefined,
+          recipient: (value.display_phone_number as string) ?? undefined,
+          detail: value.current_limit
+            ? `Messaging limit now ${String(value.current_limit).replace(/_/g, ' ').toLowerCase()}`
+            : undefined,
         };
+
       case 'phone_number_name_update':
         return {
           kind: 'account_update',
-          summary: `Phone name → ${value.decision ?? 'updated'}`,
+          title: 'Display name review',
+          status: (value.decision as string) ?? undefined,
+          recipient: (value.display_phone_number as string) ?? undefined,
+          detail: (value.requested_verified_name as string) ?? undefined,
         };
+
       case 'account_update':
         return {
           kind: 'account_update',
-          summary: `Account ${value.event ?? 'updated'}`,
+          title: value.event
+            ? `Account ${String(value.event).replace(/_/g, ' ').toLowerCase()}`
+            : 'Account updated',
+          status: (value.event as string) ?? undefined,
+          detail: (value.ban_info?.waba_ban_state as string) ?? undefined,
         };
+
       default:
-        return { kind: 'account_update', summary: eventType };
+        return {
+          kind: 'account_update',
+          title: eventType.replace(/_/g, ' '),
+        };
     }
+  }
+
+  /** "Marketing conversation" / "Free conversation" from a status payload. */
+  private conversationDetail(status: Record<string, any>): string | undefined {
+    const category = status.conversation?.origin?.type as string | undefined;
+    if (!category) return undefined;
+    const readable = category.replace(/_/g, ' ');
+    return status.pricing?.billable === false
+      ? `${readable} conversation · free`
+      : `${readable} conversation`;
+  }
+
+  /** A short preview of what the customer actually sent. */
+  private inboundDetail(
+    message: Record<string, any>,
+    senderName?: string,
+  ): string | undefined {
+    const body =
+      (message.text?.body as string | undefined) ??
+      (message.button?.text as string | undefined) ??
+      (message.interactive?.button_reply?.title as string | undefined) ??
+      (message.interactive?.list_reply?.title as string | undefined) ??
+      (message.image?.caption as string | undefined) ??
+      (message.video?.caption as string | undefined);
+
+    const preview = body ? (body.length > 140 ? `${body.slice(0, 139)}…` : body) : undefined;
+    return [senderName, preview].filter(Boolean).join(': ') || undefined;
   }
 
   async processPayload(body: any): Promise<void> {

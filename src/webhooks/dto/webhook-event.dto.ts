@@ -17,8 +17,30 @@ export class WebhookEventDto {
   @ApiProperty({ description: 'Grouped kind used for display' })
   kind: WebhookEventKind;
 
-  @ApiProperty({ description: 'Human-readable one-line summary derived from the payload' })
-  summary: string;
+  @ApiProperty({ description: 'Human-readable headline derived from the payload' })
+  title: string;
+
+  @ApiPropertyOptional({
+    description: 'Secondary line — message preview, template name, quality tier, etc.',
+  })
+  detail?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Delivery status (sent / delivered / read / failed) or template decision (APPROVED / REJECTED / …)',
+  })
+  status?: string;
+
+  @ApiPropertyOptional({ description: "The other party's phone number, in E.164 digits" })
+  recipient?: string;
+
+  @ApiPropertyOptional({ description: "Meta's message id (wamid) this event concerns" })
+  messageId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Why Meta rejected or failed to deliver — the reason it reported',
+  })
+  reason?: string;
 
   @ApiProperty()
   wabaId: string;
