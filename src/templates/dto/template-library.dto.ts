@@ -47,6 +47,16 @@ export class ListTemplateLibraryDto {
   @IsOptional()
   @IsString()
   language?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'UTILITY | MARKETING | AUTHENTICATION. Sent to Meta and also applied to ' +
+      'what it returns, so the filter holds whether or not Meta narrows the ' +
+      'query itself.',
+  })
+  @IsOptional()
+  @IsString()
+  category?: string;
 }
 
 /** One template as Meta's library returns it. */
@@ -57,7 +67,12 @@ export class LibraryTemplateDto {
   })
   name: string;
   @ApiProperty() language: string;
-  @ApiProperty({ description: 'Always UTILITY for library templates' })
+  @ApiProperty({
+    description:
+      "The entry's category as Meta publishes it — mostly UTILITY, but the " +
+      'library now carries others too',
+    example: 'UTILITY',
+  })
   category: string;
 
   @ApiPropertyOptional() topic?: string;

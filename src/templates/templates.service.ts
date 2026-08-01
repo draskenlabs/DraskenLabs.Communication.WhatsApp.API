@@ -254,6 +254,7 @@ export class TemplatesService {
     if (filters.usecase) params.usecase = filters.usecase;
     if (filters.industry) params.industry = filters.industry;
     if (filters.language) params.language = filters.language;
+    if (filters.category) params.category = filters.category;
 
     try {
       const response = await axios.get(
@@ -263,7 +264,15 @@ export class TemplatesService {
       const rows: unknown[] = Array.isArray(response.data?.data)
         ? response.data.data
         : [];
-      return rows.map((row) => this.toLibraryDto(row));
+
+      const mapped = rows.map((row) => this.toLibraryDto(row));
+      // Applied again on the way back. Meta is not documented to narrow the
+      // library by category, so passing the parameter alone would leave the
+      // filter silently doing nothing.
+      const wanted = filters.category?.toUpperCase();
+      return wanted
+        ? mapped.filter((t) => t.category?.toUpperCase() === wanted)
+        : mapped;
     } catch (err: unknown) {
       const metaMessage = this.logMetaError(
         'Meta template library lookup failed',
