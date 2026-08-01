@@ -2,6 +2,23 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailService } from './mail.service';
 
+/**
+ * What each counter in the deletion result is called in the email. Humanising
+ * the key gives "Wabas" and "Api keys", which is not what anyone calls them.
+ */
+const DELETION_LABEL: Record<string, string> = {
+  wabas: 'WhatsApp Business Accounts',
+  phoneNumbers: 'Phone numbers',
+  templates: 'Message templates',
+  messages: 'Sent messages',
+  inboundMessages: 'Received messages',
+  apiKeys: 'API keys',
+  metaConnections: 'Meta access tokens',
+  contacts: 'Contacts',
+  webhookEvents: 'Webhook events',
+  devices: 'Registered devices',
+};
+
 /** Human wording for a template decision. */
 const TEMPLATE_HEADLINE: Record<string, string> = {
   APPROVED: 'Template approved',
@@ -38,7 +55,7 @@ export class MailNotifications {
     const facts = Object.entries(counts)
       .filter(([, value]) => value > 0)
       .map(([key, value]): [string, string] => [
-        this.humanise(key),
+        DELETION_LABEL[key] ?? this.humanise(key),
         String(value),
       ]);
 
