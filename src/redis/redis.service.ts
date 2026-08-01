@@ -93,6 +93,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return JSON.parse(raw);
   }
 
+  async deleteSsoSession(sessionId: string): Promise<void> {
+    await this.client.del(`ssosession:${sessionId}`);
+  }
+
   // User Cache
   async getUserCache(userId: number): Promise<{ id: number; ssoId: string } | null> {
     const raw = await this.client.get(`user:${userId}`);
