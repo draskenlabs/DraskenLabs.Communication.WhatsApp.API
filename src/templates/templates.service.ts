@@ -12,6 +12,7 @@ import { BaseResponse } from 'src/common/responses/base-response';
 import { normalizeRejectedReason } from 'src/common/utils/rejected-reason';
 import {
   TemplateResponseDto,
+  TemplateStatusCountsDto,
   TemplateSyncResponseDto,
 } from './dto/template.dto';
 import { CreateTemplateDto } from './dto/create-template.dto';
@@ -507,6 +508,33 @@ export class TemplatesService {
       orderBy: { name: 'asc' },
     });
     return BaseResponse.success(rows.map(this.toDto));
+  }
+
+  /**
+   * Template counts per status for the organisation (optionally one WABA).
+   * Deliberately ignores category and pagination: the console shows these
+   * beside its status filter, so they must describe everything behind it.
+   */
+  async statusCounts(
+    ssoOrgId: string,
+    wabaId?: string,
+  ): Promise<TemplateStatusCountsDto> {
+    const wabaIds = await this.resolveWabaIds(ssoOrgId, wabaId);
+
+    const grouped = await this.prisma.messageTemplate.groupBy({
+      by: ['status'],
+      where: { wabaId: { in: wabaIds } },
+      _count: { _all: true },
+    });
+
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    for (const row of grouped) {
+      byStatus[row.status] = row._count._all;
+      total += row._count._all;
+    }
+
+    return { total, byStatus };
   }
 
   async findOne(ssoOrgId: string, id: number): Promise<TemplateResponseDto> {

@@ -43,3 +43,20 @@ export class TemplateSyncResponseDto {
   @ApiProperty()
   wabaId: string;
 }
+
+/**
+ * How many templates sit behind each status, across every page. The console's
+ * status filter shows these next to its options, which client-side counting
+ * cannot do once the list is paginated server-side.
+ */
+export class TemplateStatusCountsDto {
+  @ApiProperty({ description: 'Templates in scope, whatever their status' })
+  total: number;
+
+  @ApiProperty({
+    description: 'Count per status; a status with no templates is omitted',
+    example: { APPROVED: 12, PENDING: 1, REJECTED: 3 },
+    additionalProperties: { type: 'number' },
+  })
+  byStatus: Record<string, number>;
+}

@@ -17,6 +17,7 @@ const mockPrisma = {
     findUnique: jest.fn(),
     update: jest.fn(),
     count: jest.fn(),
+    groupBy: jest.fn(),
   },
   $transaction: jest.fn(),
 };
@@ -394,6 +395,42 @@ describe('TemplatesService', () => {
       await expect(
         service.migrateTemplates(1, 'sso_org_1', 'dest', { sourceWabaId: 'src' }),
       ).rejects.toThrow('Source WABA not owned by this business');
+    });
+  });
+
+  describe('statusCounts', () => {
+    it('totals every status across the org, ignoring pagination', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'w1' },
+        { wabaId: 'w2' },
+      ]);
+      mockPrisma.messageTemplate.groupBy.mockResolvedValue([
+        { status: 'APPROVED', _count: { _all: 12 } },
+        { status: 'REJECTED', _count: { _all: 3 } },
+      ]);
+
+      const result = await service.statusCounts('sso_org_1');
+
+      expect(mockPrisma.messageTemplate.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { wabaId: { in: ['w1', 'w2'] } } }),
+      );
+      expect(result).toEqual({
+        total: 15,
+        byStatus: { APPROVED: 12, REJECTED: 3 },
+      });
+    });
+
+    it('scopes the counts to one WABA when asked, checking ownership', async () => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
+      mockPrisma.messageTemplate.groupBy.mockResolvedValue([]);
+
+      const result = await service.statusCounts('sso_org_1', 'w1');
+
+      expect(mockPrisma.waba.findFirst).toHaveBeenCalledWith({
+        where: { wabaId: 'w1', ssoOrgId: 'sso_org_1' },
+      });
+      // No templates yet is a zero, not a missing block the console has to guess at.
+      expect(result).toEqual({ total: 0, byStatus: {} });
     });
   });
 });
