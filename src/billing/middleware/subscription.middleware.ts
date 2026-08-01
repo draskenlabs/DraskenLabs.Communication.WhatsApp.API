@@ -6,11 +6,16 @@ import { RazorpayService } from '../razorpay.service';
 /**
  * The paywall on the programmatic API.
  *
- * It runs after the messaging auth middleware, so `authType` is already known:
- * only API-key traffic is charged for. The console authenticates with a JWT
- * and stays free — someone who has stopped paying can still read their
- * history, export it and re-subscribe, which is the difference between ending
- * a subscription and locking someone out of their own account.
+ * Subscriptions are per WhatsApp Business Account and API keys are scoped to
+ * one, so the account to charge for is the one the key names — already
+ * resolved onto the request by the API-key middleware, which is why this runs
+ * after it. No allocation of paid accounts to requests, and no way for a key
+ * to ride on an account somebody else paid for.
+ *
+ * `authType` decides who pays: the console authenticates with a JWT and stays
+ * free. Someone who has stopped paying can still read their history, export it
+ * and re-subscribe, which is the difference between ending a subscription and
+ * locking someone out of their own account.
  *
  * A deployment with no Razorpay credentials lets everything through, so the
  * self-hosted and development cases do not need a payment provider.
@@ -27,11 +32,13 @@ export class SubscriptionMiddleware implements NestMiddleware {
       return next();
     }
 
-    const orgId = (req as any).orgId as string | undefined;
-    if (orgId && (await this.billing.hasAccess(orgId))) return next();
+    const wabaId = (req as any).apiKeyWabaId as string | undefined;
+    if (wabaId && (await this.billing.hasAccess(wabaId))) return next();
 
     throw new HttpException(
-      'This organisation has no active subscription. Subscribe in the console to use the API.',
+      wabaId
+        ? `WhatsApp Business Account ${wabaId} has no active subscription. Subscribe in the console to use the API with this key.`
+        : 'This API key is not scoped to a WhatsApp Business Account.',
       HttpStatus.PAYMENT_REQUIRED,
     );
   }

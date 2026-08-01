@@ -64,6 +64,7 @@ model Waba {
   InboundMessage  InboundMessage[]
   MessageTemplate MessageTemplate[]
   UserApiKey      UserApiKey[]
+  Subscription    Subscription?
 }
 
 model WabaPhoneNumber {
@@ -121,11 +122,18 @@ enum SubscriptionStatus {
   expired
 }
 
-/// One subscription per organisation: a flat monthly fee for calling the
-/// Messaging API with an API key.
+/// One subscription per WhatsApp Business Account: a flat monthly fee per
+/// account for calling the Messaging API against it. API keys are scoped to a
+/// WABA, so the key's account is the one that has to be paid for.
 model Subscription {
-  id       Int    @id @default(autoincrement())
-  ssoOrgId String @unique
+  id Int @id @default(autoincrement())
+
+  /// The account this pays for. Null only once that account has been deleted,
+  /// which leaves the row as billing history and grants nothing.
+  wabaId String? @unique
+  /// Kept alongside so an organisation's subscriptions can be listed without
+  /// joining, and so history survives the WABA it paid for.
+  ssoOrgId String
 
   razorpayCustomerId     String?
   razorpaySubscriptionId String  @unique
@@ -155,6 +163,9 @@ model Subscription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  waba Waba? @relation(fields: [wabaId], references: [wabaId])
+
+  @@index([ssoOrgId])
   @@index([status])
 }
 

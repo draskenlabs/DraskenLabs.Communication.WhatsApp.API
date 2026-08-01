@@ -36,7 +36,7 @@ export class BillingService {
   ) {}
 
   /**
-   * Whether a subscription entitles its organisation to the API right now.
+   * Whether a subscription entitles its account to the API right now.
    *
    * The paid month wins over the status. A customer who cancels on day 2 has
    * bought the month, so `cancelled` with a `currentEnd` in the future still
@@ -49,15 +49,29 @@ export class BillingService {
     return sub.status === 'active' || sub.status === 'authenticated';
   }
 
-  /** The org's subscription, or null when it never had one. */
-  private find(ssoOrgId: string) {
-    return this.prisma.subscription.findUnique({ where: { ssoOrgId } });
+  private find(wabaId: string) {
+    return this.prisma.subscription.findUnique({ where: { wabaId } });
   }
 
-  async getState(ssoOrgId: string): Promise<SubscriptionStateDto> {
-    const sub = await this.find(ssoOrgId);
+  /** The WABA, if it belongs to the caller's organisation. */
+  private async ownedWaba(ssoOrgId: string, wabaId: string) {
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, ssoOrgId },
+      select: { wabaId: true, name: true },
+    });
+    if (!waba) {
+      throw new NotFoundException(`WABA ${wabaId} not found in this organisation`);
+    }
+    return waba;
+  }
 
+  private toState(
+    waba: { wabaId: string; name: string | null },
+    sub: Subscription | null,
+  ): SubscriptionStateDto {
     return {
+      wabaId: waba.wabaId,
+      wabaName: waba.name,
       active: BillingService.grants(sub),
       status: sub?.status ?? null,
       currentStart: sub?.currentStart ?? null,
@@ -73,50 +87,76 @@ export class BillingService {
   }
 
   /**
+   * One row per connected account, subscribed or not.
+   *
+   * Accounts without a subscription are included on purpose: the console's job
+   * is to show which ones are paid for and offer the rest, and an account
+   * missing from the list would read as "not connected" rather than "not paid".
+   */
+  async listStates(ssoOrgId: string): Promise<SubscriptionStateDto[]> {
+    const [wabas, subs] = await Promise.all([
+      this.prisma.waba.findMany({
+        where: { ssoOrgId },
+        select: { wabaId: true, name: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.subscription.findMany({ where: { ssoOrgId } }),
+    ]);
+
+    const byWaba = new Map(subs.filter((s) => s.wabaId).map((s) => [s.wabaId!, s]));
+    return wabas.map((waba) => this.toState(waba, byWaba.get(waba.wabaId) ?? null));
+  }
+
+  /**
    * Access for the API-key path, cached briefly.
    *
-   * Called on every API request, so it must not be a database read each time;
-   * it must also not be stale for long, which is why the entry is both short
-   * lived and dropped by the webhook.
+   * Keyed by the account the key is scoped to, which the API-key middleware
+   * has already resolved — so "is this request paid for" is one lookup, with
+   * no allocation of seats to accounts to get wrong.
    */
-  async hasAccess(ssoOrgId: string): Promise<boolean> {
-    const cached = await this.redis.getSubscriptionAccess(ssoOrgId);
+  async hasAccess(wabaId: string): Promise<boolean> {
+    const cached = await this.redis.getSubscriptionAccess(wabaId);
     if (cached !== null) return cached;
 
-    const allowed = BillingService.grants(await this.find(ssoOrgId));
-    await this.redis.setSubscriptionAccess(ssoOrgId, allowed);
+    const allowed = BillingService.grants(await this.find(wabaId));
+    await this.redis.setSubscriptionAccess(wabaId, allowed);
     return allowed;
   }
 
   /**
-   * Start a subscription: a Razorpay customer, a monthly subscription against
-   * the configured plan, and the hosted page where the customer authorises the
-   * mandate. Nothing is charged until they do.
+   * Start a subscription for one account: a Razorpay customer, a monthly
+   * subscription against the configured plan, and the hosted page where the
+   * customer authorises the mandate. Nothing is charged until they do.
    */
   async register(
     userId: number,
     ssoOrgId: string,
+    wabaId: string,
     profile: { name?: string; email?: string },
   ): Promise<SubscriptionRegisteredDto> {
     if (!this.razorpay.isConfigured()) {
       throw new BadRequestException('Payments are not configured on this deployment');
     }
 
-    const existing = await this.find(ssoOrgId);
+    await this.ownedWaba(ssoOrgId, wabaId);
+    const existing = await this.find(wabaId);
 
     // Registering again while one is running would leave two mandates against
-    // the same organisation, and two debits a month.
+    // the same account, and two debits a month.
     if (existing && !this.isFinished(existing)) {
       if (existing.cancelAtCycleEnd) {
         throw new BadRequestException(
           'This subscription is set to end at the close of the paid month. It cannot be replaced until then.',
         );
       }
-      throw new BadRequestException('This organisation already has a subscription');
+      throw new BadRequestException('This account already has a subscription');
     }
 
+    // One Razorpay customer per organisation, so a customer paying for three
+    // accounts still has one payment history rather than three.
     const customerId =
       existing?.razorpayCustomerId ??
+      (await this.orgCustomerId(ssoOrgId)) ??
       (
         await this.razorpay.createCustomer({
           name: profile.name,
@@ -125,14 +165,15 @@ export class BillingService {
         })
       ).id;
 
-    // The org id travels on the subscription so a webhook can be traced back
+    // The account travels on the subscription so a webhook can be traced back
     // even if the local row were lost.
     const created = await this.razorpay.createSubscription({
       customerId,
-      notes: { ssoOrgId, userId: String(userId) },
+      notes: { ssoOrgId, wabaId, userId: String(userId) },
     });
 
     const data = {
+      ssoOrgId,
       razorpayCustomerId: customerId,
       razorpaySubscriptionId: created.id,
       planId: created.plan_id,
@@ -146,26 +187,39 @@ export class BillingService {
     };
 
     await this.prisma.subscription.upsert({
-      where: { ssoOrgId },
-      create: { ssoOrgId, ...data },
+      where: { wabaId },
+      create: { wabaId, ...data },
       update: data,
     });
-    await this.redis.invalidateSubscriptionAccess(ssoOrgId);
+    await this.redis.invalidateSubscriptionAccess(wabaId);
 
     return {
+      wabaId,
       authorisationUrl: created.short_url ?? '',
       status: data.status,
     };
   }
 
+  /** Any Razorpay customer already known for this organisation. */
+  private async orgCustomerId(ssoOrgId: string): Promise<string | undefined> {
+    const previous = await this.prisma.subscription.findFirst({
+      where: { ssoOrgId, razorpayCustomerId: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      select: { razorpayCustomerId: true },
+    });
+    return previous?.razorpayCustomerId ?? undefined;
+  }
+
   /**
-   * Cancel. The month already paid for is not refunded and not cut short —
-   * Razorpay stops at the end of the cycle, and access here follows
-   * `currentEnd`. A subscription whose mandate was never authorised has no
-   * paid month to protect, so it stops immediately.
+   * Cancel one account's subscription. The month already paid for is not
+   * refunded and not cut short — Razorpay stops at the end of the cycle, and
+   * access here follows `currentEnd`. A subscription whose mandate was never
+   * authorised has no paid month to protect, so it stops immediately.
    */
-  async cancel(ssoOrgId: string): Promise<SubscriptionStateDto> {
-    const sub = await this.find(ssoOrgId);
+  async cancel(ssoOrgId: string, wabaId: string): Promise<SubscriptionStateDto> {
+    const waba = await this.ownedWaba(ssoOrgId, wabaId);
+    const sub = await this.find(wabaId);
+
     if (!sub) throw new NotFoundException('No subscription to cancel');
     if (this.isFinished(sub)) {
       throw new BadRequestException('This subscription has already ended');
@@ -180,8 +234,8 @@ export class BillingService {
       paidMonthLeft,
     );
 
-    await this.prisma.subscription.update({
-      where: { ssoOrgId },
+    const updated = await this.prisma.subscription.update({
+      where: { wabaId },
       data: {
         status: this.toStatus(remote.status),
         cancelAtCycleEnd: paidMonthLeft,
@@ -189,14 +243,15 @@ export class BillingService {
         shortUrl: null,
       },
     });
-    await this.redis.invalidateSubscriptionAccess(ssoOrgId);
+    await this.redis.invalidateSubscriptionAccess(wabaId);
 
     void this.mail.subscriptionCancelled(
       sub.createdByUserId,
+      waba.name ?? wabaId,
       paidMonthLeft ? sub.currentEnd : null,
     );
 
-    return this.getState(ssoOrgId);
+    return this.toState(waba, updated);
   }
 
   /**
@@ -237,6 +292,7 @@ export class BillingService {
 
     const sub = await this.prisma.subscription.findUnique({
       where: { razorpaySubscriptionId: entity.id },
+      include: { waba: { select: { name: true } } },
     });
 
     if (!sub) {
@@ -266,14 +322,15 @@ export class BillingService {
       },
     });
 
-    await this.redis.invalidateSubscriptionAccess(sub.ssoOrgId);
-    await this.notify(event, sub, status, currentEnd ?? sub.currentEnd);
+    if (sub.wabaId) await this.redis.invalidateSubscriptionAccess(sub.wabaId);
+    await this.notify(event, sub, sub.waba?.name ?? sub.wabaId ?? 'your account', status, currentEnd ?? sub.currentEnd);
   }
 
   /** One email per state a customer would want to hear about. */
   private async notify(
     event: string,
     sub: Subscription,
+    account: string,
     status: SubscriptionStatus,
     currentEnd: Date | null,
   ): Promise<void> {
@@ -281,7 +338,7 @@ export class BillingService {
       // Both fire around the first successful debit; the mail is sent for the
       // one that carries the period, and only when the period actually moved.
       if (status === 'active' && currentEnd && currentEnd > (sub.currentEnd ?? new Date(0))) {
-        void this.mail.subscriptionCharged(sub.createdByUserId, currentEnd);
+        void this.mail.subscriptionCharged(sub.createdByUserId, account, currentEnd);
       }
       return;
     }
@@ -289,6 +346,7 @@ export class BillingService {
     if (event === 'subscription.pending' || event === 'subscription.halted') {
       void this.mail.subscriptionPaymentFailed(
         sub.createdByUserId,
+        account,
         status === 'halted',
         currentEnd,
       );
@@ -305,9 +363,7 @@ export class BillingService {
   }
 
   private toStatus(status: string): SubscriptionStatus {
-    return (
-      STATUSES.has(status) ? status : 'created'
-    ) as SubscriptionStatus;
+    return (STATUSES.has(status) ? status : 'created') as SubscriptionStatus;
   }
 
   /**
@@ -346,7 +402,7 @@ export class BillingService {
                 : sub.currentEnd,
           },
         });
-        await this.redis.invalidateSubscriptionAccess(sub.ssoOrgId);
+        if (sub.wabaId) await this.redis.invalidateSubscriptionAccess(sub.wabaId);
       } catch (err) {
         // One unreachable subscription must not stop the rest of the sweep.
         this.logger.error(

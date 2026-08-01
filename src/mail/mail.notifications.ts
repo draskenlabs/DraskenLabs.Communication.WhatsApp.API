@@ -371,7 +371,11 @@ export class MailNotifications {
   /* ---------------- Billing ---------------- */
 
   /** A month was paid for — the receipt, and when the next debit falls. */
-  async subscriptionCharged(userId: number, paidUntil: Date): Promise<void> {
+  async subscriptionCharged(
+    userId: number,
+    account: string,
+    paidUntil: Date,
+  ): Promise<void> {
     const [recipient] = await this.mail.recipientsByIds([userId]);
     if (!recipient) return;
 
@@ -381,8 +385,11 @@ export class MailNotifications {
       subject: 'Your subscription is active',
       heading: 'Your subscription is active',
       intro:
-        'The payment went through and the Messaging API is open for your API keys.',
-      facts: [['Paid until', this.date(paidUntil)]],
+        'The payment went through and the Messaging API is open for the API keys on this account.',
+      facts: [
+        ['Account', account],
+        ['Paid until', this.date(paidUntil)],
+      ],
       paragraphs: [
         'The next payment is taken automatically on that date. You can cancel at any time — the month you have paid for is always yours to use.',
       ],
@@ -396,6 +403,7 @@ export class MailNotifications {
    */
   async subscriptionPaymentFailed(
     userId: number,
+    account: string,
     final: boolean,
     paidUntil: Date | null,
   ): Promise<void> {
@@ -410,7 +418,12 @@ export class MailNotifications {
       intro: final
         ? 'The retries are exhausted, so the mandate has stopped. API keys will stop working once the month you paid for runs out.'
         : 'The bank declined the payment. We will try again over the next few days — nothing changes for you in the meantime.',
-      facts: paidUntil ? [['API access until', this.date(paidUntil)]] : [],
+      facts: [
+        ['Account', account],
+        ...(paidUntil
+          ? ([['API access until', this.date(paidUntil)]] as [string, string][])
+          : []),
+      ],
       paragraphs: [
         final
           ? 'Subscribe again in the console to carry on. Nothing in your account has been deleted.'
@@ -421,7 +434,11 @@ export class MailNotifications {
   }
 
   /** Cancelled by the customer — mostly a receipt for when access ends. */
-  async subscriptionCancelled(userId: number, paidUntil: Date | null): Promise<void> {
+  async subscriptionCancelled(
+    userId: number,
+    account: string,
+    paidUntil: Date | null,
+  ): Promise<void> {
     const [recipient] = await this.mail.recipientsByIds([userId]);
     if (!recipient) return;
 
@@ -433,9 +450,14 @@ export class MailNotifications {
       intro: paidUntil
         ? 'No further payments will be taken. The month you have already paid for runs its course.'
         : 'No payments will be taken.',
-      facts: paidUntil ? [['API access until', this.date(paidUntil)]] : [],
+      facts: [
+        ['Account', account],
+        ...(paidUntil
+          ? ([['API access until', this.date(paidUntil)]] as [string, string][])
+          : []),
+      ],
       paragraphs: [
-        'Your account, WABAs, templates and message history are untouched. The console keeps working; only API-key access ends.',
+        'This account, its templates and its message history are untouched, and other accounts are unaffected. The console keeps working; only API-key access to this account ends.',
       ],
       action: { label: 'Subscribe again', path: '/billing' },
     });

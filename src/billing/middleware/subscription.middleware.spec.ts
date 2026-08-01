@@ -25,18 +25,24 @@ describe('SubscriptionMiddleware', () => {
     middleware = module.get<SubscriptionMiddleware>(SubscriptionMiddleware);
   });
 
-  it('lets a subscribed API key through', async () => {
+  it('lets a key through when its own account is subscribed', async () => {
     mockBilling.hasAccess.mockResolvedValue(true);
 
-    await middleware.use({ authType: 'apiKey', orgId: 'org_1' } as any, {} as any, next);
+    await middleware.use(
+      { authType: 'apiKey', orgId: 'org_1', apiKeyWabaId: 'waba_1' } as any,
+      {} as any,
+      next,
+    );
 
+    // The account charged is the one the key names, not the organisation.
+    expect(mockBilling.hasAccess).toHaveBeenCalledWith('waba_1');
     expect(next).toHaveBeenCalled();
   });
 
-  it('answers 402 for an API key with no subscription', async () => {
+  it('answers 402 when the key’s account is not subscribed', async () => {
     mockBilling.hasAccess.mockResolvedValue(false);
 
-    const req = { authType: 'apiKey', orgId: 'org_1' } as any;
+    const req = { authType: 'apiKey', orgId: 'org_1', apiKeyWabaId: 'waba_2' } as any;
     await expect(middleware.use(req, {} as any, next)).rejects.toMatchObject({
       status: 402,
     });
@@ -46,7 +52,11 @@ describe('SubscriptionMiddleware', () => {
   it('leaves the console alone', async () => {
     // The JWT path is free: someone who stopped paying can still read their
     // history, export it and subscribe again.
-    await middleware.use({ authType: 'jwt', orgId: 'org_1' } as any, {} as any, next);
+    await middleware.use(
+      { authType: 'jwt', orgId: 'org_1' } as any,
+      {} as any,
+      next,
+    );
 
     expect(mockBilling.hasAccess).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalled();
@@ -55,15 +65,19 @@ describe('SubscriptionMiddleware', () => {
   it('charges nobody when the deployment has no payment provider', async () => {
     mockRazorpay.isConfigured.mockReturnValue(false);
 
-    await middleware.use({ authType: 'apiKey', orgId: 'org_1' } as any, {} as any, next);
+    await middleware.use(
+      { authType: 'apiKey', orgId: 'org_1', apiKeyWabaId: 'waba_1' } as any,
+      {} as any,
+      next,
+    );
 
     expect(mockBilling.hasAccess).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalled();
   });
 
-  it('refuses an API key with no organisation rather than failing open', async () => {
+  it('refuses a key naming no account rather than failing open', async () => {
     await expect(
-      middleware.use({ authType: 'apiKey' } as any, {} as any, next),
+      middleware.use({ authType: 'apiKey', orgId: 'org_1' } as any, {} as any, next),
     ).rejects.toThrow(HttpException);
   });
 });

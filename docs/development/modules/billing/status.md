@@ -7,19 +7,24 @@
 
 ## Implemented
 
-- `Subscription` (one per org) and `SubscriptionEvent` (webhook audit and
-  idempotency) — migration `20260801700000_subscriptions`.
+- `Subscription` (one per WABA, with the organisation alongside for listing and
+  for history that outlives the account) and `SubscriptionEvent` (webhook audit
+  and idempotency) — migration `20260801700000_subscriptions`.
 - `RazorpayService`: customer, subscription create, cancel and fetch over their
   REST API. Absent credentials disable billing rather than break the boot.
 - `BillingService`: register, cancel, state, cached access check, webhook
   handling and the hourly reconciliation sweep.
-- `GET`/`POST`/`DELETE /billing/subscription` behind the JWT, and
+- `GET /billing/subscriptions` (one row per connected account, subscribed or
+  not) and `POST`/`DELETE /billing/subscriptions/:wabaId` behind the JWT;
   `POST /billing/webhook` behind an HMAC signature check.
-- `SubscriptionMiddleware` on `/messages`: API-key traffic needs a subscription,
-  console traffic does not, and `402` is the refusal.
+- `SubscriptionMiddleware` on `/messages`: an API key needs its *own* account
+  subscribed, console traffic needs nothing, and `402` is the refusal — naming
+  the account, so the message says which subscription is missing.
 - Billing emails: charged, payment failed (retrying vs stopped), cancelled.
-- Tests: 34 — the access rule in six shapes (including cancelled-but-paid and
-  retrying), register/cancel guards, webhook idempotency and out-of-order
+- Tests: 39 — the access rule in six shapes (including cancelled-but-paid and
+  retrying), per-account isolation, the org-ownership check on subscribe,
+  customer reuse across accounts, listing accounts with and without
+  subscriptions, register/cancel guards, webhook idempotency and out-of-order
   ordering, reconciliation resilience, the paywall, and signature verification.
 
 ## Before this can take money
@@ -30,8 +35,9 @@
    `subscription.*` events and set `RAZORPAY_WEBHOOK_SECRET` to match.
 3. Run the flow end to end in test mode: register → authorise → first charge →
    cancel → confirm access lasts to `currentEnd`.
-4. Decide what happens to existing organisations. Enforcement begins the moment
-   credentials are set, so either subscribe them first or leave Razorpay
+4. Decide what happens to existing accounts. Enforcement begins the moment
+   credentials are set, and it is per account — every connected WABA needs its
+   own subscription or its keys stop. Subscribe them first, or leave Razorpay
    unconfigured until they have.
 
 ## Pending / not in scope
@@ -40,6 +46,10 @@
   a replaced card means cancelling and registering again. Worth building a
   proper flow before this has many customers.
 - No proration, plan changes or refunds — one plan, one price, refunds by hand.
+- No volume pricing: ten accounts is ten subscriptions at the same price, and
+  ten mandate authorisations. If that becomes a complaint, a quantity-based
+  single subscription is the alternative — at the cost of having to decide
+  which account loses access when the quantity drops.
 - The mandate limits are Razorpay's: card and UPI auto-debits above the RBI
   e-mandate threshold prompt the customer each cycle. If the price ever crosses
   it, offer eNACH.

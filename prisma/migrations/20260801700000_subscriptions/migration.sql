@@ -1,5 +1,9 @@
--- Subscriptions: a flat monthly fee per organisation for calling the Messaging
--- API with an API key, collected by Razorpay auto-debit.
+-- Subscriptions: a flat monthly fee per WhatsApp Business Account for calling
+-- the Messaging API against it, collected by Razorpay auto-debit.
+--
+-- Per account rather than per organisation because API keys are already scoped
+-- to one WABA: the account a key names is the account that has to be paid for,
+-- which makes "is this request paid for" a lookup rather than an allocation.
 --
 -- `currentEnd` is the load-bearing column. Access is granted while it is in the
 -- future regardless of status, which is what lets a customer cancel at any
@@ -18,6 +22,7 @@ CREATE TYPE "SubscriptionStatus" AS ENUM (
 
 CREATE TABLE "Subscription" (
   "id"                     SERIAL NOT NULL,
+  "wabaId"                 TEXT,
   "ssoOrgId"               TEXT NOT NULL,
   "razorpayCustomerId"     TEXT,
   "razorpaySubscriptionId" TEXT NOT NULL,
@@ -35,11 +40,20 @@ CREATE TABLE "Subscription" (
   CONSTRAINT "Subscription_pkey" PRIMARY KEY ("id")
 );
 
--- One per organisation. A second row would make "does this org have access"
--- ambiguous, which is not a question that may have two answers.
-CREATE UNIQUE INDEX "Subscription_ssoOrgId_key" ON "Subscription"("ssoOrgId");
+-- One per account. A second row would make "is this account paid for"
+-- ambiguous, which is not a question that may have two answers. Postgres
+-- allows repeated NULLs, so history for deleted accounts still accumulates.
+CREATE UNIQUE INDEX "Subscription_wabaId_key" ON "Subscription"("wabaId");
 CREATE UNIQUE INDEX "Subscription_razorpaySubscriptionId_key" ON "Subscription"("razorpaySubscriptionId");
+CREATE INDEX "Subscription_ssoOrgId_idx" ON "Subscription"("ssoOrgId");
 CREATE INDEX "Subscription_status_idx" ON "Subscription"("status");
+
+-- Deleting a WABA leaves its billing history behind, unattached and granting
+-- nothing. Cascading would erase what was charged, which is not ours to erase.
+ALTER TABLE "Subscription"
+  ADD CONSTRAINT "Subscription_wabaId_fkey"
+  FOREIGN KEY ("wabaId") REFERENCES "Waba"("wabaId")
+  ON DELETE SET NULL ON UPDATE CASCADE;
 
 CREATE TABLE "SubscriptionEvent" (
   "id"                     SERIAL NOT NULL,

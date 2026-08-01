@@ -32,9 +32,9 @@ export class BillingModule implements NestModule {
     consumer
       .apply(AuthMiddleware)
       .forRoutes(
-        { path: 'billing/subscription', method: RequestMethod.GET },
-        { path: 'billing/subscription', method: RequestMethod.POST },
-        { path: 'billing/subscription', method: RequestMethod.DELETE },
+        { path: 'billing/subscriptions', method: RequestMethod.GET },
+        { path: 'billing/subscriptions/:wabaId', method: RequestMethod.POST },
+        { path: 'billing/subscriptions/:wabaId', method: RequestMethod.DELETE },
       );
   }
 }

@@ -1,16 +1,22 @@
 import { ApiProperty } from '@nestjs/swagger';
 
 export class SubscriptionStateDto {
+  @ApiProperty({ description: 'The WhatsApp Business Account this covers' })
+  wabaId: string;
+
+  @ApiProperty({ nullable: true, description: 'That account’s name, for display' })
+  wabaName: string | null;
+
   @ApiProperty({
     description:
-      'Whether the Messaging API may be called with an API key right now. ' +
-      'True for a paid month that has not run out, even after cancelling.',
+      'Whether an API key scoped to this account may call the Messaging API ' +
+      'right now. True for a paid month that has not run out, even after cancelling.',
   })
   active: boolean;
 
   @ApiProperty({
     nullable: true,
-    description: 'Razorpay status, or null when the organisation never subscribed',
+    description: 'Razorpay status, or null when this account was never subscribed',
     example: 'active',
   })
   status: string | null;
@@ -42,6 +48,9 @@ export class SubscriptionStateDto {
 }
 
 export class SubscriptionRegisteredDto {
+  @ApiProperty({ description: 'The account the subscription was started for' })
+  wabaId: string;
+
   @ApiProperty({ description: 'Where to send the customer to authorise the mandate' })
   authorisationUrl: string;
 

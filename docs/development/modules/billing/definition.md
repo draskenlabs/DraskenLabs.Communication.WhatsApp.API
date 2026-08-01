@@ -2,13 +2,18 @@
 
 ## Purpose
 
-A flat monthly subscription per organisation, collected by Razorpay auto-debit,
-which is what entitles an organisation to call the Messaging API with an API
-key. The console itself is not sold and not gated.
+A flat monthly subscription **per WhatsApp Business Account**, collected by
+Razorpay auto-debit, which is what entitles an API key scoped to that account
+to call the Messaging API. The console itself is not sold and not gated.
 
-The rule the whole module exists to enforce: **a customer may register or
-cancel at any moment, and access lasts to the end of the month they have paid
-for.**
+Per account rather than per organisation because API keys are already scoped to
+one WABA: the account a key names is the account that has to be paid for, so
+"is this request paid for" is a lookup rather than an allocation of seats to
+accounts. Paying for one account buys nothing for its neighbour.
+
+The rule the whole module exists to enforce: **a customer may subscribe or
+cancel any account at any moment, and access lasts to the end of the month they
+have paid for.**
 
 ---
 
@@ -16,13 +21,14 @@ for.**
 
 | Area | Included | Excluded |
 |------|----------|----------|
-| Monthly plan, one per organisation | ✅ Yes | — |
+| Monthly plan, one per WABA | ✅ Yes | — |
 | Register (mandate authorisation via Razorpay) | ✅ Yes | — |
 | Cancel at any time, access to end of paid month | ✅ Yes | — |
 | Auto-debit each cycle, with retries | ✅ Yes | Razorpay's own dunning schedule |
 | Webhook-driven state, hourly reconciliation | ✅ Yes | — |
 | Paywall on API-key traffic | ✅ Yes | Console (JWT) stays free |
-| Per-WABA or metered pricing | ❌ No | Flat per organisation |
+| Metered or usage pricing | ❌ No | Flat per account |
+| Volume discount across accounts | ❌ No | Each account is its own subscription |
 | Proration, upgrades, plan changes | ❌ No | One plan |
 | Refunds | ❌ No | Handled manually in Razorpay |
 | In-app card update | ❌ No | Re-register; Razorpay has no hosted portal |
@@ -33,9 +39,9 @@ for.**
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/billing/subscription` | JWT | State: active, status, period, cancel flag, authorisation URL |
-| POST | `/billing/subscription` | JWT | Register. Returns Razorpay's hosted authorisation page. Throttled 5/min |
-| DELETE | `/billing/subscription` | JWT | Cancel. Keeps the paid month |
+| GET | `/billing/subscriptions` | JWT | One row per connected account: active, status, period, cancel flag, authorisation URL |
+| POST | `/billing/subscriptions/:wabaId` | JWT | Subscribe that account. Returns Razorpay's hosted authorisation page. Throttled 5/min |
+| DELETE | `/billing/subscriptions/:wabaId` | JWT | Cancel that account. Keeps the paid month |
 | POST | `/billing/webhook` | HMAC signature | Razorpay events |
 
 ---
@@ -48,6 +54,7 @@ and the paywall alike:
 1. `currentEnd` in the future → **allowed**, whatever the status. This is what
    makes cancellation keep the paid month, and it also carries a customer
    through a failed renewal while Razorpay retries.
+   The check is per account: one WABA lapsing does not touch another.
 2. Otherwise `active` or `authenticated` → allowed.
 3. Otherwise refused.
 
@@ -57,8 +64,10 @@ paid nothing and is refused.
 ## Enforcement
 
 `SubscriptionMiddleware` runs after `MessagingAuthMiddleware` on the `/messages`
-routes, so `authType` is already set. Only API-key traffic is charged for;
-console requests carry a JWT and pass untouched. Someone who stops paying keeps
+routes, so both `authType` and `apiKeyWabaId` are already set. The account
+checked is the one the key names — there is no mapping to get wrong and no way
+for a key to ride on an account somebody else paid for. Only API-key traffic is
+charged for; console requests carry a JWT and pass untouched. Someone who stops paying keeps
 their history, their exports and their ability to re-subscribe — ending a
 subscription is not locking someone out of their own account.
 
@@ -69,7 +78,7 @@ development and self-hosting need no payment provider.
 
 ## Caching
 
-`sub:{ssoOrgId}` in Redis holds the allow/deny answer for 60 seconds. Every
+`sub:{wabaId}` in Redis holds the allow/deny answer for 60 seconds. Every
 webhook invalidates it, so a cancellation or a failed debit lands at once; the
 TTL is the backstop for a webhook that never arrives. Unlike the API-key cache,
 this one must never be written without an expiry.
@@ -127,10 +136,17 @@ API traffic is charged for.
 
 ## Business rules
 
-- One subscription per organisation. A second registration while one is running
-  is refused — two mandates would mean two debits a month.
-- Re-registering is allowed once the previous one has ended, and reuses the
-  Razorpay customer so payment history stays in one place.
+- One subscription per account. A second registration while one is running is
+  refused — two mandates on one account would mean two debits a month.
+- The WABA is validated against the caller's organisation, so an id alone
+  cannot start a subscription against someone else's account.
+- One Razorpay **customer** per organisation, reused across accounts and across
+  re-registrations, so a customer paying for three accounts has one payment
+  history rather than three.
+- Each account authorises its own mandate. A customer with three accounts
+  completes three authorisations and receives three debits a month.
+- Deleting a WABA leaves its subscription row behind as history, granting
+  nothing — cascading would erase what was charged.
 - Cancelling twice is refused rather than silently repeated.
 - The person who registered receives the billing emails.
 - Money is never taken by this codebase. Cards and mandates live at Razorpay;
