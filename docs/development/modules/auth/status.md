@@ -7,7 +7,7 @@
 | Status | ✅ Complete |
 | Completion | 100% |
 | Blocking Issues | None |
-| Last Updated | 2026-05-03 |
+| Last Updated | 2026-08-01 |
 
 ---
 
@@ -18,7 +18,7 @@
 | A.0 | Browser Authorize Redirect | ✅ Complete | Handled by the web app — redirect to `${SSO_ACCOUNTS_URL}/authorize`; this API no longer exposes `GET /auth/authorize` |
 | A.1 | SSO Callback + JWT Issuance | ✅ Complete | `POST /auth/callback` — confidential code→token exchange, decodes SSO token, issues internal JWT |
 | A.2 | JWT Auth Middleware | ✅ Complete | `AuthMiddleware` — Redis user cache (15 min TTL); falls through to DB on miss |
-| A.3 | User Profile Endpoint | ✅ Complete | `GET /user/profile` live |
+| A.3 | User Profile Endpoint | ✅ Complete | `GET /user/profile` live — reads through to the SSO (`GET /users/me`) for the full profile (name, username, emailVerified, imageUrl, createdAt), falling back to the login session snapshot when the SSO is unreachable |
 | A.4 | API Key Generation | ✅ Complete | `POST /api-keys` — `ak_` + `sk_` pair; secret encrypted; cached in Redis |
 | A.5 | API Key Auth Middleware | ✅ Complete | `ApiKeyAuthMiddleware` — Redis-first lookup, validates secret |
 | A.6 | API Key Listing | ✅ Complete | `GET /api-keys` live |

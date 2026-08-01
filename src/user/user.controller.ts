@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { UserProfileDto } from './dto/user-profile.dto';
 import { RedisService } from 'src/redis/redis.service';
+import { SsoService } from 'src/auth/sso.service';
 import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
 
 @ApiTags('User')
@@ -16,6 +17,7 @@ export class UserController {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly redisService: RedisService,
+    private readonly ssoService: SsoService,
   ) {}
 
   @Get('profile')
@@ -31,21 +33,31 @@ export class UserController {
       throw new UnauthorizedException('User not found in context');
     }
 
-    // The User table is intentionally slim (id + ssoId); the display name and
-    // email live in the SSO session keyed by the token's sessionId. Fall back
-    // to empty strings when the session has expired so the endpoint never
-    // returns undefined fields (which crash the client's profile view).
+    // The User table is intentionally slim (id + ssoId) — the SSO owns the
+    // profile. The login snapshot in Redis is written once and can be a day
+    // old, so read through to `GET /users/me` for the live values and keep the
+    // snapshot as the fallback when the SSO is unreachable or the session has
+    // expired. Every field defaults rather than going undefined, which would
+    // break the client's profile view.
     const sessionId = (req as any).sessionId;
     const session = sessionId
       ? await this.redisService.getSsoSession(sessionId)
       : null;
 
+    const live = session?.ssoAccessToken
+      ? await this.ssoService.getProfile(session.ssoAccessToken)
+      : null;
+
     return {
       id: user.id,
       ssoId: user.ssoId,
-      firstName: session?.firstName ?? '',
-      lastName: session?.lastName ?? '',
-      email: session?.email ?? '',
+      firstName: live?.firstName ?? session?.firstName ?? '',
+      lastName: live?.lastName ?? session?.lastName ?? '',
+      email: live?.email ?? session?.email ?? '',
+      username: live?.username ?? session?.username ?? '',
+      emailVerified: live?.emailVerified ?? session?.emailVerified ?? false,
+      imageUrl: live?.imageUrl ?? session?.imageUrl ?? '',
+      createdAt: live?.createdAt ?? session?.ssoCreatedAt ?? null,
     };
   }
 

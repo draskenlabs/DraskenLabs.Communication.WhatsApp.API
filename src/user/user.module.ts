@@ -5,6 +5,7 @@ import { UserController } from './user.controller';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthMiddleware } from './middleware/auth.middleware';
+import { SsoService } from 'src/auth/sso.service';
 
 @Module({
   imports: [
@@ -17,7 +18,9 @@ import { AuthMiddleware } from './middleware/auth.middleware';
       }),
     }),
   ],
-  providers: [UserService, UserWhatsappService],
+  // SsoService is stateless (config + axios). AuthModule already imports
+  // UserModule, so importing it back would be circular — provide it here.
+  providers: [UserService, UserWhatsappService, SsoService],
   controllers: [UserController],
   exports: [UserService, UserWhatsappService, JwtModule],
 })
