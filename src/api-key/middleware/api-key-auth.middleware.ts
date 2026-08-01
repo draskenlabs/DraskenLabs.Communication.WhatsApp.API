@@ -33,8 +33,29 @@ export class ApiKeyAuthMiddleware implements NestMiddleware {
         throw new UnauthorizedException('Invalid API key');
       }
 
-      await this.redisService.setApiKeyCache(accessKey, dbKey.userId, dbKey.ssoOrgId, dbKey.secretKey);
-      cachedKey = { userId: dbKey.userId, ssoOrgId: dbKey.ssoOrgId, secretKey: dbKey.secretKey };
+      await this.redisService.setApiKeyCache(
+        accessKey,
+        dbKey.userId,
+        dbKey.ssoOrgId,
+        dbKey.secretKey,
+        dbKey.wabaId,
+      );
+      cachedKey = {
+        userId: dbKey.userId,
+        ssoOrgId: dbKey.ssoOrgId,
+        wabaId: dbKey.wabaId,
+        secretKey: dbKey.secretKey,
+      };
+    }
+
+    // A key names the account it acts on. The ones without a WABA were issued
+    // before that was true, or had theirs deleted; either way there is no
+    // account to act on, so they are refused rather than quietly let through
+    // with the run of the organisation.
+    if (!cachedKey.wabaId) {
+      throw new UnauthorizedException(
+        'This API key is not scoped to a WhatsApp Business Account. Create a new key for the account you want to use.',
+      );
     }
 
     let decryptedSecret: string;
@@ -60,6 +81,10 @@ export class ApiKeyAuthMiddleware implements NestMiddleware {
 
     (req as any).user = user;
     (req as any).orgId = cachedKey.ssoOrgId;
+    // Downstream handlers read this to keep the request inside one account.
+    // The JWT path leaves it undefined, which is what makes the console — where
+    // the user picks the account themselves — unaffected by key scoping.
+    (req as any).apiKeyWabaId = cachedKey.wabaId;
     (req as any).authType = 'apiKey';
     next();
   }

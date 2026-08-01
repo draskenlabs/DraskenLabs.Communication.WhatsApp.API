@@ -137,22 +137,66 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(`phone:${phoneNumberId}`);
   }
 
-  // API Key Cache — apiKey:{accessKey} → { userId, ssoOrgId, secretKey: encrypted }
-  async setApiKeyCache(accessKey: string, userId: number, ssoOrgId: string, encryptedSecretKey: string): Promise<void> {
+  // API Key Cache — apiKey:{accessKey} → { userId, ssoOrgId, wabaId, secretKey: encrypted }
+  async setApiKeyCache(
+    accessKey: string,
+    userId: number,
+    ssoOrgId: string,
+    encryptedSecretKey: string,
+    wabaId: string | null,
+  ): Promise<void> {
     await this.client.set(
       `apiKey:${accessKey}`,
-      JSON.stringify({ userId, ssoOrgId, secretKey: encryptedSecretKey }),
+      JSON.stringify({ userId, ssoOrgId, wabaId, secretKey: encryptedSecretKey }),
     );
   }
 
-  async getApiKeyCache(accessKey: string): Promise<{ userId: number; ssoOrgId: string; secretKey: string } | null> {
+  async getApiKeyCache(
+    accessKey: string,
+  ): Promise<{ userId: number; ssoOrgId: string; wabaId: string | null; secretKey: string } | null> {
     const raw = await this.client.get(`apiKey:${accessKey}`);
     if (!raw) return null;
-    return JSON.parse(raw);
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+
+    // These entries are written without a TTL, so a cache filled before keys
+    // carried a WABA would otherwise survive the deploy and authenticate
+    // unscoped. A missing field means "stale" — the caller re-reads the row.
+    if (!('wabaId' in parsed)) return null;
+
+    return parsed as unknown as {
+      userId: number;
+      ssoOrgId: string;
+      wabaId: string | null;
+      secretKey: string;
+    };
   }
 
   async deleteApiKeyCache(accessKey: string): Promise<void> {
     await this.client.del(`apiKey:${accessKey}`);
+  }
+
+  // Subscription access — sub:{ssoOrgId} → "1" | "0".
+  //
+  // Short TTL *and* explicit invalidation: the webhook clears it so a
+  // cancellation or a failed debit takes effect at once, and the expiry is the
+  // backstop for a webhook that never arrives. Never cache this without a TTL.
+  async setSubscriptionAccess(
+    ssoOrgId: string,
+    allowed: boolean,
+    ttlSeconds = 60,
+  ): Promise<void> {
+    await this.client.set(`sub:${ssoOrgId}`, allowed ? '1' : '0', 'EX', ttlSeconds);
+  }
+
+  async getSubscriptionAccess(ssoOrgId: string): Promise<boolean | null> {
+    const raw = await this.client.get(`sub:${ssoOrgId}`);
+    if (raw === null) return null;
+    return raw === '1';
+  }
+
+  async invalidateSubscriptionAccess(ssoOrgId: string): Promise<void> {
+    await this.client.del(`sub:${ssoOrgId}`);
   }
 
   // Mail digests — digest:{kind}:{userId} → a list of JSON items awaiting a

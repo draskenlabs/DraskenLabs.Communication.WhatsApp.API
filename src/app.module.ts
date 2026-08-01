@@ -21,6 +21,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { SearchModule } from './search/search.module';
+import { BillingModule } from './billing/billing.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import * as Joi from 'joi';
 
@@ -66,6 +67,13 @@ import * as Joi from 'joi';
         LEGAL_EMAIL: Joi.string().email().optional(),
         // Enables POST /mail/broadcast when set. Unset means disabled.
         MAIL_ADMIN_TOKEN: Joi.string().optional(),
+        // Razorpay — optional, like push and email. Without a key pair and a
+        // plan the API runs normally, sells nothing and charges no one for the
+        // Messaging API, which is what development and self-hosting need.
+        RAZORPAY_KEY_ID: Joi.string().optional(),
+        RAZORPAY_KEY_SECRET: Joi.string().optional(),
+        RAZORPAY_PLAN_ID: Joi.string().optional(),
+        RAZORPAY_WEBHOOK_SECRET: Joi.string().optional(),
       }),
     }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
@@ -88,6 +96,7 @@ import * as Joi from 'joi';
     MailModule,
     AnalyticsModule,
     SearchModule,
+    BillingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

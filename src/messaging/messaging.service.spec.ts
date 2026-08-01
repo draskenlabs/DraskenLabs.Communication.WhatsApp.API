@@ -21,6 +21,7 @@ const mockPrisma = {
     findUnique: jest.fn(),
     count: jest.fn(),
   },
+  wabaPhoneNumber: { findMany: jest.fn() },
   $transaction: jest.fn(),
 };
 const mockRedis = { getPhoneCache: jest.fn() };
@@ -65,6 +66,29 @@ describe('MessagingService', () => {
     it('throws ForbiddenException if phone belongs to different user', async () => {
       mockRedis.getPhoneCache.mockResolvedValue({ userId: 99, wabaId: 'w1', accessToken: 'enc' });
       await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('refuses a number belonging to another WABA than the key is scoped to', async () => {
+      // The number decides the WABA, so an unchecked key issued for one
+      // account could otherwise send from every number the org owns.
+      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w2', accessToken: 'enc' });
+
+      await expect(service.sendMessage(1, 'sso_org_1', dto, 'w1')).rejects.toThrow(/scoped to w1/);
+      expect(mockPrisma.message.create).not.toHaveBeenCalled();
+    });
+
+    it('sends when the number belongs to the key’s own WABA', async () => {
+      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockContacts.isOptedOut.mockResolvedValue(false);
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.ok' }] } });
+      mockPrisma.message.create.mockResolvedValue({
+        id: 7, metaMessageId: 'wamid.ok', phoneNumberId: 'p1', to: '447911111111',
+        type: 'text', status: 'sent', createdAt: new Date(),
+      });
+
+      const result = await service.sendMessage(1, 'sso_org_1', dto, 'w1');
+
+      expect(result.id).toBe(7);
     });
 
     it('throws BadRequestException if recipient has opted out', async () => {
@@ -224,12 +248,57 @@ describe('MessagingService', () => {
       expect(result.data).toHaveLength(1);
       expect(result.meta).toEqual({ total: 41, totalPages: 3, page: 2, limit: 20 });
     });
+
+    it('narrows the list to the numbers of a scoped key’s WABA', async () => {
+      mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([
+        { phoneNumberId: 'p1' },
+        { phoneNumberId: 'p2' },
+      ]);
+      mockPrisma.message.findMany.mockResolvedValue([]);
+
+      await service.findAll('sso_org_1', {}, 'w1');
+
+      expect(mockPrisma.wabaPhoneNumber.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { wabaId: 'w1' } }),
+      );
+      expect(mockPrisma.message.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { ssoOrgId: 'sso_org_1', phoneNumberId: { in: ['p1', 'p2'] } },
+        }),
+      );
+    });
   });
 
   describe('findOne', () => {
     it('throws NotFoundException if message not in org', async () => {
       mockPrisma.message.findUnique.mockResolvedValue({ id: 1, ssoOrgId: 'sso_org_99' });
       await expect(service.findOne('sso_org_1', 1)).rejects.toThrow(NotFoundException);
+    });
+
+    it('hides a message sent from another WABA than the key is scoped to', async () => {
+      // Not found rather than forbidden — the existence of traffic on another
+      // of the org's accounts is not this key's business either.
+      mockPrisma.message.findUnique.mockResolvedValue({
+        id: 1, ssoOrgId: 'sso_org_1', phoneNumberId: 'p9',
+      });
+      mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([{ phoneNumberId: 'p1' }]);
+
+      await expect(service.findOne('sso_org_1', 1, 'w1')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('analytics', () => {
+    it('counts only the scoped WABA’s numbers', async () => {
+      mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([{ phoneNumberId: 'p1' }]);
+      mockPrisma.message.findMany.mockResolvedValue([]);
+
+      await service.analytics('sso_org_1', 14, 'w1');
+
+      expect(mockPrisma.message.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ phoneNumberId: { in: ['p1'] } }),
+        }),
+      );
     });
   });
 });

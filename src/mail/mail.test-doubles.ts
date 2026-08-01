@@ -25,6 +25,9 @@ export function mailNotificationsDouble(): jest.Mocked<
     | 'displayNameDecision'
     | 'supportAcknowledgement'
     | 'supportRequest'
+    | 'subscriptionCharged'
+    | 'subscriptionPaymentFailed'
+    | 'subscriptionCancelled'
   >
 > {
   return {
@@ -41,6 +44,9 @@ export function mailNotificationsDouble(): jest.Mocked<
     displayNameDecision: jest.fn().mockResolvedValue(undefined),
     supportAcknowledgement: jest.fn().mockResolvedValue(undefined),
     supportRequest: jest.fn().mockResolvedValue(undefined),
+    subscriptionCharged: jest.fn().mockResolvedValue(undefined),
+    subscriptionPaymentFailed: jest.fn().mockResolvedValue(undefined),
+    subscriptionCancelled: jest.fn().mockResolvedValue(undefined),
   } as never;
 }
 

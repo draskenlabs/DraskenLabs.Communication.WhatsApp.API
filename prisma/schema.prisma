@@ -63,6 +63,8 @@ model Waba {
   WabaPhoneNumber WabaPhoneNumber[]
   InboundMessage  InboundMessage[]
   MessageTemplate MessageTemplate[]
+  UserApiKey      UserApiKey[]
+  Subscription    Subscription?
 }
 
 model WabaPhoneNumber {
@@ -88,11 +90,101 @@ model UserApiKey {
   ssoOrgId  String
   accessKey String   @unique
   secretKey String // Encrypted
+  /// The WABA this key may act on. A key reaches one account, never the whole
+  /// organisation. Nullable only for keys issued before scoping existed, and
+  /// those are refused at authentication rather than left org-wide.
+  wabaId    String?
   status    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id])
+  user User  @relation(fields: [userId], references: [id])
+  waba Waba? @relation(fields: [wabaId], references: [wabaId])
+
+  @@index([wabaId])
+}
+
+/// Razorpay's own subscription states, kept verbatim so a support question can
+/// be answered by comparing this row against their dashboard.
+enum SubscriptionStatus {
+  /// Created, but the customer has not authorised the mandate yet.
+  created
+  /// Mandate registered; the first charge has not landed.
+  authenticated
+  active
+  /// A charge failed and Razorpay is retrying.
+  pending
+  /// Retries exhausted.
+  halted
+  cancelled
+  /// Ran to its agreed number of cycles.
+  completed
+  expired
+}
+
+/// One subscription per WhatsApp Business Account: a flat monthly fee per
+/// account for calling the Messaging API against it. API keys are scoped to a
+/// WABA, so the key's account is the one that has to be paid for.
+model Subscription {
+  id Int @id @default(autoincrement())
+
+  /// The account this pays for. Null only once that account has been deleted,
+  /// which leaves the row as billing history and grants nothing.
+  wabaId String? @unique
+  /// Kept alongside so an organisation's subscriptions can be listed without
+  /// joining, and so history survives the WABA it paid for.
+  ssoOrgId String
+
+  razorpayCustomerId     String?
+  razorpaySubscriptionId String  @unique
+  /// The Razorpay plan charged, recorded per subscription so a later price
+  /// change cannot rewrite what an existing customer agreed to.
+  planId                 String
+
+  status SubscriptionStatus @default(created)
+
+  currentStart DateTime?
+  /// End of the month already paid for. Access runs to here whatever the
+  /// status — that is what makes "cancel any time" mean "cancel at the end of
+  /// the month you have paid for".
+  currentEnd   DateTime?
+
+  /// Set when the customer cancels: no further debit, access until currentEnd.
+  cancelAtCycleEnd Boolean   @default(false)
+  cancelledAt      DateTime?
+
+  /// Razorpay's hosted authorisation page. Only useful until the mandate is
+  /// registered, and cleared once it is.
+  shortUrl String?
+
+  /// Who registered it — the person the billing emails go to.
+  createdByUserId Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  waba Waba? @relation(fields: [wabaId], references: [wabaId])
+
+  @@index([ssoOrgId])
+  @@index([status])
+}
+
+/// Every Razorpay webhook, kept for idempotency and for answering "what did
+/// they actually send us" without a support ticket.
+model SubscriptionEvent {
+  id      Int    @id @default(autoincrement())
+  /// Razorpay's event id. Their webhooks retry, so this is the guard against
+  /// processing the same charge twice.
+  eventId String @unique
+  event   String
+
+  ssoOrgId               String?
+  razorpaySubscriptionId String?
+  payload                Json
+
+  createdAt DateTime @default(now())
+
+  @@index([ssoOrgId, createdAt])
 }
 
 enum MessageType {

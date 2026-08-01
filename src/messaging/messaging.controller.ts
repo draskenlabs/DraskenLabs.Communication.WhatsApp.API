@@ -34,7 +34,9 @@ export class MessagingController {
     const user = (req as any).user;
     const orgId = (req as any).orgId;
     if (!user || !orgId) throw new UnauthorizedException('User not found in context');
-    return this.messagingService.sendMessage(user.id, orgId, dto);
+    // Set only on the API-key path; the console picks its own account.
+    const scopedWabaId = (req as any).apiKeyWabaId as string | undefined;
+    return this.messagingService.sendMessage(user.id, orgId, dto, scopedWabaId);
   }
 
   @Get()
@@ -59,10 +61,14 @@ export class MessagingController {
   ): Promise<BaseResponse<MessageListItemDto[]>> {
     const orgId = (req as any).orgId;
     if (!orgId) throw new UnauthorizedException('Organisation not found in context');
-    return this.messagingService.findAll(orgId, {
-      page: page !== undefined ? Number(page) : undefined,
-      limit: limit !== undefined ? Number(limit) : undefined,
-    });
+    return this.messagingService.findAll(
+      orgId,
+      {
+        page: page !== undefined ? Number(page) : undefined,
+        limit: limit !== undefined ? Number(limit) : undefined,
+      },
+      (req as any).apiKeyWabaId as string | undefined,
+    );
   }
 
   @Get('analytics')
@@ -78,7 +84,11 @@ export class MessagingController {
   ): Promise<MessageAnalyticsDto> {
     const orgId = (req as any).orgId;
     if (!orgId) throw new UnauthorizedException('Organisation not found in context');
-    return this.messagingService.analytics(orgId, days);
+    return this.messagingService.analytics(
+      orgId,
+      days,
+      (req as any).apiKeyWabaId as string | undefined,
+    );
   }
 
   @Get(':id')
@@ -90,6 +100,10 @@ export class MessagingController {
   ): Promise<MessageListItemDto> {
     const orgId = (req as any).orgId;
     if (!orgId) throw new UnauthorizedException('Organisation not found in context');
-    return this.messagingService.findOne(orgId, id);
+    return this.messagingService.findOne(
+      orgId,
+      id,
+      (req as any).apiKeyWabaId as string | undefined,
+    );
   }
 }

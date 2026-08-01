@@ -1,0 +1,106 @@
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Req,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { Request } from 'express';
+import { BillingService } from './billing.service';
+import { SubscriptionRegisteredDto, SubscriptionStateDto } from './dto/billing.dto';
+import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
+
+@ApiTags('Billing')
+@Controller('billing')
+export class BillingController {
+  constructor(private readonly billing: BillingService) {}
+
+  @Get('subscriptions')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Subscription state for every connected account',
+    description:
+      'One row per WhatsApp Business Account in the organisation, subscribed ' +
+      'or not — an account missing from the list would read as disconnected ' +
+      'rather than unpaid.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: SubscriptionStateDto,
+    isArray: true,
+    description: 'Subscription state per account',
+  })
+  async list(@Req() req: Request): Promise<SubscriptionStateDto[]> {
+    const orgId = (req as any).orgId;
+    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    return this.billing.listStates(orgId);
+  }
+
+  @Post('subscriptions/:wabaId')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Subscribe one account',
+    description:
+      'Creates the subscription and returns the Razorpay page where the ' +
+      'customer authorises the mandate. Nothing is charged until they do.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: SubscriptionRegisteredDto,
+    description: 'Subscription registered',
+  })
+  async register(
+    @Req() req: Request,
+    @Param('wabaId') wabaId: string,
+  ): Promise<SubscriptionRegisteredDto> {
+    const user = (req as any).user;
+    const orgId = (req as any).orgId;
+    if (!user || !orgId) throw new UnauthorizedException('User not found in context');
+
+    return this.billing.register(user.id, orgId, wabaId, {
+      name: [user.firstName, user.lastName].filter(Boolean).join(' ') || undefined,
+      email: user.email,
+    });
+  }
+
+  @Delete('subscriptions/:wabaId')
+  @ApiBearerAuth()
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Cancel one account's subscription",
+    description:
+      'Stops the next debit. The month already paid for is kept — access ' +
+      'continues until the end of it.',
+  })
+  @ApiWrappedOkResponse({ dataDto: SubscriptionStateDto, description: 'Subscription state' })
+  async cancel(
+    @Req() req: Request,
+    @Param('wabaId') wabaId: string,
+  ): Promise<SubscriptionStateDto> {
+    const orgId = (req as any).orgId;
+    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    return this.billing.cancel(orgId, wabaId);
+  }
+
+  /** Razorpay-facing. Signature-checked by middleware; never called by a user. */
+  @Post('webhook')
+  @HttpCode(200)
+  @ApiExcludeEndpoint()
+  async webhook(@Req() req: Request, @Body() body: unknown): Promise<{ received: true }> {
+    const eventId = req.headers['x-razorpay-event-id'] as string | undefined;
+    if (!eventId) throw new BadRequestException('Missing X-Razorpay-Event-Id');
+
+    await this.billing.handleWebhook(eventId, body);
+    // Razorpay retries anything that is not a 2xx, so acknowledge once the
+    // event is recorded.
+    return { received: true };
+  }
+}

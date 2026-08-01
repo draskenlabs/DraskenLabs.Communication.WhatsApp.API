@@ -34,7 +34,17 @@ export class MessagingService {
     private readonly mail: MailNotifications,
   ) {}
 
-  async sendMessage(userId: number, ssoOrgId: string, dto: SendMessageDto): Promise<SendMessageResponseDto> {
+  /**
+   * @param scopedWabaId The WABA an API key is limited to, when the caller
+   * authenticated with one. Undefined for console requests, where the user
+   * chooses the account in the interface and every account is theirs to use.
+   */
+  async sendMessage(
+    userId: number,
+    ssoOrgId: string,
+    dto: SendMessageDto,
+    scopedWabaId?: string,
+  ): Promise<SendMessageResponseDto> {
     const phoneCache = await this.redisService.getPhoneCache(dto.phoneNumberId);
 
     if (!phoneCache) {
@@ -45,6 +55,14 @@ export class MessagingService {
 
     if (phoneCache.userId !== userId) {
       throw new ForbiddenException('Phone number does not belong to your account');
+    }
+
+    // The number decides the WABA, so without this a key issued for one
+    // account could send from any number the organisation owns.
+    if (scopedWabaId && phoneCache.wabaId !== scopedWabaId) {
+      throw new ForbiddenException(
+        `Phone number ${dto.phoneNumberId} belongs to WABA ${phoneCache.wabaId}; this API key is scoped to ${scopedWabaId}`,
+      );
     }
 
     const optedOut = await this.contactsService.isOptedOut(ssoOrgId, dto.to);
@@ -105,11 +123,31 @@ export class MessagingService {
     };
   }
 
+  /**
+   * The numbers a WABA-scoped caller may see.
+   *
+   * Messages carry a phone number and not a WABA, so the scope has to be
+   * resolved into numbers before it can be applied — the same shape the
+   * analytics module uses for its WABA filter.
+   */
+  private async scopedNumbers(wabaId: string): Promise<string[]> {
+    const numbers = await this.prisma.wabaPhoneNumber.findMany({
+      where: { wabaId },
+      select: { phoneNumberId: true },
+    });
+    return numbers.map((n) => n.phoneNumberId);
+  }
+
   async findAll(
     ssoOrgId: string,
     opts: { page?: number; limit?: number } = {},
+    scopedWabaId?: string,
   ): Promise<BaseResponse<MessageListItemDto[]>> {
-    const where = { ssoOrgId };
+    // A key that can only send from one account has no business reading the
+    // rest of the organisation's traffic.
+    const where = scopedWabaId
+      ? { ssoOrgId, phoneNumberId: { in: await this.scopedNumbers(scopedWabaId) } }
+      : { ssoOrgId };
 
     // Paginate only when asked (keeps existing API-key clients that pull the
     // full history unaffected); otherwise return every message.
@@ -153,13 +191,26 @@ export class MessagingService {
     };
   }
 
-  async findOne(ssoOrgId: string, messageId: number): Promise<MessageListItemDto> {
+  async findOne(
+    ssoOrgId: string,
+    messageId: number,
+    scopedWabaId?: string,
+  ): Promise<MessageListItemDto> {
     const message = await this.prisma.message.findUnique({
       where: { id: messageId },
     });
 
     if (!message || message.ssoOrgId !== ssoOrgId) {
       throw new NotFoundException('Message not found');
+    }
+
+    // Not found rather than forbidden: whether a message exists on another of
+    // the organisation's accounts is not this key's business either.
+    if (scopedWabaId) {
+      const numbers = await this.scopedNumbers(scopedWabaId);
+      if (!numbers.includes(message.phoneNumberId)) {
+        throw new NotFoundException('Message not found');
+      }
     }
 
     return {
@@ -169,14 +220,24 @@ export class MessagingService {
     };
   }
 
-  async analytics(ssoOrgId: string, days = 14): Promise<MessageAnalyticsDto> {
+  async analytics(
+    ssoOrgId: string,
+    days = 14,
+    scopedWabaId?: string,
+  ): Promise<MessageAnalyticsDto> {
     const range = Math.min(Math.max(days, 1), 90);
     const since = new Date();
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (range - 1));
 
     const messages = await this.prisma.message.findMany({
-      where: { ssoOrgId, createdAt: { gte: since } },
+      where: {
+        ssoOrgId,
+        createdAt: { gte: since },
+        ...(scopedWabaId && {
+          phoneNumberId: { in: await this.scopedNumbers(scopedWabaId) },
+        }),
+      },
       select: { status: true, createdAt: true },
     });
 

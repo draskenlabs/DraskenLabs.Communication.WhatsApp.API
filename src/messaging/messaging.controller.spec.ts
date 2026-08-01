@@ -29,7 +29,8 @@ describe('MessagingController', () => {
       mockMessagingService.sendMessage.mockResolvedValue(response);
 
       await expect(controller.send(req, dto)).resolves.toEqual(response);
-      expect(mockMessagingService.sendMessage).toHaveBeenCalledWith(1, 2, dto);
+      // No API key on this request, so no WABA scope to pass on.
+      expect(mockMessagingService.sendMessage).toHaveBeenCalledWith(1, 2, dto, undefined);
     });
 
     it('throws UnauthorizedException when user or org missing', async () => {
@@ -54,7 +55,7 @@ describe('MessagingController', () => {
       const req = { orgId: 2 } as any;
       mockMessagingService.findOne.mockResolvedValue({ id: 5 });
       await expect(controller.findOne(req, 5)).resolves.toEqual({ id: 5 });
-      expect(mockMessagingService.findOne).toHaveBeenCalledWith(2, 5);
+      expect(mockMessagingService.findOne).toHaveBeenCalledWith(2, 5, undefined);
     });
 
     it('throws when orgId missing', async () => {

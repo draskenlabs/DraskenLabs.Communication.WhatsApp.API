@@ -6,18 +6,22 @@ import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
 import { MessagingAuthMiddleware } from './middleware/messaging-auth.middleware';
 import { UserModule } from 'src/user/user.module';
 import { ContactsModule } from 'src/contacts/contacts.module';
+import { BillingModule } from 'src/billing/billing.module';
+import { SubscriptionMiddleware } from 'src/billing/middleware/subscription.middleware';
 
 @Module({
-  imports: [ApiKeyModule, UserModule, ContactsModule],
+  imports: [ApiKeyModule, UserModule, ContactsModule, BillingModule],
   providers: [MessagingService, AuthMiddleware, MessagingAuthMiddleware],
   controllers: [MessagingController],
 })
 export class MessagingModule {
   configure(consumer: MiddlewareConsumer) {
-    // Accept either the console JWT or a server-to-server API key. The
-    // `messages/:id` pattern also covers `messages/analytics`.
+    // Accept either the console JWT or a server-to-server API key, then charge
+    // for the API-key path — the subscription middleware runs second because
+    // it reads the `authType` the first one sets. The `messages/:id` pattern
+    // also covers `messages/analytics`.
     consumer
-      .apply(MessagingAuthMiddleware)
+      .apply(MessagingAuthMiddleware, SubscriptionMiddleware)
       .forRoutes(
         { path: 'messages', method: RequestMethod.POST },
         { path: 'messages', method: RequestMethod.GET },
