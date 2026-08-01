@@ -27,10 +27,12 @@ const mockRedis = {
 
 const mockRazorpay = {
   isConfigured: jest.fn().mockReturnValue(true),
+  keyId: 'rzp_test_key',
   createCustomer: jest.fn(),
   createSubscription: jest.fn(),
   cancelSubscription: jest.fn(),
   fetchSubscription: jest.fn(),
+  verifyCheckoutSignature: jest.fn(),
 };
 
 const mockMail = mailNotificationsDouble();
@@ -176,6 +178,9 @@ describe('BillingService', () => {
 
       const result = await service.register(7, 'org_1', 'waba_1', { email: 'a@b.com' });
 
+      // Checkout opens against the subscription; the hosted page is a fallback.
+      expect(result.subscriptionId).toBe('sub_new');
+      expect(result.keyId).toBe('rzp_test_key');
       expect(result.authorisationUrl).toBe('https://rzp.io/i/abc');
       expect(mockPrisma.subscription.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -250,6 +255,71 @@ describe('BillingService', () => {
     it('refuses when the deployment has no payment provider', async () => {
       mockRazorpay.isConfigured.mockReturnValue(false);
       await expect(service.register(7, 'org_1', 'waba_1', {})).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('confirm — what Checkout hands back', () => {
+    const payload = {
+      razorpayPaymentId: 'pay_1',
+      razorpaySubscriptionId: 'sub_1',
+      razorpaySignature: 'deadbeef',
+    };
+
+    beforeEach(() => {
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1', name: 'Games' });
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ status: 'created', currentEnd: null }),
+      );
+      mockPrisma.subscription.update.mockResolvedValue(row());
+    });
+
+    it('records the mandate from Razorpay rather than from the browser', async () => {
+      mockRazorpay.verifyCheckoutSignature.mockReturnValue(true);
+      const end = Math.floor((Date.now() + 30 * 24 * HOUR) / 1000);
+      mockRazorpay.fetchSubscription.mockResolvedValue({
+        id: 'sub_1', plan_id: 'plan_1', status: 'active', current_end: end,
+      });
+
+      const state = await service.confirm('org_1', 'waba_1', payload);
+
+      // The payload says a mandate exists; only Razorpay says what it bought.
+      expect(mockRazorpay.fetchSubscription).toHaveBeenCalledWith('sub_1');
+      expect(mockPrisma.subscription.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: 'active', currentEnd: new Date(end * 1000) }),
+        }),
+      );
+      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('waba_1');
+      expect(state.active).toBe(true);
+    });
+
+    it('refuses an unverified signature', async () => {
+      // Otherwise a crafted request would mark a subscription paid.
+      mockRazorpay.verifyCheckoutSignature.mockReturnValue(false);
+
+      await expect(service.confirm('org_1', 'waba_1', payload)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockRazorpay.fetchSubscription).not.toHaveBeenCalled();
+      expect(mockPrisma.subscription.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a payment for a different subscription', async () => {
+      // A signature valid for someone else's subscription must not pass here.
+      mockRazorpay.verifyCheckoutSignature.mockReturnValue(true);
+
+      await expect(
+        service.confirm('org_1', 'waba_1', { ...payload, razorpaySubscriptionId: 'sub_other' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockRazorpay.verifyCheckoutSignature).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the account has no subscription at all', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+
+      await expect(service.confirm('org_1', 'waba_1', payload)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -414,8 +484,22 @@ describe('BillingService', () => {
 
       const [state] = await service.listStates('org_1');
 
+      expect(state.subscriptionId).toBe('sub_1');
+      expect(state.keyId).toBe('rzp_test_key');
       expect(state.authorisationUrl).toBe('https://rzp.io/i/abc');
       expect(state.active).toBe(false);
+    });
+
+    it('offers nothing to authorise once the mandate exists', async () => {
+      // Checkout has nothing left to do, and the hosted page is retired.
+      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'waba_1', name: 'Games' }]);
+      mockPrisma.subscription.findMany.mockResolvedValue([row()]);
+
+      const [state] = await service.listStates('org_1');
+
+      expect(state.subscriptionId).toBeNull();
+      expect(state.keyId).toBeNull();
+      expect(state.authorisationUrl).toBeNull();
     });
   });
 
