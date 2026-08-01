@@ -26,7 +26,10 @@
   signature before re-reading the subscription, so the console reflects a
   payment immediately instead of waiting for a webhook. The hosted page stays
   in the response as a fallback.
-- Tests: 50 — signature verification in four shapes (valid, wrong
+- The Razorpay customer carries the subscriber's name and email, read from the
+  user row; existing blank customers are filled in the next time that
+  organisation subscribes.
+- Tests: 53 — signature verification in four shapes (valid, wrong
   subscription, wrong length, no secret configured), the confirm path
   (verified, unverified, mismatched subscription, missing subscription), the
   access rule in six shapes (including cancelled-but-paid and

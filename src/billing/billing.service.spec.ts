@@ -17,6 +17,7 @@ const mockPrisma = {
   },
   subscriptionEvent: { create: jest.fn() },
   waba: { findFirst: jest.fn(), findMany: jest.fn() },
+  user: { findUnique: jest.fn() },
 };
 
 const mockRedis = {
@@ -29,6 +30,7 @@ const mockRazorpay = {
   isConfigured: jest.fn().mockReturnValue(true),
   keyId: 'rzp_test_key',
   createCustomer: jest.fn(),
+  updateCustomer: jest.fn(),
   createSubscription: jest.fn(),
   cancelSubscription: jest.fn(),
   fetchSubscription: jest.fn(),
@@ -171,12 +173,17 @@ describe('BillingService', () => {
       mockPrisma.subscription.upsert.mockResolvedValue({});
       mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1', name: 'Games' });
       mockPrisma.subscription.findFirst.mockResolvedValue(null);
+      mockPrisma.user.findUnique.mockResolvedValue({
+        email: 'suraj@example.com',
+        firstName: 'Suraj',
+        lastName: 'Aggarwal',
+      });
     });
 
     it('returns the authorisation page and stores the subscription', async () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
 
-      const result = await service.register(7, 'org_1', 'waba_1', { email: 'a@b.com' });
+      const result = await service.register(7, 'org_1', 'waba_1');
 
       // Checkout opens against the subscription; the hosted page is a fallback.
       expect(result.subscriptionId).toBe('sub_new');
@@ -196,10 +203,51 @@ describe('BillingService', () => {
       expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('waba_1');
     });
 
+    it('names the customer from the user row, not the request context', async () => {
+      // The request carries an id and an SSO id only; everything else was
+      // copied from SSO at sign-in and lives on the user row.
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+
+      await service.register(7, 'org_1', 'waba_1');
+
+      expect(mockRazorpay.createCustomer).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Suraj Aggarwal', email: 'suraj@example.com' }),
+      );
+    });
+
+    it('sends no blank name when SSO gave us none', async () => {
+      // Razorpay rejects an empty string where it accepts an absent field.
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.user.findUnique.mockResolvedValue({
+        email: null,
+        firstName: null,
+        lastName: null,
+      });
+
+      await service.register(7, 'org_1', 'waba_1');
+
+      expect(mockRazorpay.createCustomer).toHaveBeenCalledWith(
+        expect.not.objectContaining({ name: expect.anything() }),
+      );
+    });
+
+    it('fills in the details of a customer created before we had them', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.subscription.findFirst.mockResolvedValue({ razorpayCustomerId: 'cust_1' });
+
+      await service.register(7, 'org_1', 'waba_2');
+
+      expect(mockRazorpay.updateCustomer).toHaveBeenCalledWith('cust_1', {
+        name: 'Suraj Aggarwal',
+        email: 'suraj@example.com',
+      });
+      expect(mockRazorpay.createCustomer).not.toHaveBeenCalled();
+    });
+
     it('carries the account and organisation on the Razorpay record', async () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
 
-      await service.register(7, 'org_1', 'waba_1', {});
+      await service.register(7, 'org_1', 'waba_1');
 
       expect(mockRazorpay.createSubscription).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -213,7 +261,7 @@ describe('BillingService', () => {
       // else's account.
       mockPrisma.waba.findFirst.mockResolvedValue(null);
 
-      await expect(service.register(7, 'org_1', 'waba_x', {})).rejects.toThrow(
+      await expect(service.register(7, 'org_1', 'waba_x')).rejects.toThrow(
         NotFoundException,
       );
       expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
@@ -223,7 +271,7 @@ describe('BillingService', () => {
       // Two mandates on one account means two debits a month.
       mockPrisma.subscription.findUnique.mockResolvedValue(row());
 
-      await expect(service.register(7, 'org_1', 'waba_1', {})).rejects.toThrow(BadRequestException);
+      await expect(service.register(7, 'org_1', 'waba_1')).rejects.toThrow(BadRequestException);
       expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
     });
 
@@ -232,7 +280,7 @@ describe('BillingService', () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
       mockPrisma.subscription.findFirst.mockResolvedValue({ razorpayCustomerId: 'cust_1' });
 
-      await service.register(7, 'org_1', 'waba_2', {});
+      await service.register(7, 'org_1', 'waba_2');
 
       expect(mockRazorpay.createCustomer).not.toHaveBeenCalled();
       expect(mockRazorpay.createSubscription).toHaveBeenCalledWith(
@@ -245,7 +293,7 @@ describe('BillingService', () => {
         row({ status: 'cancelled', currentEnd: past() }),
       );
 
-      await expect(service.register(7, 'org_1', 'waba_1', {})).resolves.toEqual(
+      await expect(service.register(7, 'org_1', 'waba_1')).resolves.toEqual(
         expect.objectContaining({ authorisationUrl: 'https://rzp.io/i/abc' }),
       );
       // The Razorpay customer is reused, so their payment history stays in one place.
@@ -254,7 +302,7 @@ describe('BillingService', () => {
 
     it('refuses when the deployment has no payment provider', async () => {
       mockRazorpay.isConfigured.mockReturnValue(false);
-      await expect(service.register(7, 'org_1', 'waba_1', {})).rejects.toThrow(BadRequestException);
+      await expect(service.register(7, 'org_1', 'waba_1')).rejects.toThrow(BadRequestException);
     });
   });
 

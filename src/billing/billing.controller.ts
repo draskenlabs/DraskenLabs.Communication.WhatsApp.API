@@ -70,10 +70,9 @@ export class BillingController {
     const orgId = (req as any).orgId;
     if (!user || !orgId) throw new UnauthorizedException('User not found in context');
 
-    return this.billing.register(user.id, orgId, wabaId, {
-      name: [user.firstName, user.lastName].filter(Boolean).join(' ') || undefined,
-      email: user.email,
-    });
+    // The name and email come from the user row, not from the request: this
+    // context holds only an id and an SSO id.
+    return this.billing.register(user.id, orgId, wabaId);
   }
 
   @Post('subscriptions/:wabaId/confirm')

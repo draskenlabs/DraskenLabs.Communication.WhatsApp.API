@@ -163,7 +163,10 @@ API traffic is charged for.
   cannot start a subscription against someone else's account.
 - One Razorpay **customer** per organisation, reused across accounts and across
   re-registrations, so a customer paying for three accounts has one payment
-  history rather than three.
+  history rather than three. Its name and email come from the **user row**, not
+  from the request — the auth middleware attaches only an id and an SSO id, so
+  reading them there produced blank customers. A reused customer is patched on
+  each subscribe, which fills in the ones created before this was true.
 - Each account authorises its own mandate. A customer with three accounts
   completes three authorisations and receives three debits a month.
 - Deleting a WABA leaves its subscription row behind as history, granting

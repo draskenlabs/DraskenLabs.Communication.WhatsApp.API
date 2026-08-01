@@ -139,7 +139,6 @@ export class BillingService {
     userId: number,
     ssoOrgId: string,
     wabaId: string,
-    profile: { name?: string; email?: string },
   ): Promise<SubscriptionRegisteredDto> {
     if (!this.razorpay.isConfigured()) {
       throw new BadRequestException('Payments are not configured on this deployment');
@@ -159,15 +158,25 @@ export class BillingService {
       throw new BadRequestException('This account already has a subscription');
     }
 
+    // Read the name and email from our own user row. The request only carries
+    // an id and an SSO id — everything else was copied from SSO at sign-in and
+    // lives here, which is why the first customers reached Razorpay blank.
+    const profile = await this.profileFor(userId);
+
     // One Razorpay customer per organisation, so a customer paying for three
     // accounts still has one payment history rather than three.
+    const reused = existing?.razorpayCustomerId ?? (await this.orgCustomerId(ssoOrgId));
+
+    if (reused) {
+      // The customer may predate having a name to give it.
+      await this.razorpay.updateCustomer(reused, profile);
+    }
+
     const customerId =
-      existing?.razorpayCustomerId ??
-      (await this.orgCustomerId(ssoOrgId)) ??
+      reused ??
       (
         await this.razorpay.createCustomer({
-          name: profile.name,
-          email: profile.email,
+          ...profile,
           notes: { ssoOrgId },
         })
       ).id;
@@ -290,6 +299,29 @@ export class BillingService {
         shortUrl: status === 'created' ? sub.shortUrl : null,
       },
     });
+  }
+
+  /**
+   * Who Razorpay should show against the payment.
+   *
+   * Both fields are optional on the user — SSO may not have given us a name —
+   * and Razorpay rejects an empty string where it accepts an absent field, so
+   * blanks are dropped rather than sent.
+   */
+  private async profileFor(
+    userId: number,
+  ): Promise<{ name?: string; email?: string }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true, lastName: true },
+    });
+
+    const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim();
+
+    return {
+      ...(name ? { name } : {}),
+      ...(user?.email ? { email: user.email } : {}),
+    };
   }
 
   /** Any Razorpay customer already known for this organisation. */

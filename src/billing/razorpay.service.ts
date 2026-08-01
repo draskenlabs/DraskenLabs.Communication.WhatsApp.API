@@ -127,6 +127,31 @@ export class RazorpayService {
   }
 
   /**
+   * Fill in a customer's details.
+   *
+   * Used when an organisation's existing customer is reused: the first one may
+   * have been created before we had a name to give it, and an unnamed row in
+   * their dashboard is no use to anyone reconciling a payment.
+   */
+  async updateCustomer(
+    customerId: string,
+    input: { name?: string; email?: string },
+  ): Promise<void> {
+    if (!input.name && !input.email) return;
+
+    try {
+      await this.api().patch(`/customers/${customerId}`, input);
+    } catch (err) {
+      // Cosmetic: never let a failed tidy-up stop somebody subscribing.
+      const error = err as AxiosError<{ error?: { description?: string } }>;
+      this.logger.warn(
+        `Could not update Razorpay customer ${customerId}: ` +
+          (error.response?.data?.error?.description ?? error.message),
+      );
+    }
+  }
+
+  /**
    * A monthly subscription. `total_count` is Razorpay's required cycle count;
    * ten years of months stands in for "until cancelled", which their API has
    * no way to express.
