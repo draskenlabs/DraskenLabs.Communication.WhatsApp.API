@@ -13,7 +13,7 @@ NestJS REST API for sending and receiving WhatsApp messages via the Meta Cloud A
 | Cache | Redis via ioredis |
 | Auth | Drasken SSO (PKCE OAuth2) + API Key |
 | Encryption | AES-256-GCM (stored tokens) |
-| Docs | Swagger / OpenAPI at `/swagger/docs` |
+| Docs | Swagger / OpenAPI at `/swagger/docs` (off unless `SWAGGER_ENABLED=true`) |
 
 ---
 
@@ -102,6 +102,10 @@ Authorization: Bearer <sso_access_token>
 ---
 
 ## Swagger
+
+Served only when `SWAGGER_ENABLED=true`. `.env.example` turns it on for local
+development; deployments leave it off, so a public instance does not hand out a
+map of every endpoint and payload.
 
 ```
 http://localhost:3000/swagger/docs   — Swagger UI
