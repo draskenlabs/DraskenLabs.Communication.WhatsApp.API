@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Injectable, NestMiddleware } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
-import { BillingService } from '../billing.service';
+import { SubscriptionAccessService } from '../subscription-access.service';
 import { RazorpayService } from '../razorpay.service';
 
 /**
@@ -23,7 +23,7 @@ import { RazorpayService } from '../razorpay.service';
 @Injectable()
 export class SubscriptionMiddleware implements NestMiddleware {
   constructor(
-    private readonly billing: BillingService,
+    private readonly billing: SubscriptionAccessService,
     private readonly razorpay: RazorpayService,
   ) {}
 

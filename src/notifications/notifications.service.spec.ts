@@ -17,6 +17,7 @@ const mockPrisma = {
   },
   userWhatsapp: { findMany: jest.fn() },
   waba: { findUnique: jest.fn() },
+  wabaOrganisation: { findMany: jest.fn() },
   notification: {
     createMany: jest.fn(),
     findMany: jest.fn(),
@@ -38,6 +39,8 @@ describe('NotificationsService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     mockFirebase.enabled = true;
+    // One organisation holds the account unless a test says otherwise.
+    mockPrisma.wabaOrganisation.findMany.mockResolvedValue([{ ssoOrgId: 'org_1' }]);
     mockFirebase.sendToTokens.mockResolvedValue({
       sent: 1,
       failed: 0,
@@ -170,9 +173,31 @@ describe('NotificationsService', () => {
 
     it('swallows a database failure — a webhook must still be acknowledged', async () => {
       mockPrisma.userWhatsapp.findMany.mockRejectedValue(new Error('db down'));
+      mockPrisma.wabaOrganisation.findMany.mockRejectedValue(new Error('db down'));
       await expect(
         service.notifyWaba('w1', 'inboundMessage', MESSAGE),
       ).resolves.toBeUndefined();
+    });
+
+    it('writes a feed entry for every organisation holding the account', async () => {
+      // The feed is filtered by the organisation being viewed, so stamping one
+      // organisation's id on activity for a shared account left the second
+      // looking at an empty bell for its own messages.
+      mockPrisma.userWhatsapp.findMany.mockResolvedValue([{ userId: 1 }]);
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_1' },
+        { ssoOrgId: 'org_2' },
+      ]);
+      mockPrisma.deviceToken.findMany.mockResolvedValue([{ token: 'a' }]);
+
+      await service.notifyWaba('w1', 'inboundMessage', MESSAGE);
+
+      const orgs = mockPrisma.notification.createMany.mock.calls.map(
+        (c: any) => c[0].data[0].ssoOrgId,
+      );
+      expect(orgs).toEqual(['org_1', 'org_2']);
+      // Two records, one interruption: a person is buzzed once.
+      expect(mockFirebase.sendToTokens).toHaveBeenCalledTimes(1);
     });
 
     it('records the feed entry but sends nothing when push is not configured', async () => {

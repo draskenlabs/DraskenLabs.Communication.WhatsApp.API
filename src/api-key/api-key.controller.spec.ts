@@ -60,15 +60,20 @@ describe('ApiKeyController', () => {
 
   describe('revoke', () => {
     it('revokes an API key', async () => {
-      const req = { user: { id: 1 } } as any;
+      const req = { user: { id: 1 }, orgId: 'sso_org_1' } as any;
       mockApiKeyService.revokeApiKey.mockResolvedValue(undefined);
 
       await expect(controller.revoke(req, 5)).resolves.toBeUndefined();
-      expect(mockApiKeyService.revokeApiKey).toHaveBeenCalledWith(1, 5);
+      expect(mockApiKeyService.revokeApiKey).toHaveBeenCalledWith(1, 'sso_org_1', 5);
     });
 
     it('throws UnauthorizedException when user missing', async () => {
       const req = {} as any;
+      await expect(controller.revoke(req, 5)).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('throws UnauthorizedException when the organisation is missing', async () => {
+      const req = { user: { id: 1 } } as any;
       await expect(controller.revoke(req, 5)).rejects.toThrow(UnauthorizedException);
     });
   });

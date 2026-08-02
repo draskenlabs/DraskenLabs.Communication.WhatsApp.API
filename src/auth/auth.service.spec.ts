@@ -5,6 +5,8 @@ import { SsoService } from './sso.service';
 import { UserService } from 'src/user/user.service';
 import { JwtService } from '@nestjs/jwt';
 import { RedisService } from 'src/redis/redis.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
+import { orgDirectoryDouble } from 'src/org/org.test-doubles';
 
 const mockSsoService = {
   exchangeCode: jest.fn(),
@@ -26,6 +28,8 @@ const mockRedisService = {
   getSsoSession: jest.fn(),
 };
 
+const mockOrgDirectory = orgDirectoryDouble();
+
 describe('AuthService', () => {
   let service: AuthService;
 
@@ -38,6 +42,7 @@ describe('AuthService', () => {
         { provide: UserService, useValue: mockUserService },
         { provide: JwtService, useValue: mockJwtService },
         { provide: RedisService, useValue: mockRedisService },
+        { provide: OrgDirectoryService, useValue: mockOrgDirectory },
       ],
     }).compile();
     service = module.get<AuthService>(AuthService);

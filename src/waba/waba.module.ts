@@ -4,9 +4,11 @@ import { WabaController } from './waba.controller';
 import { UserModule } from 'src/user/user.module';
 import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
 import { RedisModule } from 'src/redis/redis.module';
+import { WabaMembershipModule } from './waba-membership.module';
+import { OrgDirectoryModule } from 'src/org/org-directory.module';
 
 @Module({
-  imports: [UserModule, RedisModule],
+  imports: [UserModule, RedisModule, WabaMembershipModule, OrgDirectoryModule],
   providers: [WabaService],
   controllers: [WabaController],
   exports: [WabaService],

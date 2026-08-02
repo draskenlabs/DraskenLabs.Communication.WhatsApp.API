@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpException } from '@nestjs/common';
 import { SubscriptionMiddleware } from './subscription.middleware';
-import { BillingService } from '../billing.service';
+import { SubscriptionAccessService } from '../subscription-access.service';
 import { RazorpayService } from '../razorpay.service';
 
 const mockBilling = { hasAccess: jest.fn() };
@@ -18,7 +18,7 @@ describe('SubscriptionMiddleware', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SubscriptionMiddleware,
-        { provide: BillingService, useValue: mockBilling },
+        { provide: SubscriptionAccessService, useValue: mockBilling },
         { provide: RazorpayService, useValue: mockRazorpay },
       ],
     }).compile();

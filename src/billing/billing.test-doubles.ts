@@ -1,4 +1,4 @@
-import { BillingService } from './billing.service';
+import { SubscriptionAccessService } from './subscription-access.service';
 
 /**
  * Stand-in for the paywall, so a unit test of sending or of templates does not
@@ -9,7 +9,7 @@ import { BillingService } from './billing.service';
  * cares makes it reject.
  */
 export function billingServiceDouble(): jest.Mocked<
-  Pick<BillingService, 'requireAccess' | 'hasAccess'>
+  Pick<SubscriptionAccessService, 'requireAccess' | 'hasAccess'>
 > {
   return {
     requireAccess: jest.fn().mockResolvedValue(undefined),

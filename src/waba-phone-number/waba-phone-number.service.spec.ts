@@ -2,8 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { WabaPhoneNumberService } from './waba-phone-number.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { BillingService } from 'src/billing/billing.service';
+import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { WabaMembershipService } from 'src/waba/waba-membership.service';
 import { billingServiceDouble } from 'src/billing/billing.test-doubles';
+import { wabaMembershipDouble } from 'src/waba/waba.test-doubles';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
 import axios from 'axios';
@@ -24,6 +26,7 @@ const mockPrisma = {
   userWhatsapp: { findFirst: jest.fn() },
 };
 
+const mockMembership = wabaMembershipDouble();
 const mockEncryption = { decrypt: jest.fn().mockReturnValue('raw_token') };
 const mockRedis = { setPhoneCache: jest.fn(), invalidatePhoneCache: jest.fn() };
 
@@ -41,7 +44,8 @@ describe('WabaPhoneNumberService', () => {
         { provide: MailNotifications, useValue: mockMailNotifications },
         WabaPhoneNumberService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: BillingService, useValue: billingServiceDouble() },
+        { provide: SubscriptionAccessService, useValue: billingServiceDouble() },
+        { provide: WabaMembershipService, useValue: mockMembership },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: RedisService, useValue: mockRedis },
       ],
@@ -50,23 +54,26 @@ describe('WabaPhoneNumberService', () => {
   });
 
   describe('findAllByWabaId', () => {
-    it('throws NotFoundException when WABA not found', async () => {
-      mockPrisma.waba.findFirst.mockResolvedValue(null);
-      await expect(service.findAllByWabaId(1, 'w1')).rejects.toThrow(NotFoundException);
+    it('throws NotFoundException when the organisation does not hold the WABA', async () => {
+      mockMembership.require.mockRejectedValueOnce(new NotFoundException('nope'));
+      await expect(service.findAllByWabaId('org_1', 'w1')).rejects.toThrow(NotFoundException);
     });
 
-    it('returns phone numbers for the WABA', async () => {
-      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
+    it('lists for the organisation, not for the account`s first connector', async () => {
       const phones = [{ phoneNumberId: 'p1' }];
       mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue(phones);
-      await expect(service.findAllByWabaId(1, 'w1')).resolves.toEqual(phones);
+
+      await expect(service.findAllByWabaId('org_2', 'w1')).resolves.toEqual(phones);
+      expect(mockMembership.require).toHaveBeenCalledWith('org_2', 'w1');
     });
   });
 
   describe('syncPhoneNumbers', () => {
     it('throws NotFoundException when no connection found', async () => {
-      mockPrisma.userWhatsapp.findFirst.mockResolvedValue(null);
-      await expect(service.syncPhoneNumbers(1, 'w1')).rejects.toThrow(NotFoundException);
+      mockMembership.connection.mockRejectedValueOnce(new NotFoundException('gone'));
+      await expect(service.syncPhoneNumbers(1, 'org_1', 'w1')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('fetches from Meta, upserts to DB and populates Redis cache', async () => {
@@ -89,15 +96,15 @@ describe('WabaPhoneNumberService', () => {
       const upsertedPhone = { phoneNumberId: 'p1', wabaId: 'w1' };
       mockPrisma.wabaPhoneNumber.upsert.mockResolvedValue(upsertedPhone);
 
-      const result = await service.syncPhoneNumbers(1, 'w1');
+      const result = await service.syncPhoneNumbers(1, 'org_1', 'w1');
 
       expect(result).toHaveLength(1);
       expect(result[0].phoneNumberId).toBe('p1');
-      expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 1, 'w1', 'enc_token');
+      // No user in the entry: who may send is a membership question now.
+      expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 'w1', 'enc_token');
     });
 
     it('prunes numbers removed on Meta and invalidates their cache', async () => {
-      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc_token' });
       mockedAxios.get = jest.fn().mockResolvedValue({
         data: { data: [{ id: 'p1', platform_type: 'CLOUD_API' }] },
       });
@@ -105,7 +112,7 @@ describe('WabaPhoneNumberService', () => {
       // Meta no longer returns 'p_old' → it should be pruned.
       mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([{ phoneNumberId: 'p_old' }]);
 
-      await service.syncPhoneNumbers(1, 'w1');
+      await service.syncPhoneNumbers(1, 'org_1', 'w1');
 
       expect(mockPrisma.wabaPhoneNumber.deleteMany).toHaveBeenCalledWith({
         where: { wabaId: 'w1', phoneNumberId: { notIn: ['p1'] } },
@@ -130,10 +137,10 @@ describe('WabaPhoneNumberService', () => {
       const upserted = { phoneNumberId: 'p2', wabaId: 'w1' };
       mockPrisma.wabaPhoneNumber.upsert.mockResolvedValue(upserted);
 
-      const result = await service.syncPhoneNumbersWithToken(1, 'w1', 'raw', 'enc');
+      const result = await service.syncPhoneNumbersWithToken('w1', 'raw', 'enc');
 
       expect(result).toHaveLength(1);
-      expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p2', 1, 'w1', 'enc');
+      expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p2', 'w1', 'enc');
     });
 
     it('handles a "Pending sync" number with fields omitted by Meta', async () => {
@@ -143,7 +150,7 @@ describe('WabaPhoneNumberService', () => {
       mockedAxios.get = jest.fn().mockResolvedValue({ data: { data: [metaPhone] } });
       mockPrisma.wabaPhoneNumber.upsert.mockImplementation(({ create }) => create);
 
-      const result = await service.syncPhoneNumbersWithToken(1, 'w1', 'raw', 'enc');
+      const result = await service.syncPhoneNumbersWithToken('w1', 'raw', 'enc');
 
       expect(result).toHaveLength(1);
       const written = mockPrisma.wabaPhoneNumber.upsert.mock.calls[0][0].create;
@@ -195,7 +202,8 @@ describe('WabaPhoneNumberService', () => {
       expect(payload).toEqual({ messaging_product: 'whatsapp', pin: '123456' });
       expect(result.phoneNumberId).toBe('p1');
       expect(result.platformType).toBe('CLOUD_API');
-      expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 1, 'w1', 'enc_token');
+      // No user in the entry: who may send is a membership question now.
+      expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 'w1', 'enc_token');
     });
 
     it('translates a Meta failure into a BadRequestException and does not re-sync', async () => {

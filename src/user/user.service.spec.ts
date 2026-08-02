@@ -19,6 +19,7 @@ const mockTx = {
   notificationPreference: { deleteMany: deleteMany() },
   contact: { deleteMany: deleteMany() },
   waba: { deleteMany: deleteMany() },
+  wabaOrganisation: { deleteMany: deleteMany() },
   user: { delete: jest.fn().mockResolvedValue({ id: 1 }) },
 };
 
@@ -29,6 +30,10 @@ const mockPrisma = {
     upsert: jest.fn(),
   },
   waba: { findMany: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) },
+  wabaOrganisation: {
+    findMany: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
+  },
   userApiKey: { findMany: jest.fn().mockResolvedValue([]) },
   wabaPhoneNumber: { findMany: jest.fn().mockResolvedValue([]) },
   $transaction: jest.fn((cb: any) => cb(mockTx)),
@@ -137,18 +142,19 @@ describe('UserService', () => {
   });
 
   describe('deleteAccount', () => {
-    const withWabas = () => {
-      mockPrisma.waba.findMany.mockResolvedValue([
+    // Two accounts this user brought into org_1, and nobody else holding either.
+    const soleMember = () => {
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
         { wabaId: 'w1', ssoOrgId: 'org_1' },
         { wabaId: 'w2', ssoOrgId: 'org_1' },
       ]);
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(0);
       mockPrisma.userApiKey.findMany.mockResolvedValue([{ accessKey: 'ak_1' }]);
       mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([{ phoneNumberId: 'p1' }]);
     };
 
-    it('deletes only this platform\'s data, scoped to the user', async () => {
-      withWabas();
-      mockPrisma.waba.count.mockResolvedValue(0);
+    it("deletes only this platform's data, scoped to the user", async () => {
+      soleMember();
       mockTx.waba.deleteMany.mockResolvedValue({ count: 2 });
       mockTx.message.deleteMany.mockResolvedValue({ count: 7 });
 
@@ -159,24 +165,45 @@ describe('UserService', () => {
       expect(mockTx.wabaPhoneNumber.deleteMany).toHaveBeenCalledWith({ where: byWaba });
       expect(mockTx.message.deleteMany).toHaveBeenCalledWith({ where: { userId: 1 } });
       expect(mockTx.userApiKey.deleteMany).toHaveBeenCalledWith({ where: { userId: 1 } });
-      expect(mockTx.waba.deleteMany).toHaveBeenCalledWith({ where: { userId: 1 } });
+      expect(mockTx.waba.deleteMany).toHaveBeenCalledWith({ where: byWaba });
       expect(mockTx.user.delete).toHaveBeenCalledWith({ where: { id: 1 } });
       expect(result.wabas).toBe(2);
       expect(result.messages).toBe(7);
     });
 
     it('runs the whole delete in one transaction', async () => {
-      withWabas();
-      mockPrisma.waba.count.mockResolvedValue(0);
+      soleMember();
       await service.deleteAccount(1);
       expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps contacts when another user still holds a WABA in the organisation', async () => {
+    it('leaves an account another organisation still holds completely alone', async () => {
+      // The bug this replaces: deleting the user who connected an account
+      // first deleted the shared `Waba` row, cascading `WabaOrganisation` and
+      // taking the account, its templates and its numbers away from every other
+      // organisation that had connected it.
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        { wabaId: 'w1', ssoOrgId: 'org_1' },
+      ]);
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(1);
+
+      const result = await service.deleteAccount(1);
+
+      expect(mockTx.waba.deleteMany).not.toHaveBeenCalled();
+      expect(mockTx.messageTemplate.deleteMany).not.toHaveBeenCalled();
+      expect(mockTx.wabaPhoneNumber.deleteMany).not.toHaveBeenCalled();
+      expect(mockTx.contact.deleteMany).not.toHaveBeenCalled();
+      // The user's own connection and membership still go.
+      expect(mockTx.userWhatsapp.deleteMany).toHaveBeenCalledWith({ where: { userId: 1 } });
+      expect(mockTx.wabaOrganisation.deleteMany).toHaveBeenCalledWith({ where: { userId: 1 } });
+      expect(result.wabas).toBe(0);
+    });
+
+    it('keeps contacts when the organisation still holds an account', async () => {
       // Contacts are org-scoped, not user-owned — deleting one member's account
       // must never wipe a colleague's contact list.
-      withWabas();
-      mockPrisma.waba.count.mockResolvedValue(1);
+      soleMember();
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(1);
 
       const result = await service.deleteAccount(1);
 
@@ -184,9 +211,8 @@ describe('UserService', () => {
       expect(result.contacts).toBe(0);
     });
 
-    it('deletes contacts once no other user of this platform is left in the org', async () => {
-      withWabas();
-      mockPrisma.waba.count.mockResolvedValue(0);
+    it('deletes contacts once the organisation holds nothing', async () => {
+      soleMember();
       mockTx.contact.deleteMany.mockResolvedValue({ count: 4 });
 
       const result = await service.deleteAccount(1);
@@ -198,8 +224,7 @@ describe('UserService', () => {
     });
 
     it('purges the caches that would otherwise outlive the rows', async () => {
-      withWabas();
-      mockPrisma.waba.count.mockResolvedValue(0);
+      soleMember();
 
       await service.deleteAccount(1, 'sess_1');
 
@@ -210,10 +235,9 @@ describe('UserService', () => {
     });
 
     it('still deletes an account that never connected a WABA', async () => {
-      mockPrisma.waba.findMany.mockResolvedValue([]);
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
       mockPrisma.userApiKey.findMany.mockResolvedValue([]);
       mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([]);
-      mockTx.waba.deleteMany.mockResolvedValue({ count: 0 });
 
       const result = await service.deleteAccount(2);
 

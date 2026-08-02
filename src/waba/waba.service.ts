@@ -13,6 +13,8 @@ import axios from 'axios';
 import { Waba } from '@prisma/client';
 import { WabaResponseDto } from './dto/waba-response.dto';
 import { MailNotifications } from 'src/mail/mail.notifications';
+import { WabaMembershipService } from './waba-membership.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
 import {
   isMetaAuthFailure,
   metaErrorMessage,
@@ -29,6 +31,8 @@ export class WabaService {
     private readonly encryptionService: EncryptionService,
     private readonly redisService: RedisService,
     private readonly mail: MailNotifications,
+    private readonly membership: WabaMembershipService,
+    private readonly orgDirectory: OrgDirectoryService,
   ) {}
 
   /**
@@ -60,12 +64,13 @@ export class WabaService {
     }
   }
 
-  /** Subscribe an already-connected WABA using its stored token. */
-  async subscribeExistingWaba(userId: number, wabaId: string): Promise<boolean> {
-    const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
-      where: { userId, wabaId },
-    });
-    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+  /** Subscribe an already-connected WABA using its organisation's stored token. */
+  async subscribeExistingWaba(
+    ssoOrgId: string,
+    wabaId: string,
+    userId?: number,
+  ): Promise<boolean> {
+    const userWhatsapp = await this.membership.connection(ssoOrgId, wabaId, userId);
     const rawAccessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
     return this.subscribeAppToWaba(wabaId, rawAccessToken);
   }
@@ -105,14 +110,20 @@ export class WabaService {
     return waba;
   }
 
-  async getWabaDetailsFromMeta(userId: number, wabaId: string): Promise<any> {
-    const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
-      where: { userId, wabaId },
-    });
-
-    if (!userWhatsapp) {
-      throw new NotFoundException('No connection found for this WABA');
-    }
+  /**
+   * The account as Meta describes it.
+   *
+   * Scoped to the caller's organisation. Without that a member of two
+   * organisations, working in the second, could read the full Meta record of an
+   * account only the first holds — and a colleague in the organisation that
+   * *does* hold it was refused for not personally owning the token.
+   */
+  async getWabaDetailsFromMeta(
+    ssoOrgId: string,
+    wabaId: string,
+    userId?: number,
+  ): Promise<any> {
+    const userWhatsapp = await this.membership.connection(ssoOrgId, wabaId, userId);
 
     const accessToken = this.encryptionService.decrypt(
       userWhatsapp.accessToken,
@@ -206,6 +217,11 @@ export class WabaService {
       },
     });
 
+    // The organisation's name, copied so an email sent later — from a Meta
+    // webhook, from the billing cron — can say which organisation it is about.
+    // Null when nothing has told us yet; the row is still worth writing.
+    const orgName = await this.orgDirectory.name(data.ssoOrgId);
+
     // The membership is what makes the account appear in this organisation.
     await this.prisma.wabaOrganisation.upsert({
       where: {
@@ -215,8 +231,10 @@ export class WabaService {
         wabaId: data.wabaId,
         ssoOrgId: data.ssoOrgId,
         userId: data.userId,
+        orgName,
       },
-      update: {},
+      // A rename in the SSO reaches us the next time somebody connects.
+      update: orgName ? { orgName } : {},
     });
 
     return waba;

@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { WabaService } from './waba.service';
+import { WabaMembershipService } from './waba-membership.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
+import { orgDirectoryDouble } from 'src/org/org.test-doubles';
+import { wabaMembershipDouble } from './waba.test-doubles';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -34,6 +38,9 @@ const mockRedis = { invalidatePhoneCache: jest.fn() };
 
 const mockMailNotifications = mailNotificationsDouble();
 
+const mockMembership = wabaMembershipDouble();
+const mockOrgDirectory = orgDirectoryDouble();
+
 describe('WabaService', () => {
   let service: WabaService;
 
@@ -44,6 +51,8 @@ describe('WabaService', () => {
         { provide: MailNotifications, useValue: mockMailNotifications },
         WabaService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: WabaMembershipService, useValue: mockMembership },
+        { provide: OrgDirectoryService, useValue: mockOrgDirectory },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: RedisService, useValue: mockRedis },
       ],
@@ -364,15 +373,17 @@ describe('WabaService', () => {
 
   describe('subscribeExistingWaba', () => {
     it('throws NotFoundException when there is no connection', async () => {
-      mockPrisma.userWhatsapp.findFirst.mockResolvedValue(null);
-      await expect(service.subscribeExistingWaba(1, 'w1')).rejects.toThrow(NotFoundException);
+      mockMembership.connection.mockRejectedValueOnce(new NotFoundException('gone'));
+      await expect(service.subscribeExistingWaba('org_1', 'w1', 1)).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
-    it('decrypts the stored token and subscribes', async () => {
-      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc' });
+    it('decrypts the organisation`s stored token and subscribes', async () => {
+      mockMembership.connection.mockResolvedValue({ userId: 1, accessToken: 'enc' } as never);
       mockEncryption.decrypt.mockReturnValue('raw_token');
       mockedAxios.post = jest.fn().mockResolvedValue({ data: { success: true } });
-      await expect(service.subscribeExistingWaba(1, 'w1')).resolves.toBe(true);
+      await expect(service.subscribeExistingWaba('org_1', 'w1', 1)).resolves.toBe(true);
       expect(mockEncryption.decrypt).toHaveBeenCalledWith('enc');
     });
   });

@@ -31,6 +31,15 @@
   path's reads. `402` is the refusal, naming the account so the message says
   which subscription is missing.
 - Billing emails: charged, payment failed (retrying vs stopped), cancelled.
+  Each names the organisation it is about, not only the account — somebody in
+  three of them cannot act on "your subscription renewed" otherwise.
+- The console is told the price, the recent debits (amount, method, instrument,
+  date) and the next charge date — migration
+  `20260802100000_subscription_payments`.
+- **Provisioning.** Connecting an account no longer syncs anything. A
+  subscription becoming paid for the first time is what pulls phone numbers,
+  subscribes webhooks and syncs templates, on the not-granting to granting edge
+  so renewals and replayed webhooks do not re-sync.
 - **Razorpay Checkout** rather than the hosted page: register returns the
   subscription id and publishable key, and `POST /confirm` verifies Checkout's
   signature before re-reading the subscription, so the console reflects a

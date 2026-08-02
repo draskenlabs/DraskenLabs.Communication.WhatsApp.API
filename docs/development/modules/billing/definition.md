@@ -45,7 +45,7 @@ have paid for.**
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/billing/subscriptions` | JWT | One row per connected account: active, status, period, cancel flag, authorisation URL |
+| GET | `/billing/subscriptions` | JWT | One row per connected account: active, status, period, cancel flag, authorisation URL, the plan's price, the recent debits and the next charge date |
 | POST | `/billing/subscriptions/:wabaId` | JWT | Subscribe that account. Returns the subscription id to open Checkout with, the publishable key, and the hosted page as a fallback. Throttled 5/min |
 | POST | `/billing/subscriptions/:wabaId/confirm` | JWT | Record a mandate authorised in Checkout, signature-checked |
 | DELETE | `/billing/subscriptions/:wabaId` | JWT | Cancel that account. Keeps the paid month |
@@ -148,6 +148,31 @@ this one must never be written without an expiry.
 | `subscription.pending` | A debit failed, retries under way. Access continues on the paid month; customer emailed |
 | `subscription.halted` | Retries exhausted. Access still runs to `currentEnd`; customer emailed |
 | `subscription.cancelled`, `completed`, `expired` | Recorded; access runs to `currentEnd` |
+
+## What the console is told about the money
+
+The page used to be able to say an account was subscribed and nothing else —
+not what it cost, not what had been taken, not which card paid. Three additions:
+
+- **The plan.** `GET /plans/:id` at Razorpay, cached for the process's lifetime
+  (plans are immutable there — a price change is a new plan id, so there is
+  nothing to invalidate). Null rather than an error when it cannot be read: the
+  page's job is to say whether an account is paid for, and it can still do that
+  without a price.
+- **The debits.** `subscription.charged` carries a payment entity alongside the
+  subscription; `SubscriptionPayment` keeps a copy — amount in the smallest
+  currency unit, currency, status, method, and enough of the instrument to
+  recognise it ("Visa ···· 4242", a UPI handle, a bank). Keyed on Razorpay's
+  payment id, so a retried webhook updates its row rather than growing a
+  duplicate. The instrument itself never leaves Razorpay: there is nothing
+  stored here worth stealing and nothing that could be replayed.
+- **The next charge.** The renewal date, until there is not going to be one —
+  a cancelled subscription runs to the end of the month already paid for and
+  then stops, so a date there would be a promise to debit that is never kept.
+
+Razorpay stays the ledger. This is what lets the console answer "what was I
+charged, when, on which card" without a round trip, and after a payment has
+scrolled out of their dashboard.
 
 ## One writer
 

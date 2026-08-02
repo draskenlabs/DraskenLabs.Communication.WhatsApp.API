@@ -53,6 +53,10 @@ export class ApiKeyController {
     if (!user) {
       throw new UnauthorizedException('User not found in context');
     }
-    await this.apiKeyService.revokeApiKey(user.id, id);
+    const orgId = (req as any).orgId;
+    if (!orgId) {
+      throw new UnauthorizedException('Organisation not found in context');
+    }
+    await this.apiKeyService.revokeApiKey(user.id, orgId, id);
   }
 }

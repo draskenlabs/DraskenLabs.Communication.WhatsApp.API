@@ -12,6 +12,7 @@ const mockPrisma = {
     create: jest.fn(),
     findMany: jest.fn(),
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
     update: jest.fn(),
   },
   waba: { findFirst: jest.fn() },
@@ -99,20 +100,38 @@ describe('ApiKeyService', () => {
 
   describe('revokeApiKey', () => {
     it('throws NotFoundException if key not found', async () => {
-      mockPrisma.userApiKey.findUnique.mockResolvedValue(null);
-      await expect(service.revokeApiKey(1, 99)).rejects.toThrow(NotFoundException);
+      mockPrisma.userApiKey.findFirst.mockResolvedValue(null);
+      await expect(service.revokeApiKey(1, 'sso_org_1', 99)).rejects.toThrow(NotFoundException);
     });
 
-    it('throws NotFoundException if key belongs to different user', async () => {
-      mockPrisma.userApiKey.findUnique.mockResolvedValue({ id: 99, userId: 2, accessKey: 'ak_x' });
-      await expect(service.revokeApiKey(1, 99)).rejects.toThrow(NotFoundException);
+    it('scopes the lookup to the organisation, not to who created the key', async () => {
+      // The list is the organisation's, so matching on `userId` showed a
+      // colleague's key and then 404'd when it was revoked.
+      mockPrisma.userApiKey.findFirst.mockResolvedValue({
+        id: 99,
+        userId: 2,
+        ssoOrgId: 'sso_org_1',
+        accessKey: 'ak_x',
+      });
+      mockPrisma.userApiKey.update.mockResolvedValue({});
+
+      await service.revokeApiKey(1, 'sso_org_1', 99);
+
+      expect(mockPrisma.userApiKey.findFirst).toHaveBeenCalledWith({
+        where: { id: 99, ssoOrgId: 'sso_org_1' },
+      });
     });
 
     it('deactivates key and removes from Redis cache', async () => {
-      mockPrisma.userApiKey.findUnique.mockResolvedValue({ id: 5, userId: 1, accessKey: 'ak_abc' });
+      mockPrisma.userApiKey.findFirst.mockResolvedValue({
+        id: 5,
+        userId: 1,
+        ssoOrgId: 'sso_org_1',
+        accessKey: 'ak_abc',
+      });
       mockPrisma.userApiKey.update.mockResolvedValue({});
 
-      await service.revokeApiKey(1, 5);
+      await service.revokeApiKey(1, 'sso_org_1', 5);
 
       expect(mockPrisma.userApiKey.update).toHaveBeenCalledWith({
         where: { id: 5 },

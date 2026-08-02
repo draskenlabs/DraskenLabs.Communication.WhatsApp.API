@@ -45,7 +45,7 @@ export class ApiKeyService {
 
     // The secret is shown once in the console and never emailed; this is the
     // alert that catches a key somebody else created.
-    void this.mail.apiKeyCreated(userId, accessKey);
+    void this.mail.apiKeyCreated(userId, ssoOrgId, accessKey);
 
     return { accessKey, secretKey, wabaId: waba.wabaId };
   }
@@ -68,10 +68,20 @@ export class ApiKeyService {
     return keys.map(({ waba, ...key }) => ({ ...key, wabaName: waba?.name ?? null }));
   }
 
-  async revokeApiKey(userId: number, keyId: number): Promise<void> {
-    const key = await this.prisma.userApiKey.findUnique({ where: { id: keyId } });
+  /**
+   * Revoke a key belonging to this organisation.
+   *
+   * Scoped by organisation, not by who created it. The list is the
+   * organisation's, so matching on `userId` meant a colleague's key was shown
+   * and then 404'd on revoke — and a key could be revoked from an organisation
+   * it did not belong to, as long as the caller had created it somewhere else.
+   */
+  async revokeApiKey(userId: number, ssoOrgId: string, keyId: number): Promise<void> {
+    const key = await this.prisma.userApiKey.findFirst({
+      where: { id: keyId, ssoOrgId },
+    });
 
-    if (!key || key.userId !== userId) {
+    if (!key) {
       throw new NotFoundException('API key not found');
     }
 
@@ -82,6 +92,6 @@ export class ApiKeyService {
 
     await this.redisService.deleteApiKeyCache(key.accessKey);
 
-    void this.mail.apiKeyRevoked(userId, key.accessKey);
+    void this.mail.apiKeyRevoked(userId, ssoOrgId, key.accessKey);
   }
 }

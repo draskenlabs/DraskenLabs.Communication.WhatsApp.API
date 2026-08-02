@@ -40,14 +40,26 @@ describe('WabaController', () => {
 
   describe('findDetails', () => {
     it('returns WABA details from Meta', async () => {
-      const req = { user: { id: 1 } } as any;
+      const req = { user: { id: 1 }, orgId: 'sso_org_1' } as any;
       mockWabaService.getWabaDetailsFromMeta.mockResolvedValue({ id: 'w1', name: 'Test' });
       await expect(controller.findDetails('w1', req)).resolves.toEqual({ id: 'w1', name: 'Test' });
-      expect(mockWabaService.getWabaDetailsFromMeta).toHaveBeenCalledWith(1, 'w1');
+      // The organisation leads: reading an account is scoped to the org being
+      // viewed, not to whichever one the caller's token happens to reach.
+      expect(mockWabaService.getWabaDetailsFromMeta).toHaveBeenCalledWith(
+        'sso_org_1',
+        'w1',
+        1,
+      );
     });
 
     it('throws UnauthorizedException when user missing', async () => {
       await expect(controller.findDetails('w1', {} as any)).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('throws UnauthorizedException when the organisation is missing', async () => {
+      await expect(
+        controller.findDetails('w1', { user: { id: 1 } } as any),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 

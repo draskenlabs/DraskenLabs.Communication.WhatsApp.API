@@ -73,12 +73,27 @@ export class UserService {
       select: { email: true },
     });
 
-    const wabas = await this.prisma.waba.findMany({
+    // Accounts this user brought into an organisation. The membership row is
+    // the link that matters — `Waba.userId` only records who connected first,
+    // and deleting on that basis took a shared account away from every other
+    // organisation holding it.
+    const memberships = await this.prisma.wabaOrganisation.findMany({
       where: { userId },
       select: { wabaId: true, ssoOrgId: true },
     });
-    const wabaIds = wabas.map((w) => w.wabaId);
-    const orgIds = [...new Set(wabas.map((w) => w.ssoOrgId))];
+    const touchedWabaIds = [...new Set(memberships.map((m) => m.wabaId))];
+    const touchedOrgIds = [...new Set(memberships.map((m) => m.ssoOrgId))];
+
+    // An account is deleted only when losing this user's memberships leaves no
+    // organisation holding it at all. Anything still held stays exactly as it
+    // is, data included.
+    const orphanedWabaIds: string[] = [];
+    for (const wabaId of touchedWabaIds) {
+      const remaining = await this.prisma.wabaOrganisation.count({
+        where: { wabaId, userId: { not: userId } },
+      });
+      if (remaining === 0) orphanedWabaIds.push(wabaId);
+    }
 
     // Cached values have to be read before the rows go, so the cache entries
     // can be purged afterwards — a stale API key cache would keep working.
@@ -86,42 +101,46 @@ export class UserService {
       where: { userId },
       select: { accessKey: true },
     });
-    const phoneNumbers = wabaIds.length
+    const phoneNumbers = orphanedWabaIds.length
       ? await this.prisma.wabaPhoneNumber.findMany({
-          where: { wabaId: { in: wabaIds } },
+          where: { wabaId: { in: orphanedWabaIds } },
           select: { phoneNumberId: true },
         })
       : [];
 
-    // Organisations where this user is the last one holding a WABA here.
+    // Organisations left holding nothing once this user's memberships go. Their
+    // contacts have no account to act on, so they go too; an organisation that
+    // still holds an account keeps everything.
     const orphanedOrgs: string[] = [];
-    for (const ssoOrgId of orgIds) {
-      const others = await this.prisma.waba.count({
+    for (const ssoOrgId of touchedOrgIds) {
+      const others = await this.prisma.wabaOrganisation.count({
         where: { ssoOrgId, userId: { not: userId } },
       });
       if (others === 0) orphanedOrgs.push(ssoOrgId);
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const byWaba = { wabaId: { in: wabaIds } };
+      const byWaba = { wabaId: { in: orphanedWabaIds } };
+      const hasOrphans = orphanedWabaIds.length > 0;
 
-      const templates = wabaIds.length
+      const templates = hasOrphans
         ? await tx.messageTemplate.deleteMany({ where: byWaba })
         : { count: 0 };
-      const inbound = wabaIds.length
+      const inbound = hasOrphans
         ? await tx.inboundMessage.deleteMany({ where: byWaba })
         : { count: 0 };
-      const numbers = wabaIds.length
+      const numbers = hasOrphans
         ? await tx.wabaPhoneNumber.deleteMany({ where: byWaba })
         : { count: 0 };
-      const events = wabaIds.length
+      const events = hasOrphans
         ? await tx.webhookEvent.deleteMany({ where: byWaba })
         : { count: 0 };
 
-      // Also covers connections other users made to these WABAs, which would
-      // otherwise block the WABA delete on its foreign key.
+      // This user's own connections always go. Other users' connections go only
+      // to accounts nobody is left holding — otherwise they belong to an
+      // organisation that still has the account and must keep working.
       const connections = await tx.userWhatsapp.deleteMany({
-        where: wabaIds.length ? { OR: [{ userId }, byWaba] } : { userId },
+        where: hasOrphans ? { OR: [{ userId }, byWaba] } : { userId },
       });
       const messages = await tx.message.deleteMany({ where: { userId } });
       const keys = await tx.userApiKey.deleteMany({ where: { userId } });
@@ -134,7 +153,12 @@ export class UserService {
             where: { ssoOrgId: { in: orphanedOrgs } },
           })
         : { count: 0 };
-      const removedWabas = await tx.waba.deleteMany({ where: { userId } });
+
+      // The memberships this user created, whether or not the account survives.
+      await tx.wabaOrganisation.deleteMany({ where: { userId } });
+      const removedWabas = hasOrphans
+        ? await tx.waba.deleteMany({ where: { wabaId: { in: orphanedWabaIds } } })
+        : { count: 0 };
 
       await tx.user.delete({ where: { id: userId } });
 

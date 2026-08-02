@@ -11,7 +11,8 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { ContactsService } from 'src/contacts/contacts.service';
-import { BillingService } from 'src/billing/billing.service';
+import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { WabaMembershipService } from 'src/waba/waba-membership.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import {
   isMetaAuthFailure,
@@ -33,7 +34,8 @@ export class MessagingService {
     private readonly encryptionService: EncryptionService,
     private readonly contactsService: ContactsService,
     private readonly mail: MailNotifications,
-    private readonly billing: BillingService,
+    private readonly billing: SubscriptionAccessService,
+    private readonly membership: WabaMembershipService,
   ) {}
 
   /**
@@ -55,8 +57,11 @@ export class MessagingService {
       );
     }
 
-    if (phoneCache.userId !== userId) {
-      throw new ForbiddenException('Phone number does not belong to your account');
+    // Membership decides this, not the cache's idea of who synced last. Two
+    // people connecting the same account used to mean whoever synced second
+    // owned the number and the other was refused it.
+    if (!(await this.membership.holds(ssoOrgId, phoneCache.wabaId))) {
+      throw new ForbiddenException('Phone number does not belong to your organisation');
     }
 
     // The number decides the WABA, so without this a key issued for one

@@ -112,22 +112,41 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(`user:${userId}`);
   }
 
-  // Phone Cache — phone:{phoneNumberId} → { userId, wabaId, accessToken: encrypted }
+  // Organisation names — orgName:{ssoOrgId} → the display name.
+  //
+  // Organisations live in the SSO, so this is the only copy anything without a
+  // user's token can reach. Long TTL: a name changes rarely, and a stale one is
+  // a better email than no name at all.
+  async setOrgName(ssoOrgId: string, name: string): Promise<void> {
+    await this.client.set(`orgName:${ssoOrgId}`, name, 'EX', 30 * 24 * 60 * 60);
+  }
+
+  async getOrgName(ssoOrgId: string): Promise<string | null> {
+    return this.client.get(`orgName:${ssoOrgId}`);
+  }
+
+  // Phone Cache — phone:{phoneNumberId} → { wabaId, accessToken: encrypted }
+  //
+  // A phone number belongs to an account, and the account is what decides who
+  // may send from it. The entry used to carry the `userId` of whoever synced
+  // last, and sending compared the caller against it — so on an account two
+  // people had connected, the loser of that race was refused a number their own
+  // organisation owned. Who may send is a membership question now; this cache
+  // answers only "which account, and with what token".
   async setPhoneCache(
     phoneNumberId: string,
-    userId: number,
     wabaId: string,
     encryptedAccessToken: string,
   ): Promise<void> {
     await this.client.set(
       `phone:${phoneNumberId}`,
-      JSON.stringify({ userId, wabaId, accessToken: encryptedAccessToken }),
+      JSON.stringify({ wabaId, accessToken: encryptedAccessToken }),
     );
   }
 
   async getPhoneCache(
     phoneNumberId: string,
-  ): Promise<{ userId: number; wabaId: string; accessToken: string } | null> {
+  ): Promise<{ wabaId: string; accessToken: string } | null> {
     const raw = await this.client.get(`phone:${phoneNumberId}`);
     if (!raw) return null;
     return JSON.parse(raw);

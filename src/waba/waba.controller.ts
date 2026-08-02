@@ -59,7 +59,9 @@ export class WabaController {
   ): Promise<any> {
     const user = (req as any).user;
     if (!user) throw new UnauthorizedException('User not found in context');
-    return this.wabaService.getWabaDetailsFromMeta(user.id, wabaId); // token lookup by userId — unchanged
+    const orgId = (req as any).orgId;
+    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    return this.wabaService.getWabaDetailsFromMeta(orgId, wabaId, user.id);
   }
 
   @Post('/:wabaId/sync')
@@ -77,14 +79,18 @@ export class WabaController {
   ): Promise<WabaResponseDto> {
     const user = (req as any).user;
     if (!user) throw new UnauthorizedException('User not found in context');
-
-    const metaDetails = await this.wabaService.getWabaDetailsFromMeta(
-      user.id,
-      wabaId,
-    );
-
     const orgId = (req as any).orgId;
     if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+
+    // Membership first. Sync re-upserts the account *and* its organisation row,
+    // so without this check it was an undocumented way to attach any account
+    // the caller held a token for to whatever organisation they were currently
+    // in. Joining an organisation to an account is the connect flow's job.
+    const metaDetails = await this.wabaService.getWabaDetailsFromMeta(
+      orgId,
+      wabaId,
+      user.id,
+    );
 
     const waba = await this.wabaService.createOrUpdateWaba({
       wabaId: metaDetails.id,
@@ -98,7 +104,7 @@ export class WabaController {
 
     // (Re)subscribe our app to this WABA's webhooks — lets already-connected
     // WABAs start receiving delivery/read statuses without re-onboarding.
-    await this.wabaService.subscribeExistingWaba(user.id, wabaId);
+    await this.wabaService.subscribeExistingWaba(orgId, wabaId, user.id);
 
     // Reaching here means the caller's token worked, so the account is
     // connected by definition.

@@ -5,7 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { BillingService } from 'src/billing/billing.service';
+import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { WabaMembershipService } from 'src/waba/waba-membership.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
 import axios from 'axios';
@@ -27,7 +28,8 @@ export class WabaPhoneNumberService {
     private readonly encryptionService: EncryptionService,
     private readonly redisService: RedisService,
     private readonly mail: MailNotifications,
-    private readonly billing: BillingService,
+    private readonly billing: SubscriptionAccessService,
+    private readonly membership: WabaMembershipService,
   ) {}
 
   /**
@@ -43,13 +45,7 @@ export class WabaPhoneNumberService {
     phoneNumberId: string,
     pin: string,
   ): Promise<WabaPhoneNumber> {
-    // Membership rather than the row's `userId`: an account connected in two
-    // organisations has one `Waba` row and one original connector, so owning
-    // it is a question of which organisations it belongs to.
-    const waba = await this.prisma.waba.findFirst({
-      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
-    });
-    if (!waba) throw new NotFoundException('WABA not found');
+    await this.membership.require(ssoOrgId, wabaId);
 
     // Registering a number puts the account on the Cloud API — the thing the
     // subscription pays for, so it is gated like sending.
@@ -60,10 +56,7 @@ export class WabaPhoneNumberService {
     });
     if (!phone) throw new NotFoundException('Phone number not found for this WABA');
 
-    const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
-      where: { userId, wabaId },
-    });
-    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+    const userWhatsapp = await this.membership.connection(ssoOrgId, wabaId, userId);
 
     const rawAccessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
 
@@ -87,7 +80,7 @@ export class WabaPhoneNumberService {
     }
 
     const phones = await this.fetchAndUpsert(wabaId, rawAccessToken);
-    await this.populatePhoneCache(phones, userId, wabaId, userWhatsapp.accessToken);
+    await this.populatePhoneCache(phones, wabaId, userWhatsapp.accessToken);
     return phones.find((p) => p.phoneNumberId === phoneNumberId) ?? phone;
   }
 
@@ -111,9 +104,15 @@ export class WabaPhoneNumberService {
     return userMessage;
   }
 
-  async findAllByWabaId(userId: number, wabaId: string): Promise<WabaPhoneNumber[]> {
-    const waba = await this.prisma.waba.findFirst({ where: { userId, wabaId } });
-    if (!waba) throw new NotFoundException('WABA not found');
+  /**
+   * The account's numbers, for any organisation that holds it.
+   *
+   * Scoped by membership, not by `Waba.userId`. That column is the original
+   * connector, so listing numbers used to 404 for a second organisation — and
+   * for every colleague of the person who first connected the account.
+   */
+  async findAllByWabaId(ssoOrgId: string, wabaId: string): Promise<WabaPhoneNumber[]> {
+    await this.membership.require(ssoOrgId, wabaId);
     return this.prisma.wabaPhoneNumber.findMany({ where: { wabaId } });
   }
 
@@ -205,14 +204,12 @@ export class WabaPhoneNumberService {
   // Populates Redis phone cache for each synced phone number.
   private async populatePhoneCache(
     phones: WabaPhoneNumber[],
-    userId: number,
     wabaId: string,
     encryptedToken: string,
   ): Promise<void> {
     for (const phone of phones) {
       await this.redisService.setPhoneCache(
         phone.phoneNumberId,
-        userId,
         wabaId,
         encryptedToken,
       );
@@ -220,27 +217,27 @@ export class WabaPhoneNumberService {
   }
 
   // Called by the manual sync endpoint — looks up the stored token then syncs.
-  async syncPhoneNumbers(userId: number, wabaId: string): Promise<WabaPhoneNumber[]> {
-    const userWhatsapp = await this.prisma.userWhatsapp.findFirst({
-      where: { userId, wabaId },
-    });
-    if (!userWhatsapp) throw new NotFoundException('No connection found for this WABA');
+  async syncPhoneNumbers(
+    userId: number,
+    ssoOrgId: string,
+    wabaId: string,
+  ): Promise<WabaPhoneNumber[]> {
+    const userWhatsapp = await this.membership.connection(ssoOrgId, wabaId, userId);
 
     const rawAccessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
     const phones = await this.fetchAndUpsert(wabaId, rawAccessToken);
-    await this.populatePhoneCache(phones, userId, wabaId, userWhatsapp.accessToken);
+    await this.populatePhoneCache(phones, wabaId, userWhatsapp.accessToken);
     return phones;
   }
 
   // Called by the connect flow — caller already has both raw and encrypted token.
   async syncPhoneNumbersWithToken(
-    userId: number,
     wabaId: string,
     rawAccessToken: string,
     encryptedToken: string,
   ): Promise<WabaPhoneNumber[]> {
     const phones = await this.fetchAndUpsert(wabaId, rawAccessToken);
-    await this.populatePhoneCache(phones, userId, wabaId, encryptedToken);
+    await this.populatePhoneCache(phones, wabaId, encryptedToken);
     return phones;
   }
 }

@@ -7,19 +7,21 @@ import { SubscriptionMiddleware } from './middleware/subscription.middleware';
 import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
 import { UserModule } from 'src/user/user.module';
 import { MailModule } from 'src/mail/mail.module';
+import { SubscriptionAccessModule } from './subscription-access.module';
+import { ProvisioningModule } from 'src/provisioning/provisioning.module';
 
 @Module({
-  imports: [UserModule, MailModule],
+  imports: [UserModule, MailModule, SubscriptionAccessModule, ProvisioningModule],
   controllers: [BillingController],
   providers: [
     BillingService,
-    RazorpayService,
     RazorpaySignatureMiddleware,
     SubscriptionMiddleware,
     AuthMiddleware,
   ],
-  // MessagingModule applies the paywall; it needs both to decide.
-  exports: [BillingService, RazorpayService, SubscriptionMiddleware],
+  // MessagingModule applies the paywall; it needs both to decide. Razorpay and
+  // the gate come through `SubscriptionAccessModule`, which owns them.
+  exports: [BillingService, SubscriptionMiddleware, SubscriptionAccessModule],
 })
 export class BillingModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

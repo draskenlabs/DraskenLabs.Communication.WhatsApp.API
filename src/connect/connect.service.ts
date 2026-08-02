@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { UserWhatsappService } from 'src/user/user-whatsapp.service';
 import { WabaService } from 'src/waba/waba.service';
-import { WabaPhoneNumberService } from 'src/waba-phone-number/waba-phone-number.service';
+import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import {
   ConnectWhatsAppRequestDTO,
@@ -19,7 +19,7 @@ export class ConnectService {
     private readonly configService: ConfigService,
     private readonly userWhatsappService: UserWhatsappService,
     private readonly wabaService: WabaService,
-    private readonly wabaPhoneNumberService: WabaPhoneNumberService,
+    private readonly provisioning: WabaProvisioningService,
     private readonly mail: MailNotifications,
   ) {}
 
@@ -84,27 +84,17 @@ export class ConnectService {
       accessToken: rawAccessToken,
     });
 
-    const phoneNumbers = await this.wabaPhoneNumberService.syncPhoneNumbersWithToken(
-      userId,
-      body.wabaId,
-      rawAccessToken,
-      userWhatsapp.accessToken,
-    );
-
-    await this.wabaService.subscribeAppToWaba(body.wabaId, rawAccessToken);
+    // No sync here — see `connectWhatsapp` for why.
+    const phoneNumbers = await this.provisioning.syncedNumbers(ssoOrgId, body.wabaId);
 
     // Confirms the connection, and doubles as the welcome for a first WABA.
     const connectedName = (wabaMeta as { name?: string }).name ?? null;
-    void this.mail.wabaConnected(userId, body.wabaId, connectedName);
+    void this.mail.wabaConnected(userId, ssoOrgId, body.wabaId, connectedName);
 
     return {
       wabaId: body.wabaId,
       businessId,
-      phoneNumbers: phoneNumbers.map((p) => ({
-        phoneNumberId: p.phoneNumberId,
-        displayPhoneNumber: p.displayPhoneNumber,
-        verifiedName: p.verifiedName,
-      })),
+      phoneNumbers,
     };
   }
 
@@ -165,31 +155,25 @@ export class ConnectService {
       accessToken: rawAccessToken,
     });
 
-    // 5. Sync phone numbers from Meta, populate Redis phone cache
-    const phoneNumbers = await this.wabaPhoneNumberService.syncPhoneNumbersWithToken(
-      userId,
-      body.wabaId,
-      rawAccessToken,
-      userWhatsapp.accessToken, // already encrypted by createOrUpdate
-    );
-
-    // 6. Subscribe our app to the WABA's webhooks so delivery/read statuses and
-    //    inbound messages actually arrive. Non-fatal — connecting still succeeds
-    //    if the token lacks whatsapp_business_management (logged for diagnosis).
-    await this.wabaService.subscribeAppToWaba(body.wabaId, rawAccessToken);
+    // 5. Stop here. Phone numbers, webhook subscription and templates are all
+    //    pulled by `WabaProvisioningService` when a subscription starts paying.
+    //    Syncing them now would hand over a working account to anyone who
+    //    finished signup, and would fill the console with numbers and templates
+    //    that every send and every edit then refuses with a 402.
+    //
+    //    An account another organisation already connected and paid for is
+    //    already populated, so this returns its numbers rather than an empty
+    //    list — the data is per account, the subscription is per organisation.
+    const phoneNumbers = await this.provisioning.syncedNumbers(ssoOrgId, body.wabaId);
 
     // Confirms the connection, and doubles as the welcome for a first WABA.
     const connectedName = (wabaMeta as { name?: string }).name ?? null;
-    void this.mail.wabaConnected(userId, body.wabaId, connectedName);
+    void this.mail.wabaConnected(userId, ssoOrgId, body.wabaId, connectedName);
 
     return {
       wabaId: body.wabaId,
       businessId,
-      phoneNumbers: phoneNumbers.map((p) => ({
-        phoneNumberId: p.phoneNumberId,
-        displayPhoneNumber: p.displayPhoneNumber,
-        verifiedName: p.verifiedName,
-      })),
+      phoneNumbers,
     };
   }
 }
