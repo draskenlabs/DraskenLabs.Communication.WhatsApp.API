@@ -3,8 +3,10 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 import { NotFoundException } from '@nestjs/common';
 import { TemplatesService } from './templates.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { BillingService } from 'src/billing/billing.service';
+import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { WabaMembershipService } from 'src/waba/waba-membership.service';
 import { billingServiceDouble } from 'src/billing/billing.test-doubles';
+import { wabaMembershipDouble } from 'src/waba/waba.test-doubles';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import axios from 'axios';
 import { MailNotifications } from 'src/mail/mail.notifications';
@@ -36,6 +38,7 @@ const baseTemplate = {
 
 const mockMailNotifications = mailNotificationsDouble();
 const mockBilling = billingServiceDouble();
+const mockMembership = wabaMembershipDouble();
 
 describe('TemplatesService', () => {
   let service: TemplatesService;
@@ -47,7 +50,8 @@ describe('TemplatesService', () => {
         { provide: MailNotifications, useValue: mockMailNotifications },
         TemplatesService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: BillingService, useValue: mockBilling },
+        { provide: SubscriptionAccessService, useValue: mockBilling },
+        { provide: WabaMembershipService, useValue: mockMembership },
         { provide: EncryptionService, useValue: mockEncryption },
       ],
     }).compile();

@@ -7,10 +7,11 @@ import { MessagingAuthMiddleware } from './middleware/messaging-auth.middleware'
 import { UserModule } from 'src/user/user.module';
 import { ContactsModule } from 'src/contacts/contacts.module';
 import { BillingModule } from 'src/billing/billing.module';
+import { WabaMembershipModule } from 'src/waba/waba-membership.module';
 import { SubscriptionMiddleware } from 'src/billing/middleware/subscription.middleware';
 
 @Module({
-  imports: [ApiKeyModule, UserModule, ContactsModule, BillingModule],
+  imports: [ApiKeyModule, UserModule, ContactsModule, BillingModule, WabaMembershipModule],
   providers: [MessagingService, AuthMiddleware, MessagingAuthMiddleware],
   controllers: [MessagingController],
 })

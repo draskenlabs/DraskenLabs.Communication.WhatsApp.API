@@ -68,10 +68,20 @@ export class ApiKeyService {
     return keys.map(({ waba, ...key }) => ({ ...key, wabaName: waba?.name ?? null }));
   }
 
-  async revokeApiKey(userId: number, keyId: number): Promise<void> {
-    const key = await this.prisma.userApiKey.findUnique({ where: { id: keyId } });
+  /**
+   * Revoke a key belonging to this organisation.
+   *
+   * Scoped by organisation, not by who created it. The list is the
+   * organisation's, so matching on `userId` meant a colleague's key was shown
+   * and then 404'd on revoke — and a key could be revoked from an organisation
+   * it did not belong to, as long as the caller had created it somewhere else.
+   */
+  async revokeApiKey(userId: number, ssoOrgId: string, keyId: number): Promise<void> {
+    const key = await this.prisma.userApiKey.findFirst({
+      where: { id: keyId, ssoOrgId },
+    });
 
-    if (!key || key.userId !== userId) {
+    if (!key) {
       throw new NotFoundException('API key not found');
     }
 

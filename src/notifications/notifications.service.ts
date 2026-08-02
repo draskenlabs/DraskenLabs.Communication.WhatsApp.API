@@ -143,14 +143,17 @@ export class NotificationsService {
     message: PushMessage,
   ): Promise<void> {
     try {
-      const [connections, waba] = await Promise.all([
+      const [connections, memberships] = await Promise.all([
         this.prisma.userWhatsapp.findMany({
           where: { wabaId },
           select: { userId: true },
         }),
-        // Stamped on the feed entry so the console shows the activity of the
-        // organisation being viewed, not every organisation at once.
-        this.prisma.waba.findUnique({
+        // Every organisation holding the account, not `Waba.ssoOrgId` — that is
+        // whichever one connected it first. The feed is filtered by the
+        // organisation being viewed, so stamping one organisation's id on
+        // activity for an account two of them hold left the second looking at
+        // an empty bell for its own messages.
+        this.prisma.wabaOrganisation.findMany({
           where: { wabaId },
           select: { ssoOrgId: true },
         }),
@@ -158,7 +161,19 @@ export class NotificationsService {
       const userIds = [...new Set(connections.map((c) => c.userId))];
       if (userIds.length === 0) return;
 
-      await this.notifyUsers(userIds, kind, message, waba?.ssoOrgId);
+      // One entry per organisation. A user who is in only one of them can only
+      // ever view that one, so the rows they cannot see stay invisible.
+      const orgIds = memberships.length
+        ? memberships.map((m) => m.ssoOrgId)
+        : [null];
+
+      for (const ssoOrgId of orgIds) {
+        await this.record(userIds, kind, message, ssoOrgId);
+      }
+
+      // Once, however many organisations hold the account: the feed is a
+      // per-organisation record, the push is an interruption of a person.
+      await this.push(userIds, kind, message);
     } catch (err: unknown) {
       // A webhook must still be acknowledged even if we cannot notify anyone.
       const detail = err instanceof Error ? err.message : String(err);
@@ -180,7 +195,21 @@ export class NotificationsService {
     // browser that never registered, and a person who switched the push off.
     // The preference below governs the interruption, not the record.
     await this.record(userIds, kind, message, ssoOrgId);
+    await this.push(userIds, kind, message);
+  }
 
+  /**
+   * The interruption, as opposed to the record.
+   *
+   * Separate so an event that belongs to more than one organisation can write a
+   * feed entry for each and still buzz a phone once.
+   */
+  private async push(
+    userIds: number[],
+    kind: NotificationKind,
+    message: PushMessage,
+  ): Promise<void> {
+    if (userIds.length === 0) return;
     if (!this.firebase.enabled) return;
 
     try {

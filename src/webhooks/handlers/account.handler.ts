@@ -58,8 +58,11 @@ export class AccountHandler {
     }
 
     try {
+      // Scoped to the account the webhook is about. A display number is not
+      // unique across accounts, so without `wabaId` one WABA's quality drop was
+      // written onto every number in the system that happened to share it.
       await this.prisma.wabaPhoneNumber.updateMany({
-        where: { displayPhoneNumber: display_phone_number },
+        where: { displayPhoneNumber: display_phone_number, ...(wabaId ? { wabaId } : {}) },
         data: { qualityRating: current_limit ?? event },
       });
 
@@ -67,7 +70,7 @@ export class AccountHandler {
       // lost exactly when it becomes interesting — a drop to RED matters mostly
       // for when it happened. Recorded as an event too.
       const number = await this.prisma.wabaPhoneNumber.findFirst({
-        where: { displayPhoneNumber: display_phone_number },
+        where: { displayPhoneNumber: display_phone_number, ...(wabaId ? { wabaId } : {}) },
         select: { phoneNumberId: true, wabaId: true },
       });
       if (number) {

@@ -31,9 +31,10 @@ export class WabaPhoneNumberController {
     @Param('wabaId') wabaId: string,
     @Req() req: Request,
   ): Promise<WabaPhoneNumberResponseDto[]> {
-    const user = (req as any).user;
-    if (!user) throw new UnauthorizedException('User not found in context');
-    return this.phoneNumberService.findAllByWabaId(user.id, wabaId);
+    const orgId = (req as any).orgId;
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
+    return this.phoneNumberService.findAllByWabaId(orgId, wabaId);
   }
 
   @Post('sync')
@@ -52,7 +53,10 @@ export class WabaPhoneNumberController {
   ): Promise<WabaPhoneNumberResponseDto[]> {
     const user = (req as any).user;
     if (!user) throw new UnauthorizedException('User not found in context');
-    return this.phoneNumberService.syncPhoneNumbers(user.id, wabaId);
+    const orgId = (req as any).orgId;
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
+    return this.phoneNumberService.syncPhoneNumbers(user.id, orgId, wabaId);
   }
 
   @Post(':phoneNumberId/register')

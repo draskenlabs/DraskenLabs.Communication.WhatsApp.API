@@ -7,7 +7,8 @@ import {
 import axios from 'axios';
 import { Prisma, TemplateCategory, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { BillingService } from 'src/billing/billing.service';
+import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { WabaMembershipService } from 'src/waba/waba-membership.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import {
   isMetaAuthFailure,
@@ -57,7 +58,8 @@ export class TemplatesService {
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
     private readonly mail: MailNotifications,
-    private readonly billing: BillingService,
+    private readonly billing: SubscriptionAccessService,
+    private readonly membership: WabaMembershipService,
   ) {}
 
   async syncTemplates(
@@ -591,8 +593,13 @@ export class TemplatesService {
     });
     if (!template) throw new NotFoundException('Template not found');
 
+    // Membership, not `Waba.ssoOrgId` — that column holds whichever
+    // organisation connected the account *first*. Listing already went through
+    // `WabaOrganisation`, so reading a template by id was the one call that
+    // disagreed: the list rendered in the second organisation and every row in
+    // it opened on "Template not found".
     const waba = await this.prisma.waba.findFirst({
-      where: { wabaId: template.wabaId, ssoOrgId },
+      where: { wabaId: template.wabaId, WabaOrganisation: { some: { ssoOrgId } } },
     });
     if (!waba) throw new NotFoundException('Template not found');
 

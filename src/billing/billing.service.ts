@@ -12,6 +12,8 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import { RazorpayService, RazorpaySubscription } from './razorpay.service';
+import { SubscriptionAccessService } from './subscription-access.service';
+import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
 import {
   ConfirmSubscriptionDto,
   SubscriptionRegisteredDto,
@@ -44,21 +46,9 @@ export class BillingService {
     private readonly redis: RedisService,
     private readonly razorpay: RazorpayService,
     private readonly mail: MailNotifications,
+    private readonly access: SubscriptionAccessService,
+    private readonly provisioning: WabaProvisioningService,
   ) {}
-
-  /**
-   * Whether a subscription entitles its account to the API right now.
-   *
-   * The paid month wins over the status. A customer who cancels on day 2 has
-   * bought the month, so `cancelled` with a `currentEnd` in the future still
-   * gets in; the same rule covers a failed renewal, where the previous month
-   * remains paid for while Razorpay retries.
-   */
-  static grants(sub: Pick<Subscription, 'status' | 'currentEnd'> | null): boolean {
-    if (!sub) return false;
-    if (sub.currentEnd && sub.currentEnd.getTime() > Date.now()) return true;
-    return sub.status === 'active' || sub.status === 'authenticated';
-  }
 
   /**
    * The subscription for one organisation's use of one account.
@@ -96,7 +86,7 @@ export class BillingService {
     return {
       wabaId: waba.wabaId,
       wabaName: waba.name,
-      active: BillingService.grants(sub),
+      active: SubscriptionAccessService.grants(sub),
       status: sub?.status ?? null,
       currentStart: sub?.currentStart ?? null,
       currentEnd: sub?.currentEnd ?? null,
@@ -129,49 +119,6 @@ export class BillingService {
 
     const byWaba = new Map(subs.filter((s) => s.wabaId).map((s) => [s.wabaId!, s]));
     return wabas.map((waba) => this.toState(waba, byWaba.get(waba.wabaId) ?? null));
-  }
-
-  /**
-   * Access for the API-key path, cached briefly.
-   *
-   * Keyed by the organisation *and* the account the key is scoped to, both of
-   * which the API-key middleware has already resolved — so "is this request
-   * paid for" is one lookup, with no allocation of seats to accounts to get
-   * wrong. The organisation belongs in the key because the same WABA connected
-   * in two organisations is two subscriptions: one paying does not carry the
-   * other.
-   */
-  async hasAccess(ssoOrgId: string, wabaId: string): Promise<boolean> {
-    const key = `${ssoOrgId}:${wabaId}`;
-    const cached = await this.redis.getSubscriptionAccess(key);
-    if (cached !== null) return cached;
-
-    const allowed = BillingService.grants(await this.find(ssoOrgId, wabaId));
-    await this.redis.setSubscriptionAccess(key, allowed);
-    return allowed;
-  }
-
-  /**
-   * Refuse an operation on an account nobody has paid for.
-   *
-   * The subscription buys the *account*, not one way of reaching it: sending,
-   * creating templates and registering numbers all cost the same whether they
-   * come from an API key or from someone clicking in the console. Gating only
-   * the key would leave the console as a free way to do the very things being
-   * sold.
-   *
-   * Reads are deliberately not gated. Someone who has stopped paying can still
-   * see their history, export it and subscribe again — ending a subscription is
-   * not locking someone out of their own data.
-   */
-  async requireAccess(ssoOrgId: string, wabaId: string): Promise<void> {
-    if (!this.razorpay.isConfigured()) return;
-    if (await this.hasAccess(ssoOrgId, wabaId)) return;
-
-    throw new HttpException(
-      `WhatsApp Business Account ${wabaId} has no active subscription. Subscribe in the console to use it.`,
-      HttpStatus.PAYMENT_REQUIRED,
-    );
   }
 
   /**
@@ -253,7 +200,7 @@ export class BillingService {
       create: { wabaId, ...data },
       update: data,
     });
-    await this.redis.invalidateSubscriptionAccess(`${ssoOrgId}:${wabaId}`);
+    await this.access.invalidate(ssoOrgId, wabaId);
 
     return {
       wabaId,
@@ -311,7 +258,7 @@ export class BillingService {
     const remote = await this.razorpay.fetchSubscription(sub.razorpaySubscriptionId);
     const updated = await this.applyRemote(sub, remote);
 
-    await this.redis.invalidateSubscriptionAccess(`${ssoOrgId}:${wabaId}`);
+    await this.access.invalidate(ssoOrgId, wabaId);
     return this.toState(waba, updated);
   }
 
@@ -323,14 +270,14 @@ export class BillingService {
    * `currentEnd` never moves backwards: events and polls can arrive out of
    * order, and a stale read must not shorten a month a charge already paid for.
    */
-  private applyRemote(
+  private async applyRemote(
     sub: Subscription,
     remote: RazorpaySubscription,
   ): Promise<Subscription> {
     const status = this.toStatus(remote.status);
     const currentEnd = at(remote.current_end);
 
-    return this.prisma.subscription.update({
+    const updated = await this.prisma.subscription.update({
       where: { id: sub.id },
       data: {
         status,
@@ -345,6 +292,43 @@ export class BillingService {
         shortUrl: status === 'created' ? sub.shortUrl : null,
       },
     });
+
+    await this.provisionIfNewlyPaid(sub, updated);
+    return updated;
+  }
+
+  /**
+   * Fill the account in the first time it is paid for.
+   *
+   * Connecting deliberately syncs nothing, so this is what turns a connected
+   * account into a working one. It fires on the edge — not-granting to granting
+   * — so a renewal, a reconciliation sweep or a replayed webhook does not set it
+   * off again; `isProvisioned` is the second guard, for the case where the edge
+   * itself is replayed after the data is already there.
+   *
+   * Deliberately not awaited by the caller's transaction and never allowed to
+   * throw: Razorpay has taken the money either way, and a Meta outage must not
+   * turn a successful payment into a failed request.
+   */
+  private async provisionIfNewlyPaid(
+    before: Subscription,
+    after: Subscription,
+  ): Promise<void> {
+    if (!after.wabaId) return;
+    if (SubscriptionAccessService.grants(before)) return;
+    if (!SubscriptionAccessService.grants(after)) return;
+
+    const { ssoOrgId, wabaId } = { ssoOrgId: after.ssoOrgId, wabaId: after.wabaId };
+
+    try {
+      if (await this.provisioning.isProvisioned(wabaId)) return;
+      await this.provisioning.provision(ssoOrgId, wabaId);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Subscription for ${wabaId} in ${ssoOrgId} is paid but provisioning failed: ${detail}`,
+      );
+    }
   }
 
   /**
@@ -413,7 +397,7 @@ export class BillingService {
         shortUrl: null,
       },
     });
-    await this.redis.invalidateSubscriptionAccess(`${ssoOrgId}:${wabaId}`);
+    await this.access.invalidate(ssoOrgId, wabaId);
 
     void this.mail.subscriptionCancelled(
       sub.createdByUserId,
@@ -478,9 +462,7 @@ export class BillingService {
     await this.applyRemote(sub, entity);
 
     if (sub.wabaId) {
-      await this.redis.invalidateSubscriptionAccess(
-        `${sub.ssoOrgId}:${sub.wabaId}`,
-      );
+      await this.access.invalidate(sub.ssoOrgId, sub.wabaId);
     }
     await this.notify(event, sub, sub.waba?.name ?? sub.wabaId ?? 'your account', status, currentEnd ?? sub.currentEnd);
   }
@@ -550,9 +532,7 @@ export class BillingService {
         const remote = await this.razorpay.fetchSubscription(sub.razorpaySubscriptionId);
         await this.applyRemote(sub, remote);
         if (sub.wabaId) {
-          await this.redis.invalidateSubscriptionAccess(
-            `${sub.ssoOrgId}:${sub.wabaId}`,
-          );
+          await this.access.invalidate(sub.ssoOrgId, sub.wabaId);
         }
       } catch (err) {
         // One unreachable subscription must not stop the rest of the sweep.

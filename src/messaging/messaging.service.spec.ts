@@ -8,8 +8,10 @@ import {
 } from '@nestjs/common';
 import { MessagingService } from './messaging.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { BillingService } from 'src/billing/billing.service';
+import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { WabaMembershipService } from 'src/waba/waba-membership.service';
 import { billingServiceDouble } from 'src/billing/billing.test-doubles';
+import { wabaMembershipDouble } from 'src/waba/waba.test-doubles';
 import { RedisService } from 'src/redis/redis.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { ContactsService } from 'src/contacts/contacts.service';
@@ -38,6 +40,7 @@ const mockContacts = { isOptedOut: jest.fn().mockResolvedValue(false) };
 
 const mockMailNotifications = mailNotificationsDouble();
 const mockBilling = billingServiceDouble();
+const mockMembership = wabaMembershipDouble();
 const mockMail = mailServiceDouble();
 
 describe('MessagingService', () => {
@@ -51,7 +54,8 @@ describe('MessagingService', () => {
         { provide: MailService, useValue: mockMail },
         MessagingService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: BillingService, useValue: mockBilling },
+        { provide: SubscriptionAccessService, useValue: mockBilling },
+        { provide: WabaMembershipService, useValue: mockMembership },
         { provide: RedisService, useValue: mockRedis },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: ContactsService, useValue: mockContacts },
@@ -73,22 +77,38 @@ describe('MessagingService', () => {
       await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toThrow(NotFoundException);
     });
 
-    it('throws ForbiddenException if phone belongs to different user', async () => {
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 99, wabaId: 'w1', accessToken: 'enc' });
+    it('refuses a number whose account this organisation does not hold', async () => {
+      // Membership, not whoever synced the cache last: two people connecting
+      // the same account used to mean the second one owned every number and the
+      // first was refused its own.
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
+      mockMembership.holds.mockResolvedValueOnce(false);
       await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('lets a colleague send on a number they did not personally sync', async () => {
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
+      mockContacts.isOptedOut.mockResolvedValue(false);
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.ok' }] } });
+      mockPrisma.message.create.mockResolvedValue({
+        id: 8, metaMessageId: 'wamid.ok', phoneNumberId: 'p1', to: '447911111111',
+        type: 'text', status: 'sent', createdAt: new Date(),
+      });
+
+      await expect(service.sendMessage(42, 'sso_org_1', dto)).resolves.toMatchObject({ id: 8 });
     });
 
     it('refuses a number belonging to another WABA than the key is scoped to', async () => {
       // The number decides the WABA, so an unchecked key issued for one
       // account could otherwise send from every number the org owns.
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w2', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w2', accessToken: 'enc' });
 
       await expect(service.sendMessage(1, 'sso_org_1', dto, 'w1')).rejects.toThrow(/scoped to w1/);
       expect(mockPrisma.message.create).not.toHaveBeenCalled();
     });
 
     it('sends when the number belongs to the key’s own WABA', async () => {
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockContacts.isOptedOut.mockResolvedValue(false);
       mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.ok' }] } });
       mockPrisma.message.create.mockResolvedValue({
@@ -104,7 +124,7 @@ describe('MessagingService', () => {
     it('refuses a send on an account with no subscription, console included', async () => {
       // The console reaches here without passing the API-key paywall, and must
       // not be a free way to do the thing being sold.
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockBilling.requireAccess.mockRejectedValueOnce(
         new HttpException('no subscription', HttpStatus.PAYMENT_REQUIRED),
       );
@@ -117,13 +137,13 @@ describe('MessagingService', () => {
     });
 
     it('throws BadRequestException if recipient has opted out', async () => {
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockContacts.isOptedOut.mockResolvedValueOnce(true);
       await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toThrow(BadRequestException);
     });
 
     it('sends text message and persists to DB', async () => {
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockContacts.isOptedOut.mockResolvedValue(false);
       mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.abc' }] } });
       mockPrisma.message.create.mockResolvedValue({
@@ -144,7 +164,7 @@ describe('MessagingService', () => {
         type: MessageTypeEnum.template,
         templateName: 'hello_world', templateLanguage: 'en_US',
       };
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.t1' }] } });
       mockPrisma.message.create.mockResolvedValue({
         id: 2, metaMessageId: 'wamid.t1', phoneNumberId: 'p1', to: '447911111111',
@@ -159,7 +179,7 @@ describe('MessagingService', () => {
     });
 
     it('translates a Meta 400 into a BadRequestException with the Meta message', async () => {
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockContacts.isOptedOut.mockResolvedValue(false);
       mockedAxios.post = jest.fn().mockRejectedValue({
         response: { data: { error: { message: 'Invalid parameter', code: 100, fbtrace_id: 'ABC' } } },
@@ -177,7 +197,7 @@ describe('MessagingService', () => {
         latitude: 37.4847, longitude: -122.1477,
         locationName: 'Meta HQ', locationAddress: '1 Hacker Way',
       };
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.l1' }] } });
       mockPrisma.message.create.mockResolvedValue({
         id: 3, metaMessageId: 'wamid.l1', phoneNumberId: 'p1', to: '447911111111',
@@ -205,7 +225,7 @@ describe('MessagingService', () => {
           { id: 'no', title: 'No' },
         ],
       };
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.i1' }] } });
       mockPrisma.message.create.mockResolvedValue({
         id: 4, metaMessageId: 'wamid.i1', phoneNumberId: 'p1', to: '447911111111',
@@ -234,7 +254,7 @@ describe('MessagingService', () => {
         interactiveCtaDisplayText: 'Open invoice',
         interactiveCtaUrl: 'https://example.com/i/48210',
       };
-      mockRedis.getPhoneCache.mockResolvedValue({ userId: 1, wabaId: 'w1', accessToken: 'enc' });
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
       mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.c1' }] } });
       mockPrisma.message.create.mockResolvedValue({
         id: 5, metaMessageId: 'wamid.c1', phoneNumberId: 'p1', to: '447911111111',
