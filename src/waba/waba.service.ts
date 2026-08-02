@@ -14,6 +14,7 @@ import { Waba } from '@prisma/client';
 import { WabaResponseDto } from './dto/waba-response.dto';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import { WabaMembershipService } from './waba-membership.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
 import {
   isMetaAuthFailure,
   metaErrorMessage,
@@ -31,6 +32,7 @@ export class WabaService {
     private readonly redisService: RedisService,
     private readonly mail: MailNotifications,
     private readonly membership: WabaMembershipService,
+    private readonly orgDirectory: OrgDirectoryService,
   ) {}
 
   /**
@@ -215,6 +217,11 @@ export class WabaService {
       },
     });
 
+    // The organisation's name, copied so an email sent later — from a Meta
+    // webhook, from the billing cron — can say which organisation it is about.
+    // Null when nothing has told us yet; the row is still worth writing.
+    const orgName = await this.orgDirectory.name(data.ssoOrgId);
+
     // The membership is what makes the account appear in this organisation.
     await this.prisma.wabaOrganisation.upsert({
       where: {
@@ -224,8 +231,10 @@ export class WabaService {
         wabaId: data.wabaId,
         ssoOrgId: data.ssoOrgId,
         userId: data.userId,
+        orgName,
       },
-      update: {},
+      // A rename in the SSO reaches us the next time somebody connects.
+      update: orgName ? { orgName } : {},
     });
 
     return waba;

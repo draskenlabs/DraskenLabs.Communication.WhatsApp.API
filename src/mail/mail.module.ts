@@ -4,6 +4,7 @@ import { MailService } from './mail.service';
 import { MailNotifications } from './mail.notifications';
 import { MailScheduler } from './mail.scheduler';
 import { SesService } from './ses.service';
+import { OrgDirectoryModule } from 'src/org/org-directory.module';
 
 /**
  * Outgoing email over Amazon SES.
@@ -17,6 +18,7 @@ import { SesService } from './ses.service';
  */
 @Global()
 @Module({
+  imports: [OrgDirectoryModule],
   controllers: [MailController],
   providers: [SesService, MailService, MailNotifications, MailScheduler],
   exports: [MailService, MailNotifications],

@@ -18,6 +18,29 @@ export interface RazorpaySubscription {
   notes?: Record<string, string>;
 }
 
+/** A plan, as much of it as the console needs to show a price. */
+export interface RazorpayPlan {
+  id: string;
+  period: string;
+  interval: number;
+  item: { amount: number; currency: string; name?: string; description?: string };
+}
+
+/** A payment, as the `subscription.charged` webhook carries it. */
+export interface RazorpayPayment {
+  id: string;
+  invoice_id?: string | null;
+  amount: number;
+  currency: string;
+  status: string;
+  method?: string;
+  card?: { network?: string; last4?: string; issuer?: string } | null;
+  bank?: string | null;
+  wallet?: string | null;
+  vpa?: string | null;
+  created_at?: number;
+}
+
 /**
  * Razorpay's REST API, over axios rather than their SDK.
  *
@@ -29,6 +52,8 @@ export interface RazorpaySubscription {
 export class RazorpayService {
   private readonly logger = new Logger(RazorpayService.name);
   private readonly client: AxiosInstance | null;
+  /** Plans are immutable, so this only ever grows by one per configured plan. */
+  private readonly plans = new Map<string, RazorpayPlan>();
   private readonly keySecret: string | undefined;
   /** Publishable: Checkout needs it in the browser. */
   readonly keyId: string | undefined;
@@ -191,6 +216,35 @@ export class RazorpayService {
       return data;
     } catch (err) {
       this.fail('Razorpay subscription cancellation failed', err);
+    }
+  }
+
+  /**
+   * The plan behind the subscriptions, cached for the process's lifetime.
+   *
+   * Plans are immutable at Razorpay — a price change is a new plan id — so
+   * there is nothing to invalidate, and the console asking "what does this
+   * cost" on every page load has no business becoming a request per view.
+   */
+  async fetchPlan(planId?: string): Promise<RazorpayPlan | null> {
+    const id = planId ?? this.planId;
+    if (!id || !this.client) return null;
+
+    const cached = this.plans.get(id);
+    if (cached) return cached;
+
+    try {
+      const { data } = await this.api().get<RazorpayPlan>(`/plans/${id}`);
+      this.plans.set(id, data);
+      return data;
+    } catch (err) {
+      // A price the console cannot show is not a reason to fail the page.
+      const error = err as AxiosError<{ error?: { description?: string } }>;
+      this.logger.warn(
+        `Could not read Razorpay plan ${id}: ` +
+          (error.response?.data?.error?.description ?? error.message),
+      );
+      return null;
     }
   }
 

@@ -1,6 +1,63 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsNotEmpty, IsString } from 'class-validator';
 
+/** What the subscription costs, read from the Razorpay plan. */
+export class SubscriptionPlanDto {
+  @ApiProperty({ description: 'Razorpay plan id' })
+  planId: string;
+
+  @ApiProperty({ nullable: true, description: 'The plan’s name at Razorpay' })
+  name: string | null;
+
+  @ApiProperty({
+    description:
+      'Price in the smallest currency unit — paise for INR. An integer on ' +
+      'purpose: the console formats it, nothing rounds it.',
+    example: 49900,
+  })
+  amount: number;
+
+  @ApiProperty({ example: 'INR' })
+  currency: string;
+
+  @ApiProperty({ description: 'monthly, yearly, weekly, daily', example: 'monthly' })
+  period: string;
+
+  @ApiProperty({ description: 'How many periods per charge', example: 1 })
+  interval: number;
+}
+
+/** One debit, as it happened. */
+export class SubscriptionPaymentDto {
+  @ApiProperty({ example: 'pay_29QQoUBi66xm2f' })
+  razorpayPaymentId: string;
+
+  @ApiProperty({ nullable: true })
+  razorpayInvoiceId: string | null;
+
+  @ApiProperty({ description: 'In the smallest currency unit', example: 49900 })
+  amount: number;
+
+  @ApiProperty({ example: 'INR' })
+  currency: string;
+
+  @ApiProperty({ description: 'Razorpay’s own vocabulary', example: 'captured' })
+  status: string;
+
+  @ApiProperty({ nullable: true, example: 'card' })
+  method: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Enough to recognise the instrument, and no more',
+    example: 'Visa ···· 4242',
+  })
+  methodDetail: string | null;
+
+  @ApiProperty({ nullable: true })
+  paidAt: Date | null;
+}
+
 export class SubscriptionStateDto {
   @ApiProperty({ description: 'The WhatsApp Business Account this covers' })
   wabaId: string;
@@ -61,6 +118,43 @@ export class SubscriptionStateDto {
 
   @ApiProperty({ description: 'Whether this deployment can sell subscriptions at all' })
   billingEnabled: boolean;
+
+  @ApiProperty({
+    type: SubscriptionPlanDto,
+    nullable: true,
+    description:
+      'What this costs. Null only when billing is unconfigured or Razorpay ' +
+      'could not be reached — a price the console cannot show is not a reason ' +
+      'to fail the page.',
+  })
+  plan: SubscriptionPlanDto | null;
+
+  @ApiProperty({
+    type: SubscriptionPaymentDto,
+    nullable: true,
+    description: 'The most recent debit, or null before the first one',
+  })
+  lastPayment: SubscriptionPaymentDto | null;
+
+  @ApiProperty({
+    type: [SubscriptionPaymentDto],
+    description: 'Recent debits, newest first. Empty until the first charge.',
+  })
+  payments: SubscriptionPaymentDto[];
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'When the next automatic debit is due. Null once cancelled, or before ' +
+      'the mandate is authorised.',
+  })
+  nextChargeAt: Date | null;
+
+  @ApiProperty({
+    description: 'How many times this subscription has been charged',
+    example: 3,
+  })
+  paidCount: number;
 }
 
 export class SubscriptionRegisteredDto {

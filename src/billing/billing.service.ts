@@ -11,11 +11,17 @@ import { Prisma, Subscription, SubscriptionStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
-import { RazorpayService, RazorpaySubscription } from './razorpay.service';
+import {
+  RazorpayPayment,
+  RazorpayService,
+  RazorpaySubscription,
+} from './razorpay.service';
 import { SubscriptionAccessService } from './subscription-access.service';
 import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
 import {
   ConfirmSubscriptionDto,
+  SubscriptionPaymentDto,
+  SubscriptionPlanDto,
   SubscriptionRegisteredDto,
   SubscriptionStateDto,
 } from './dto/billing.dto';
@@ -35,6 +41,24 @@ const STATUSES = new Set<string>([
 /** Unix seconds to a Date, tolerating the nulls Razorpay sends before a charge. */
 function at(seconds: number | null | undefined): Date | null {
   return seconds ? new Date(seconds * 1000) : null;
+}
+
+/**
+ * Enough of the instrument to recognise it, and no more.
+ *
+ * "Visa ···· 4242" tells the customer which card was debited. The number, the
+ * token and everything else stay at Razorpay — there is nothing here worth
+ * stealing and nothing that could be replayed.
+ */
+function describeMethod(payment: RazorpayPayment): string | null {
+  if (payment.card?.last4) {
+    const network = payment.card.network ?? payment.card.issuer ?? 'Card';
+    return `${network} ···· ${payment.card.last4}`;
+  }
+  if (payment.vpa) return payment.vpa;
+  if (payment.bank) return payment.bank;
+  if (payment.wallet) return payment.wallet;
+  return null;
 }
 
 @Injectable()
@@ -79,9 +103,14 @@ export class BillingService {
   private toState(
     waba: { wabaId: string; name: string | null },
     sub: Subscription | null,
+    extras: {
+      plan?: SubscriptionPlanDto | null;
+      payments?: SubscriptionPaymentDto[];
+    } = {},
   ): SubscriptionStateDto {
     const awaiting =
       !!sub && (sub.status === 'created' || sub.status === 'authenticated');
+    const payments = extras.payments ?? [];
 
     return {
       wabaId: waba.wabaId,
@@ -97,7 +126,40 @@ export class BillingService {
       authorisationUrl: awaiting ? sub.shortUrl : null,
       keyId: awaiting ? (this.razorpay.keyId ?? null) : null,
       billingEnabled: this.razorpay.isConfigured(),
+      plan: extras.plan ?? null,
+      lastPayment: payments[0] ?? null,
+      payments,
+      // The renewal date *is* the next debit, until there is not going to be
+      // one: a cancelled subscription runs to the end of the month already
+      // paid for and then stops, so showing a date would be a lie.
+      nextChargeAt:
+        sub && !sub.cancelAtCycleEnd && !this.isFinished(sub)
+          ? sub.currentEnd
+          : null,
+      paidCount: payments.filter((p) => p.status === 'captured').length,
     };
+  }
+
+  /** The stored debits for a subscription, newest first. */
+  private async paymentsFor(
+    subscriptionId: number | undefined,
+  ): Promise<SubscriptionPaymentDto[]> {
+    if (!subscriptionId) return [];
+    return this.prisma.subscriptionPayment.findMany({
+      where: { subscriptionId },
+      orderBy: [{ paidAt: 'desc' }, { id: 'desc' }],
+      take: 12,
+      select: {
+        razorpayPaymentId: true,
+        razorpayInvoiceId: true,
+        amount: true,
+        currency: true,
+        status: true,
+        method: true,
+        methodDetail: true,
+        paidAt: true,
+      },
+    });
   }
 
   /**
@@ -108,17 +170,70 @@ export class BillingService {
    * missing from the list would read as "not connected" rather than "not paid".
    */
   async listStates(ssoOrgId: string): Promise<SubscriptionStateDto[]> {
-    const [wabas, subs] = await Promise.all([
+    const [wabas, subs, plan] = await Promise.all([
       this.prisma.waba.findMany({
         where: { WabaOrganisation: { some: { ssoOrgId } } },
         select: { wabaId: true, name: true },
         orderBy: { createdAt: 'asc' },
       }),
       this.prisma.subscription.findMany({ where: { ssoOrgId } }),
+      this.plan(),
     ]);
 
+    // One query for the debits of every subscription in the organisation,
+    // rather than one per account.
+    const payments = await this.prisma.subscriptionPayment.findMany({
+      where: { subscriptionId: { in: subs.map((s) => s.id) } },
+      orderBy: [{ paidAt: 'desc' }, { id: 'desc' }],
+      select: {
+        subscriptionId: true,
+        razorpayPaymentId: true,
+        razorpayInvoiceId: true,
+        amount: true,
+        currency: true,
+        status: true,
+        method: true,
+        methodDetail: true,
+        paidAt: true,
+      },
+    });
+
+    const bySub = new Map<number, SubscriptionPaymentDto[]>();
+    for (const { subscriptionId, ...payment } of payments) {
+      const list = bySub.get(subscriptionId) ?? [];
+      if (list.length < 12) list.push(payment);
+      bySub.set(subscriptionId, list);
+    }
+
     const byWaba = new Map(subs.filter((s) => s.wabaId).map((s) => [s.wabaId!, s]));
-    return wabas.map((waba) => this.toState(waba, byWaba.get(waba.wabaId) ?? null));
+    return wabas.map((waba) => {
+      const sub = byWaba.get(waba.wabaId) ?? null;
+      return this.toState(waba, sub, {
+        plan,
+        payments: sub ? (bySub.get(sub.id) ?? []) : [],
+      });
+    });
+  }
+
+  /**
+   * What a subscription costs, in the shape the console shows it.
+   *
+   * Null rather than an error when Razorpay cannot be reached: the page's job
+   * is to say whether an account is paid for, and it can still do that without
+   * a price.
+   */
+  private async plan(): Promise<SubscriptionPlanDto | null> {
+    const plan = await this.razorpay.fetchPlan();
+    if (!plan) return null;
+
+    return {
+      planId: plan.id,
+      name: plan.item?.name ?? null,
+      amount: plan.item?.amount ?? 0,
+      currency: plan.item?.currency ?? 'INR',
+      period: plan.period,
+      interval: plan.interval,
+    };
   }
 
   /**
@@ -259,7 +374,10 @@ export class BillingService {
     const updated = await this.applyRemote(sub, remote);
 
     await this.access.invalidate(ssoOrgId, wabaId);
-    return this.toState(waba, updated);
+    return this.toState(waba, updated, {
+      plan: await this.plan(),
+      payments: await this.paymentsFor(updated.id),
+    });
   }
 
   /**
@@ -401,11 +519,15 @@ export class BillingService {
 
     void this.mail.subscriptionCancelled(
       sub.createdByUserId,
+      ssoOrgId,
       waba.name ?? wabaId,
       paidMonthLeft ? sub.currentEnd : null,
     );
 
-    return this.toState(waba, updated);
+    return this.toState(waba, updated, {
+      plan: await this.plan(),
+      payments: await this.paymentsFor(updated.id),
+    });
   }
 
   /**
@@ -419,6 +541,9 @@ export class BillingService {
     const event: string = body?.event ?? 'unknown';
     const entity: RazorpaySubscription | undefined =
       body?.payload?.subscription?.entity;
+    // `subscription.charged` carries the payment alongside the subscription;
+    // the other events have no payment half.
+    const payment: RazorpayPayment | undefined = body?.payload?.payment?.entity;
     const ssoOrgId: string | undefined = entity?.notes?.ssoOrgId;
 
     try {
@@ -460,11 +585,52 @@ export class BillingService {
     const currentEnd = at(entity.current_end);
 
     await this.applyRemote(sub, entity);
+    await this.recordPayment(sub.id, payment);
 
     if (sub.wabaId) {
       await this.access.invalidate(sub.ssoOrgId, sub.wabaId);
     }
     await this.notify(event, sub, sub.waba?.name ?? sub.wabaId ?? 'your account', status, currentEnd ?? sub.currentEnd);
+  }
+
+  /**
+   * Keep a copy of what was taken.
+   *
+   * Razorpay is the ledger and this is not trying to replace it; it is what
+   * lets the console answer "what was I charged, when, on which card" without
+   * a round trip, and after a payment has scrolled out of their dashboard.
+   *
+   * Keyed on their payment id, so a retried webhook updates the row it already
+   * wrote rather than billing history growing a duplicate every retry.
+   */
+  private async recordPayment(
+    subscriptionId: number,
+    payment: RazorpayPayment | undefined,
+  ): Promise<void> {
+    if (!payment?.id) return;
+
+    const data = {
+      razorpayInvoiceId: payment.invoice_id ?? null,
+      amount: payment.amount ?? 0,
+      currency: payment.currency ?? 'INR',
+      status: payment.status ?? 'captured',
+      method: payment.method ?? null,
+      methodDetail: describeMethod(payment),
+      paidAt: at(payment.created_at),
+    };
+
+    try {
+      await this.prisma.subscriptionPayment.upsert({
+        where: { razorpayPaymentId: payment.id },
+        create: { subscriptionId, razorpayPaymentId: payment.id, ...data },
+        update: data,
+      });
+    } catch (err) {
+      // Billing history is worth having, not worth failing a webhook over —
+      // Razorpay would retry the whole delivery and re-apply the state.
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Could not record payment ${payment.id}: ${detail}`);
+    }
   }
 
   /** One email per state a customer would want to hear about. */
@@ -479,7 +645,12 @@ export class BillingService {
       // Both fire around the first successful debit; the mail is sent for the
       // one that carries the period, and only when the period actually moved.
       if (status === 'active' && currentEnd && currentEnd > (sub.currentEnd ?? new Date(0))) {
-        void this.mail.subscriptionCharged(sub.createdByUserId, account, currentEnd);
+        void this.mail.subscriptionCharged(
+          sub.createdByUserId,
+          sub.ssoOrgId,
+          account,
+          currentEnd,
+        );
       }
       return;
     }
@@ -487,6 +658,7 @@ export class BillingService {
     if (event === 'subscription.pending' || event === 'subscription.halted') {
       void this.mail.subscriptionPaymentFailed(
         sub.createdByUserId,
+        sub.ssoOrgId,
         account,
         status === 'halted',
         currentEnd,

@@ -45,7 +45,7 @@ export class ApiKeyService {
 
     // The secret is shown once in the console and never emailed; this is the
     // alert that catches a key somebody else created.
-    void this.mail.apiKeyCreated(userId, accessKey);
+    void this.mail.apiKeyCreated(userId, ssoOrgId, accessKey);
 
     return { accessKey, secretKey, wabaId: waba.wabaId };
   }
@@ -92,6 +92,6 @@ export class ApiKeyService {
 
     await this.redisService.deleteApiKeyCache(key.accessKey);
 
-    void this.mail.apiKeyRevoked(userId, key.accessKey);
+    void this.mail.apiKeyRevoked(userId, ssoOrgId, key.accessKey);
   }
 }

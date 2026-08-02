@@ -85,6 +85,13 @@ model WabaOrganisation {
   /// Who connected it for this organisation. Their token is the one used.
   userId   Int
 
+  /// The organisation's display name, copied at connect.
+  ///
+  /// Organisations live in the SSO, so a webhook or a billing cron has an id
+  /// and no way to turn it into a name. This is the durable copy behind the
+  /// Redis cache — nullable because a row written before this existed has none.
+  orgName String?
+
   createdAt DateTime @default(now())
 
   waba Waba @relation(fields: [wabaId], references: [wabaId], onDelete: Cascade)
@@ -190,11 +197,50 @@ model Subscription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  waba Waba? @relation(fields: [wabaId], references: [wabaId])
+  waba     Waba?                 @relation(fields: [wabaId], references: [wabaId])
+  payments SubscriptionPayment[]
 
   @@unique([wabaId, ssoOrgId])
   @@index([ssoOrgId])
   @@index([status])
+}
+
+/// What was actually taken, and how.
+///
+/// Razorpay is the ledger; this is the copy the console can show without a
+/// round trip to their API on every page load, and the answer to "what was I
+/// charged, when, on which card" once a payment scrolls out of their dashboard.
+model SubscriptionPayment {
+  id             Int @id @default(autoincrement())
+  subscriptionId Int
+
+  /// Razorpay's payment id. Unique because their webhooks retry, and a
+  /// replayed `subscription.charged` must not become a second row.
+  razorpayPaymentId String  @unique
+  razorpayInvoiceId String?
+
+  /// In the smallest currency unit, as Razorpay sends it — paise for INR.
+  /// Stored as an integer on purpose: money in a float is money lost.
+  amount   Int
+  currency String @default("INR")
+
+  /// `captured`, `authorized`, `failed` — Razorpay's own vocabulary.
+  status String
+
+  /// `card`, `upi`, `netbanking`, `wallet`, `emandate`.
+  method String?
+
+  /// Enough to recognise the instrument, and no more: "Visa ···· 4242",
+  /// "HDFC Bank", a UPI handle. No PAN, no token, nothing that could be
+  /// replayed — the instrument itself never leaves Razorpay.
+  methodDetail String?
+
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
 }
 
 /// Every Razorpay webhook, kept for idempotency and for answering "what did

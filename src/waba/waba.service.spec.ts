@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { WabaService } from './waba.service';
 import { WabaMembershipService } from './waba-membership.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
+import { orgDirectoryDouble } from 'src/org/org.test-doubles';
 import { wabaMembershipDouble } from './waba.test-doubles';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
@@ -37,6 +39,7 @@ const mockRedis = { invalidatePhoneCache: jest.fn() };
 const mockMailNotifications = mailNotificationsDouble();
 
 const mockMembership = wabaMembershipDouble();
+const mockOrgDirectory = orgDirectoryDouble();
 
 describe('WabaService', () => {
   let service: WabaService;
@@ -49,6 +52,7 @@ describe('WabaService', () => {
         WabaService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: WabaMembershipService, useValue: mockMembership },
+        { provide: OrgDirectoryService, useValue: mockOrgDirectory },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: RedisService, useValue: mockRedis },
       ],

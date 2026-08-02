@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { SsoService, OrgSummary } from './sso.service';
 import { UserService } from 'src/user/user.service';
 import { RedisService } from 'src/redis/redis.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { AuthCallbackDto } from './dto/callback.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { OrgTokenResponseDto } from './dto/org.dto';
@@ -14,6 +15,7 @@ export class AuthService {
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
     private readonly redisService: RedisService,
+    private readonly orgDirectory: OrgDirectoryService,
   ) {}
 
   /**
@@ -54,6 +56,10 @@ export class AuthService {
       ssoCreatedAt: profile?.createdAt ?? null,
       orgs: organisations,
     });
+
+    // The only moment anything here learns what an organisation is called.
+    // Cached now so a webhook or a billing cron can name it later.
+    await this.orgDirectory.remember(organisations);
 
     const access_token = await this.jwtService.signAsync({ sub: user.id, sessionId });
     return { access_token, user, organisations };
@@ -100,6 +106,7 @@ export class AuthService {
     org: OrgSummary,
     role: string,
   ): Promise<OrgTokenResponseDto> {
+    await this.orgDirectory.remember([org]);
     const access_token = await this.jwtService.signAsync({ sub: userId, orgId: org.id, role, sessionId });
     return { access_token, orgId: org.id, organisation: org };
   }

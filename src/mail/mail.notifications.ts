@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { MailService } from './mail.service';
 
 /**
@@ -43,7 +44,33 @@ export class MailNotifications {
   constructor(
     private readonly mail: MailService,
     private readonly prisma: PrismaService,
+    private readonly orgDirectory: OrgDirectoryService,
   ) {}
+
+  /**
+   * An "Organisation" line for the facts table, when we can name one.
+   *
+   * Somebody who belongs to three organisations cannot act on "your
+   * subscription renewed" without knowing which. Given an id we look the name
+   * up; given only an account we name its organisation when it belongs to
+   * exactly one, because an account two organisations hold has no single right
+   * answer and guessing would put the wrong name in front of someone.
+   *
+   * Returns nothing rather than a placeholder: a missing line reads as an email
+   * that does not mention organisations, which is where this started.
+   */
+  private async orgFacts(input: {
+    ssoOrgId?: string | null;
+    wabaId?: string | null;
+  }): Promise<[string, string][]> {
+    const name = input.ssoOrgId
+      ? await this.orgDirectory.name(input.ssoOrgId)
+      : input.wabaId
+        ? await this.orgDirectory.soleOrgFor(input.wabaId)
+        : null;
+
+    return name ? [['Organisation', name]] : [];
+  }
 
   /* ---------------- Transactional: account and security ---------------- */
 
@@ -74,7 +101,7 @@ export class MailNotifications {
   }
 
   /** T2 — a key was issued. The secret itself is never emailed. */
-  async apiKeyCreated(userId: number, accessKey: string): Promise<void> {
+  async apiKeyCreated(userId: number, ssoOrgId: string, accessKey: string): Promise<void> {
     const [recipient] = await this.mail.recipientsByIds([userId]);
     if (!recipient) return;
 
@@ -85,7 +112,7 @@ export class MailNotifications {
       heading: 'A new API key was created',
       intro:
         'Someone created an API key on your WhatsApp Console account. The secret is only ever shown once, in the console — it is not in this email.',
-      facts: [['Access key', accessKey]],
+      facts: [...(await this.orgFacts({ ssoOrgId })), ['Access key', accessKey]],
       paragraphs: [
         'If this was not you, revoke the key now and review who has access to your account.',
       ],
@@ -94,7 +121,7 @@ export class MailNotifications {
   }
 
   /** T3 — a key was revoked. */
-  async apiKeyRevoked(userId: number, accessKey: string): Promise<void> {
+  async apiKeyRevoked(userId: number, ssoOrgId: string, accessKey: string): Promise<void> {
     const [recipient] = await this.mail.recipientsByIds([userId]);
     if (!recipient) return;
 
@@ -105,7 +132,7 @@ export class MailNotifications {
       heading: 'An API key was revoked',
       intro:
         'This key stops working immediately. Anything using it will start failing authentication.',
-      facts: [['Access key', accessKey]],
+      facts: [...(await this.orgFacts({ ssoOrgId })), ['Access key', accessKey]],
       action: { label: 'Review API keys', path: '/api-keys' },
     });
   }
@@ -113,6 +140,7 @@ export class MailNotifications {
   /** T4 + M1 — a WABA was connected; the first one gets the welcome. */
   async wabaConnected(
     userId: number,
+    ssoOrgId: string,
     wabaId: string,
     wabaName: string | null,
   ): Promise<void> {
@@ -137,6 +165,7 @@ export class MailNotifications {
         ? 'Your WhatsApp Business Account is linked to WhatsApp Console. You can send messages, manage templates and watch delivery from one place.'
         : 'A WhatsApp Business Account was linked to your WhatsApp Console account.',
       facts: [
+        ...(await this.orgFacts({ ssoOrgId })),
         ['Account', wabaName || wabaId],
         ['WABA ID', wabaId],
       ],
@@ -167,6 +196,7 @@ export class MailNotifications {
       intro:
         'WhatsApp Console can no longer send or receive on this account. Messages sent through the API will start failing.',
       facts: [
+        ...(await this.orgFacts({ wabaId })),
         ['Account', wabaName || wabaId],
         ['WABA ID', wabaId],
       ],
@@ -205,7 +235,12 @@ export class MailNotifications {
       heading: 'A WhatsApp Business Account was deleted',
       intro:
         'Everything WhatsApp Console held about this account has been removed. This is your record of what went.',
-      facts: [['Account', wabaName], ['WABA ID', wabaId], ...removed],
+      facts: [
+        ...(await this.orgFacts({ wabaId })),
+        ['Account', wabaName],
+        ['WABA ID', wabaId],
+        ...removed,
+      ],
       paragraphs: [
         'Your WhatsApp Business Account, its phone numbers and its approved templates all remain with Meta — only our copy is gone, and the account can be connected again from scratch.',
         'Nothing here can be undone. If this was not you, contact us immediately.',
@@ -225,6 +260,7 @@ export class MailNotifications {
       intro:
         'The access token for your WhatsApp Business Account is no longer valid, so sending and receiving have stopped. This usually means the token was revoked in Meta Business Settings, or it expired.',
       facts: [
+        ...(await this.orgFacts({ wabaId })),
         ['WABA ID', wabaId],
         ...(detail ? ([['Meta says', detail]] as [string, string][]) : []),
       ],
@@ -246,6 +282,7 @@ export class MailNotifications {
       intro:
         'Meta has applied a restriction to your WhatsApp Business Account. Sending may be blocked entirely until it is resolved with Meta.',
       facts: [
+        ...(await this.orgFacts({ wabaId })),
         ['WABA ID', wabaId],
         ['State', state ?? 'Restricted'],
       ],
@@ -281,6 +318,7 @@ export class MailNotifications {
           ? 'Meta approved your template. You can start sending with it now.'
           : 'Meta made a decision about one of your message templates.',
       facts: [
+        ...(await this.orgFacts({ wabaId: input.wabaId })),
         ['Template', input.name],
         ['Status', this.humanise(input.status)],
         ...(input.reason
@@ -320,6 +358,7 @@ export class MailNotifications {
       intro:
         'Meta updates this rating from how recipients react to your messages. A low rating reduces how many people you can message per day.',
       facts: [
+        ...(await this.orgFacts({ wabaId: input.wabaId })),
         ['Number', input.displayPhoneNumber],
         ['Change', this.humanise(input.event)],
         ...(input.currentLimit
@@ -354,6 +393,7 @@ export class MailNotifications {
       intro:
         'The name customers see next to your messages has been reviewed by Meta.',
       facts: [
+        ...(await this.orgFacts({ wabaId: input.wabaId })),
         ...(input.displayPhoneNumber
           ? ([['Number', input.displayPhoneNumber]] as [string, string][])
           : []),
@@ -373,6 +413,7 @@ export class MailNotifications {
   /** A month was paid for — the receipt, and when the next debit falls. */
   async subscriptionCharged(
     userId: number,
+    ssoOrgId: string,
     account: string,
     paidUntil: Date,
   ): Promise<void> {
@@ -387,6 +428,7 @@ export class MailNotifications {
       intro:
         'The payment went through and the Messaging API is open for the API keys on this account.',
       facts: [
+        ...(await this.orgFacts({ ssoOrgId })),
         ['Account', account],
         ['Paid until', this.date(paidUntil)],
       ],
@@ -403,6 +445,7 @@ export class MailNotifications {
    */
   async subscriptionPaymentFailed(
     userId: number,
+    ssoOrgId: string,
     account: string,
     final: boolean,
     paidUntil: Date | null,
@@ -419,6 +462,7 @@ export class MailNotifications {
         ? 'The retries are exhausted, so the mandate has stopped. API keys will stop working once the month you paid for runs out.'
         : 'The bank declined the payment. We will try again over the next few days — nothing changes for you in the meantime.',
       facts: [
+        ...(await this.orgFacts({ ssoOrgId })),
         ['Account', account],
         ...(paidUntil
           ? ([['API access until', this.date(paidUntil)]] as [string, string][])
@@ -436,6 +480,7 @@ export class MailNotifications {
   /** Cancelled by the customer — mostly a receipt for when access ends. */
   async subscriptionCancelled(
     userId: number,
+    ssoOrgId: string,
     account: string,
     paidUntil: Date | null,
   ): Promise<void> {
@@ -451,6 +496,7 @@ export class MailNotifications {
         ? 'No further payments will be taken. The month you have already paid for runs its course.'
         : 'No payments will be taken.',
       facts: [
+        ...(await this.orgFacts({ ssoOrgId })),
         ['Account', account],
         ...(paidUntil
           ? ([['API access until', this.date(paidUntil)]] as [string, string][])

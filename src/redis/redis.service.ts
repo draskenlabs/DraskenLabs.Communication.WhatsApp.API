@@ -112,6 +112,19 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(`user:${userId}`);
   }
 
+  // Organisation names — orgName:{ssoOrgId} → the display name.
+  //
+  // Organisations live in the SSO, so this is the only copy anything without a
+  // user's token can reach. Long TTL: a name changes rarely, and a stale one is
+  // a better email than no name at all.
+  async setOrgName(ssoOrgId: string, name: string): Promise<void> {
+    await this.client.set(`orgName:${ssoOrgId}`, name, 'EX', 30 * 24 * 60 * 60);
+  }
+
+  async getOrgName(ssoOrgId: string): Promise<string | null> {
+    return this.client.get(`orgName:${ssoOrgId}`);
+  }
+
   // Phone Cache — phone:{phoneNumberId} → { wabaId, accessToken: encrypted }
   //
   // A phone number belongs to an account, and the account is what decides who

@@ -89,7 +89,7 @@ export class ConnectService {
 
     // Confirms the connection, and doubles as the welcome for a first WABA.
     const connectedName = (wabaMeta as { name?: string }).name ?? null;
-    void this.mail.wabaConnected(userId, body.wabaId, connectedName);
+    void this.mail.wabaConnected(userId, ssoOrgId, body.wabaId, connectedName);
 
     return {
       wabaId: body.wabaId,
@@ -168,7 +168,7 @@ export class ConnectService {
 
     // Confirms the connection, and doubles as the welcome for a first WABA.
     const connectedName = (wabaMeta as { name?: string }).name ?? null;
-    void this.mail.wabaConnected(userId, body.wabaId, connectedName);
+    void this.mail.wabaConnected(userId, ssoOrgId, body.wabaId, connectedName);
 
     return {
       wabaId: body.wabaId,
