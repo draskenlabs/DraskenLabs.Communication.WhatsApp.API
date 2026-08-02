@@ -32,8 +32,14 @@ export class SubscriptionMiddleware implements NestMiddleware {
       return next();
     }
 
+    // The subscription belongs to an organisation as well as an account: the
+    // same WABA connected in two organisations is two subscriptions, and a key
+    // issued in one must not ride on the other's payment.
     const wabaId = (req as any).apiKeyWabaId as string | undefined;
-    if (wabaId && (await this.billing.hasAccess(wabaId))) return next();
+    const ssoOrgId = (req as any).orgId as string | undefined;
+    if (wabaId && ssoOrgId && (await this.billing.hasAccess(ssoOrgId, wabaId))) {
+      return next();
+    }
 
     throw new HttpException(
       wabaId

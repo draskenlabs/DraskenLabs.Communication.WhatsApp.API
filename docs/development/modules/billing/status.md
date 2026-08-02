@@ -3,13 +3,20 @@
 | Field | Value |
 |-------|-------|
 | Status | ✅ Implemented (not yet exercised against live Razorpay) |
-| Last Updated | 2026-08-01 |
+| Last Updated | 2026-08-02 |
 
 ## Implemented
 
-- `Subscription` (one per WABA, with the organisation alongside for listing and
-  for history that outlives the account) and `SubscriptionEvent` (webhook audit
-  and idempotency) — migration `20260801700000_subscriptions`.
+- `Subscription` (one per organisation per WABA) and `SubscriptionEvent`
+  (webhook audit and idempotency) — migrations `20260801700000_subscriptions`
+  and `20260801900000_subscription_per_organisation`.
+- **A subscription is one organisation's use of one account.** `wabaId` alone
+  was unique, which was right while an account could only be connected once.
+  Now that two organisations can hold the same WABA, that constraint told the
+  second one "this account already has a subscription" — and the first
+  organisation's payment would have granted the second free API access.
+  `hasAccess`/`requireAccess` take the organisation as well as the account, and
+  the Redis key is `sub:{ssoOrgId}:{wabaId}`.
 - `RazorpayService`: customer, subscription create, cancel and fetch over their
   REST API. Absent credentials disable billing rather than break the boot.
 - `BillingService`: register, cancel, state, cached access check, webhook
@@ -32,11 +39,13 @@
 - The Razorpay customer carries the subscriber's name and email, read from the
   user row; existing blank customers are filled in the next time that
   organisation subscribes.
-- Tests: 53 — signature verification in four shapes (valid, wrong
+- Tests: 58 — signature verification in four shapes (valid, wrong
   subscription, wrong length, no secret configured), the confirm path
   (verified, unverified, mismatched subscription, missing subscription), the
   access rule in six shapes (including cancelled-but-paid and
-  retrying), per-account isolation, the org-ownership check on subscribe,
+  retrying), per-account isolation, per-organisation isolation (one
+  organisation's payment grants the other nothing, at the service and at the
+  middleware), the org-ownership check on subscribe,
   customer reuse across accounts, listing accounts with and without
   subscriptions, register/cancel guards, webhook idempotency and out-of-order
   ordering, reconciliation resilience, the paywall, and signature verification.
@@ -50,9 +59,9 @@
 3. Run the flow end to end in test mode: subscribe → authorise in Checkout →
    first charge → cancel → confirm access lasts to `currentEnd`.
 4. Decide what happens to existing accounts. Enforcement begins the moment
-   credentials are set, and it is per account — every connected WABA needs its
-   own subscription or its keys stop. Subscribe them first, or leave Razorpay
-   unconfigured until they have.
+   credentials are set, and it is per organisation per account — every
+   organisation's connection to a WABA needs its own subscription or its keys
+   stop. Subscribe them first, or leave Razorpay unconfigured until they have.
 
 ## Pending / not in scope
 

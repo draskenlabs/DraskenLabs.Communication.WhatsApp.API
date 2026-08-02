@@ -70,7 +70,7 @@ export class MessagingService {
     // Sending is what the subscription buys, whoever is asking. The API-key
     // middleware has already checked this for its own path; the console
     // reaches here without passing it, and must not be a free way to send.
-    await this.billing.requireAccess(phoneCache.wabaId);
+    await this.billing.requireAccess(ssoOrgId, phoneCache.wabaId);
 
     const optedOut = await this.contactsService.isOptedOut(ssoOrgId, dto.to);
     if (optedOut) throw new BadRequestException(`Recipient ${dto.to} has opted out of messages`);

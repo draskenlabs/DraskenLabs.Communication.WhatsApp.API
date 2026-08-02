@@ -66,7 +66,7 @@ model Waba {
   InboundMessage   InboundMessage[]
   MessageTemplate  MessageTemplate[]
   UserApiKey       UserApiKey[]
-  Subscription     Subscription?
+  Subscription     Subscription[]
   WabaOrganisation WabaOrganisation[]
 }
 
@@ -156,9 +156,10 @@ model Subscription {
 
   /// The account this pays for. Null only once that account has been deleted,
   /// which leaves the row as billing history and grants nothing.
-  wabaId String? @unique
-  /// Kept alongside so an organisation's subscriptions can be listed without
-  /// joining, and so history survives the WABA it paid for.
+  wabaId String?
+  /// The organisation paying. An account can be connected by more than one, and
+  /// each pays for its own use of it — so this, with `wabaId`, is the identity
+  /// of a subscription.
   ssoOrgId String
 
   razorpayCustomerId     String?
@@ -191,6 +192,7 @@ model Subscription {
 
   waba Waba? @relation(fields: [wabaId], references: [wabaId])
 
+  @@unique([wabaId, ssoOrgId])
   @@index([ssoOrgId])
   @@index([status])
 }

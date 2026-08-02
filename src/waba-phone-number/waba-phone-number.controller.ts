@@ -74,8 +74,12 @@ export class WabaPhoneNumberController {
   ): Promise<WabaPhoneNumberResponseDto> {
     const user = (req as any).user;
     if (!user) throw new UnauthorizedException('User not found in context');
+    const ssoOrgId = (req as any).orgId;
+    if (!ssoOrgId)
+      throw new UnauthorizedException('Organisation not found in context');
     return this.phoneNumberService.registerPhoneNumber(
       user.id,
+      ssoOrgId,
       wabaId,
       phoneNumberId,
       dto.pin,

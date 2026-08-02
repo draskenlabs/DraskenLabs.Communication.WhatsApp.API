@@ -11,6 +11,12 @@ one WABA: the account a key names is the account that has to be paid for, so
 "is this request paid for" is a lookup rather than an allocation of seats to
 accounts. Paying for one account buys nothing for its neighbour.
 
+The subscription belongs to **one organisation's use of one account**, not to
+the account alone. The same WABA can be connected by two organisations, and each
+pays for its own use of it: keying on the account alone told the second
+organisation the account was already subscribed, and would have let it call the
+API on the first one's payment.
+
 The rule the whole module exists to enforce: **a customer may subscribe or
 cancel any account at any moment, and access lasts to the end of the month they
 have paid for.**
@@ -55,7 +61,9 @@ and the paywall alike:
 1. `currentEnd` in the future → **allowed**, whatever the status. This is what
    makes cancellation keep the paid month, and it also carries a customer
    through a failed renewal while Razorpay retries.
-   The check is per account: one WABA lapsing does not touch another.
+   The check is per organisation *and* account: one WABA lapsing does not touch
+   another, and one organisation paying does not carry another that holds the
+   same account.
 2. Otherwise `active` or `authenticated` → allowed.
 3. Otherwise refused.
 
@@ -66,19 +74,19 @@ paid nothing and is refused.
 
 The subscription buys the **account**, not one way of reaching it. Two layers:
 
-**`BillingService.requireAccess(wabaId)`** — called by the operations
-themselves, so the console pays too: sending a message, and syncing or creating
-templates. Gating only the API key would have left the console as a free way to
-do the very things being sold. Reads are deliberately not gated; someone who
+**`BillingService.requireAccess(ssoOrgId, wabaId)`** — called by the operations
+themselves, so the console pays too: sending a message, syncing or creating
+templates, and registering a phone number. Gating only the API key would have
+left the console as a free way to do the very things being sold. Reads are deliberately not gated; someone who
 has stopped paying keeps their history, their exports and the ability to
 subscribe again.
 
 **`SubscriptionMiddleware`** runs after `MessagingAuthMiddleware` on the
 `/messages` routes, so both `authType` and `apiKeyWabaId` are already set. It
 covers the API-key path's reads as well, which the service-level check does not
-see. The account
-checked is the one the key names — there is no mapping to get wrong and no way
-for a key to ride on an account somebody else paid for. Only API-key traffic is
+see. The account checked is the one the key names, in the organisation the key
+was issued in — there is no mapping to get wrong and no way for a key to ride on
+an account somebody else paid for. Only API-key traffic is
 charged for; console requests carry a JWT and pass untouched. Someone who stops paying keeps
 their history, their exports and their ability to re-subscribe — ending a
 subscription is not locking someone out of their own account.
@@ -90,7 +98,9 @@ development and self-hosting need no payment provider.
 
 ## Caching
 
-`sub:{wabaId}` in Redis holds the allow/deny answer for 60 seconds. Every
+`sub:{ssoOrgId}:{wabaId}` in Redis holds the allow/deny answer for 60 seconds.
+The organisation is part of the key for the same reason it is part of the row:
+two organisations holding one account must not share one answer. Every
 webhook invalidates it, so a cancellation or a failed debit lands at once; the
 TTL is the backstop for a webhook that never arrives. Unlike the API-key cache,
 this one must never be written without an expiry.
@@ -168,8 +178,10 @@ API traffic is charged for.
 
 ## Business rules
 
-- One subscription per account. A second registration while one is running is
-  refused — two mandates on one account would mean two debits a month.
+- One subscription per organisation per account. A second registration by the
+  same organisation while one is running is refused — two mandates on one
+  account would mean two debits a month. A *different* organisation that has
+  connected the same account subscribes separately and pays separately.
 - The WABA is validated against the caller's organisation, so an id alone
   cannot start a subscription against someone else's account.
 - One Razorpay **customer** per organisation, reused across accounts and across

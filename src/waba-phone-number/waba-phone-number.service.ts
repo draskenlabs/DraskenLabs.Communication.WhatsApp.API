@@ -38,16 +38,22 @@ export class WabaPhoneNumberService {
    */
   async registerPhoneNumber(
     userId: number,
+    ssoOrgId: string,
     wabaId: string,
     phoneNumberId: string,
     pin: string,
   ): Promise<WabaPhoneNumber> {
-    const waba = await this.prisma.waba.findFirst({ where: { userId, wabaId } });
+    // Membership rather than the row's `userId`: an account connected in two
+    // organisations has one `Waba` row and one original connector, so owning
+    // it is a question of which organisations it belongs to.
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
+    });
     if (!waba) throw new NotFoundException('WABA not found');
 
     // Registering a number puts the account on the Cloud API — the thing the
     // subscription pays for, so it is gated like sending.
-    await this.billing.requireAccess(wabaId);
+    await this.billing.requireAccess(ssoOrgId, wabaId);
 
     const phone = await this.prisma.wabaPhoneNumber.findFirst({
       where: { phoneNumberId, wabaId },

@@ -34,9 +34,26 @@ describe('SubscriptionMiddleware', () => {
       next,
     );
 
-    // The account charged is the one the key names, not the organisation.
-    expect(mockBilling.hasAccess).toHaveBeenCalledWith('waba_1');
+    // The account charged is the one the key names, in the organisation the
+    // key was issued in — a key from another org is another subscription.
+    expect(mockBilling.hasAccess).toHaveBeenCalledWith('org_1', 'waba_1');
     expect(next).toHaveBeenCalled();
+  });
+
+  it('refuses a key whose account is paid for in a different organisation', async () => {
+    mockBilling.hasAccess.mockImplementation((ssoOrgId: string) =>
+      Promise.resolve(ssoOrgId === 'org_1'),
+    );
+
+    const req = {
+      authType: 'apiKey',
+      orgId: 'org_2',
+      apiKeyWabaId: 'waba_1',
+    } as any;
+    await expect(middleware.use(req, {} as any, next)).rejects.toMatchObject({
+      status: 402,
+    });
+    expect(next).not.toHaveBeenCalled();
   });
 
   it('answers 402 when the key’s account is not subscribed', async () => {

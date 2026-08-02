@@ -483,7 +483,7 @@ describe('TemplatesService', () => {
       await expect(service.syncTemplates(1, 'org_1', 'w1')).rejects.toMatchObject({
         status: 402,
       });
-      expect(mockBilling.requireAccess).toHaveBeenCalledWith('w1');
+      expect(mockBilling.requireAccess).toHaveBeenCalledWith('org_1', 'w1');
     });
   });
 });
