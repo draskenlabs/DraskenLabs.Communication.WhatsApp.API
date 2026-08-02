@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { MailService } from './mail.service';
 import { SesService } from './ses.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { RedisService } from 'src/redis/redis.service';
 
 const mockPrisma = {
   user: { findMany: jest.fn(), findUnique: jest.fn() },
@@ -11,12 +10,6 @@ const mockPrisma = {
   notificationPreference: { findUnique: jest.fn(), upsert: jest.fn() },
   mailSuppression: { findUnique: jest.fn(), upsert: jest.fn() },
   mailLog: { create: jest.fn() },
-};
-
-const mockRedis = {
-  queueDigestItem: jest.fn(),
-  listDigestQueues: jest.fn().mockResolvedValue([]),
-  drainDigest: jest.fn().mockResolvedValue([]),
 };
 
 const mockSes = { enabled: true, send: jest.fn() };
@@ -60,7 +53,6 @@ describe('MailService', () => {
       providers: [
         MailService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: RedisService, useValue: mockRedis },
         { provide: SesService, useValue: mockSes },
         { provide: ConfigService, useValue: mockConfig },
       ],
@@ -147,20 +139,45 @@ describe('MailService', () => {
   });
 
   describe('preference defaults', () => {
-    it('mails template decisions and failures when no row exists', async () => {
+    it('mails template decisions and the daily summary when no row exists', async () => {
+      // Someone who never opened their settings must still be told about a
+      // failed send, and the daily summary is the only thing that tells them.
       await expect(service.sendTo(RECIPIENT, OPTIONS)).resolves.toBe(true);
       await expect(
-        service.sendTo(RECIPIENT, { ...OPTIONS, kind: 'emailMessageFailed' }),
+        service.sendTo(RECIPIENT, { ...OPTIONS, kind: 'emailDailySummary' }),
       ).resolves.toBe(true);
     });
 
-    it('stays quiet about inbound messages and marketing by default', async () => {
+    it('stays quiet about the weekly summary and marketing by default', async () => {
       await expect(
-        service.sendTo(RECIPIENT, { ...OPTIONS, kind: 'emailInboundMessage' }),
+        service.sendTo(RECIPIENT, { ...OPTIONS, kind: 'emailWeeklySummary' }),
       ).resolves.toBe(false);
       await expect(
         service.sendTo(RECIPIENT, { ...OPTIONS, kind: 'emailProductNews' }),
       ).resolves.toBe(false);
+    });
+  });
+
+  describe('applying an unsubscribe', () => {
+    it('switches off the kind that was asked for', async () => {
+      await service.applyUnsubscribe(7, 'emailWeeklySummary');
+
+      expect(mockPrisma.notificationPreference.upsert).toHaveBeenCalledWith({
+        where: { userId: 7 },
+        create: { userId: 7, emailWeeklySummary: false },
+        update: { emailWeeklySummary: false },
+      });
+    });
+
+    it('accepts a link for a kind we no longer send', async () => {
+      // Signed links for retired kinds are already in people's inboxes. The
+      // column is gone, so writing it would fail — and they are unsubscribed
+      // from it either way.
+      await expect(
+        service.applyUnsubscribe(7, 'emailMessageFailed'),
+      ).resolves.toBeUndefined();
+
+      expect(mockPrisma.notificationPreference.upsert).not.toHaveBeenCalled();
     });
   });
 
@@ -225,36 +242,6 @@ describe('MailService', () => {
         select: { id: true, email: true, firstName: true },
       });
       expect(recipients).toHaveLength(1);
-    });
-  });
-
-  describe('digests', () => {
-    it('drains a queue and sends one email for many failures', async () => {
-      mockRedis.listDigestQueues.mockImplementation((kind: string) =>
-        Promise.resolve(kind === 'failed-sends' ? [7] : []),
-      );
-      mockRedis.drainDigest.mockResolvedValue([
-        { to: '447911111111', reason: 'Undeliverable' },
-        { to: '447922222222', reason: null },
-      ]);
-      mockPrisma.user.findMany.mockResolvedValue([
-        { id: 7, email: 'ada@example.com', firstName: 'Ada' },
-      ]);
-
-      const result = await service.flushDigests();
-
-      expect(result.failed).toBe(1);
-      expect(mockSes.send).toHaveBeenCalledTimes(1);
-      expect(mockSes.send.mock.calls[0][0].subject).toContain('2 messages');
-    });
-
-    it('sends nothing when the queues are empty', async () => {
-      mockRedis.listDigestQueues.mockResolvedValue([]);
-      await expect(service.flushDigests()).resolves.toEqual({
-        failed: 0,
-        inbound: 0,
-      });
-      expect(mockSes.send).not.toHaveBeenCalled();
     });
   });
 });

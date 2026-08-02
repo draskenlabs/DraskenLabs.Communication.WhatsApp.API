@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { MessageStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { MailService } from 'src/mail/mail.service';
 
 const STATUS_ORDER: Record<string, number> = {
   sent: 0,
@@ -17,8 +15,6 @@ export class StatusUpdateHandler {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly notifications: NotificationsService,
-    private readonly mail: MailService,
   ) {}
 
   async handle(statusUpdate: any): Promise<void> {
@@ -67,28 +63,10 @@ export class StatusUpdateHandler {
         },
       });
 
-      // Only a failure is worth interrupting someone for; sent/delivered/read
-      // are the happy path and would be constant noise.
-      if (status === 'failed') {
-        // Queued rather than mailed: a bad campaign can fail hundreds of
-        // messages, and that must arrive as one email, not hundreds.
-        void this.mail.queueFailedSend(existing.userId, {
-          to: existing.to,
-          reason,
-        });
-        await this.notifications.notifyUsers(
-          [existing.userId],
-          'messageFailed',
-          {
-            title: 'Message failed to deliver',
-            body: reason
-              ? `To ${existing.to}: ${reason}`
-              : `WhatsApp could not deliver your message to ${existing.to}.`,
-            link: `/messages/${existing.id}`,
-            data: { kind: 'messageFailed' },
-          },
-        );
-      }
+      // Nothing is sent from here. A failure is recorded and reported in the
+      // daily summary instead: a bad campaign fails hundreds of messages in a
+      // row, and a push and an email per failure made that a stream of
+      // interruptions about something nobody can act on one message at a time.
     } catch (err: any) {
       this.logger.error(`Failed to update status for ${metaMessageId}: ${err.message}`);
     }

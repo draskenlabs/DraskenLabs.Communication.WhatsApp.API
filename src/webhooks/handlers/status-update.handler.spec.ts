@@ -2,8 +2,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { StatusUpdateHandler } from './status-update.handler';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
-import { MailService } from 'src/mail/mail.service';
-import { mailServiceDouble } from 'src/mail/mail.test-doubles';
 
 const mockPrisma = {
   message: {
@@ -17,8 +15,6 @@ const mockNotifications = {
   notifyUsers: jest.fn().mockResolvedValue(undefined),
 };
 
-const mockMail = mailServiceDouble();
-
 describe('StatusUpdateHandler', () => {
   let handler: StatusUpdateHandler;
 
@@ -26,7 +22,6 @@ describe('StatusUpdateHandler', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: MailService, useValue: mockMail },
         StatusUpdateHandler,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications }],
@@ -128,7 +123,6 @@ describe('StatusUpdateHandler notifications', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: MailService, useValue: mockMail },
         StatusUpdateHandler,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications },
@@ -137,7 +131,9 @@ describe('StatusUpdateHandler notifications', () => {
     handler = module.get<StatusUpdateHandler>(StatusUpdateHandler);
   });
 
-  it("notifies the sender when a message fails, quoting Meta's reason", async () => {
+  it("records a failure with Meta's reason and interrupts nobody", async () => {
+    // A bad campaign fails hundreds in a row. The failure is stored and
+    // reported once, in the next daily summary — not pushed or mailed here.
     mockPrisma.message.findUnique.mockResolvedValue({
       id: 5,
       status: 'sent',
@@ -152,15 +148,15 @@ describe('StatusUpdateHandler notifications', () => {
       errors: [{ title: 'Message undeliverable' }],
     });
 
-    expect(mockNotifications.notifyUsers).toHaveBeenCalledWith(
-      [9],
-      'messageFailed',
+    expect(mockPrisma.message.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'Message failed to deliver',
-        body: 'To 447911111111: Message undeliverable',
-        link: '/messages/5',
+        data: expect.objectContaining({
+          status: 'failed',
+          failureReason: 'Message undeliverable',
+        }),
       }),
     );
+    expect(mockNotifications.notifyUsers).not.toHaveBeenCalled();
   });
 
   it('says nothing for sent, delivered or read — that would be constant noise', async () => {

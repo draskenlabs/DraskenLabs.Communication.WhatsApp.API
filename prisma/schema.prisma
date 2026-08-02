@@ -481,14 +481,14 @@ model NotificationPreference {
   inboundMessage      Boolean  @default(true)
   /// Meta approved, rejected or paused a template.
   templateStatus      Boolean  @default(true)
-  /// An outbound message failed to deliver.
-  messageFailed       Boolean  @default(true)
-  /// The same three, by email. Separate columns rather than one switch: a
-  /// person may want a push for every reply but only an email when Meta
-  /// rejects a template.
-  emailInboundMessage Boolean  @default(false)
+  /// The same, by email. Separate columns rather than one switch: a person may
+  /// want a push for every reply but only an email when Meta rejects a
+  /// template.
   emailTemplateStatus Boolean  @default(true)
-  emailMessageFailed  Boolean  @default(true)
+  /// Yesterday's activity, including anything that failed to deliver. On by
+  /// default: it is how a failed send reaches anyone now that nothing is
+  /// mailed or pushed as it happens.
+  emailDailySummary   Boolean  @default(true)
   /// A weekly activity summary, off until asked for.
   emailWeeklySummary  Boolean  @default(false)
   /// Product news and onboarding tips — marketing, so opt-in and unsubscribable.

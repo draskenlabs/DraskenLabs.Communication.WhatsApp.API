@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { RedisService } from 'src/redis/redis.service';
 import { SesService } from './ses.service';
 import { layout } from './mail.templates';
 
@@ -14,10 +13,17 @@ import { layout } from './mail.templates';
 export type MailKind =
   | 'transactional'
   | 'emailTemplateStatus'
-  | 'emailMessageFailed'
-  | 'emailInboundMessage'
+  | 'emailDailySummary'
   | 'emailWeeklySummary'
   | 'emailProductNews';
+
+/** The preference columns an unsubscribe link may switch off. */
+const UNSUBSCRIBABLE = new Set<string>([
+  'emailTemplateStatus',
+  'emailDailySummary',
+  'emailWeeklySummary',
+  'emailProductNews',
+]);
 
 interface Recipient {
   userId: number;
@@ -38,17 +44,12 @@ interface SendOptions {
   footnote?: string;
 }
 
-/** Queue names for the batched emails. */
-const DIGEST_FAILED = 'failed-sends';
-const DIGEST_INBOUND = 'inbound';
-
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redis: RedisService,
     private readonly ses: SesService,
     private readonly config: ConfigService,
   ) {}
@@ -183,7 +184,7 @@ export class MailService {
     });
     // No row means defaults, which the schema already encodes.
     if (!row) {
-      return kind === 'emailTemplateStatus' || kind === 'emailMessageFailed';
+      return kind === 'emailTemplateStatus' || kind === 'emailDailySummary';
     }
     return row[kind];
   }
@@ -243,119 +244,17 @@ export class MailService {
       if (user?.email) await this.suppress(user.email, 'unsubscribe');
       return;
     }
+    // A kind we no longer send is a link already sitting in somebody's inbox,
+    // signed and still valid. Writing it would fail on a column that is gone,
+    // so it succeeds quietly instead: "you will not receive that kind of email
+    // again" is true — we stopped sending it altogether.
+    if (!UNSUBSCRIBABLE.has(kind)) return;
+
     await this.prisma.notificationPreference.upsert({
       where: { userId },
       create: { userId, [kind]: false },
       update: { [kind]: false },
     });
-  }
-
-  /* ---------------------------------------------------------------- *
-   * Digests                                                           *
-   * ---------------------------------------------------------------- */
-
-  async queueFailedSend(
-    userId: number,
-    item: { to: string; reason: string | null },
-  ): Promise<void> {
-    await this.redis.queueDigestItem(DIGEST_FAILED, userId, item);
-  }
-
-  async queueInboundMessage(
-    userId: number,
-    item: { from: string; senderName?: string; preview: string },
-  ): Promise<void> {
-    await this.redis.queueDigestItem(DIGEST_INBOUND, userId, item);
-  }
-
-  /**
-   * Drain both digest queues and mail whatever is waiting. Run on a schedule;
-   * a queue that is empty costs one Redis call and sends nothing.
-   */
-  async flushDigests(): Promise<{ failed: number; inbound: number }> {
-    if (!this.ses.enabled) return { failed: 0, inbound: 0 };
-    return {
-      failed: await this.flushFailedSends(),
-      inbound: await this.flushInbound(),
-    };
-  }
-
-  private async flushFailedSends(): Promise<number> {
-    let sent = 0;
-    for (const userId of await this.redis.listDigestQueues(DIGEST_FAILED)) {
-      const items = (await this.redis.drainDigest(DIGEST_FAILED, userId)) as {
-        to: string;
-        reason: string | null;
-      }[];
-      if (items.length === 0) continue;
-
-      const [recipient] = await this.recipientsByIds([userId]);
-      if (!recipient) continue;
-
-      const facts = items
-        .slice(0, 10)
-        .map((item): [string, string] => [
-          item.to,
-          item.reason ?? 'No reason given',
-        ]);
-
-      const ok = await this.sendTo(recipient, {
-        kind: 'emailMessageFailed',
-        template: 'digest.failed-sends',
-        subject: `${items.length} message${items.length === 1 ? '' : 's'} could not be delivered`,
-        heading: 'Some messages did not arrive',
-        intro:
-          items.length === 1
-            ? 'WhatsApp could not deliver one of your messages.'
-            : `WhatsApp could not deliver ${items.length} of your messages.`,
-        facts,
-        paragraphs:
-          items.length > facts.length
-            ? [`…and ${items.length - facts.length} more.`]
-            : undefined,
-        action: { label: 'Open messages', path: '/messages' },
-        footnote:
-          'You are receiving this because failed-send emails are on in your notification settings.',
-      });
-      if (ok) sent++;
-    }
-    return sent;
-  }
-
-  private async flushInbound(): Promise<number> {
-    let sent = 0;
-    for (const userId of await this.redis.listDigestQueues(DIGEST_INBOUND)) {
-      const items = (await this.redis.drainDigest(DIGEST_INBOUND, userId)) as {
-        from: string;
-        senderName?: string;
-        preview: string;
-      }[];
-      if (items.length === 0) continue;
-
-      const [recipient] = await this.recipientsByIds([userId]);
-      if (!recipient) continue;
-
-      const facts = items
-        .slice(0, 10)
-        .map((item): [string, string] => [
-          item.senderName || item.from,
-          item.preview,
-        ]);
-
-      const ok = await this.sendTo(recipient, {
-        kind: 'emailInboundMessage',
-        template: 'digest.inbound',
-        subject: `${items.length} new WhatsApp message${items.length === 1 ? '' : 's'}`,
-        heading: 'New messages are waiting',
-        intro: `${items.length} customer message${items.length === 1 ? '' : 's'} arrived since the last summary.`,
-        facts,
-        action: { label: 'Open the inbox', path: '/messages' },
-        footnote:
-          'You are receiving this because inbound-message emails are on in your notification settings.',
-      });
-      if (ok) sent++;
-    }
-    return sent;
   }
 
   /* ---------------------------------------------------------------- *

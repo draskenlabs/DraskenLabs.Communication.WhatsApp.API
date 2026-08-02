@@ -51,15 +51,11 @@ export function mailNotificationsDouble(): jest.Mocked<
 }
 
 export function mailServiceDouble(): jest.Mocked<
-  Pick<
-    MailService,
-    'queueFailedSend' | 'queueInboundMessage' | 'recipientsForWaba' | 'sendTo'
-  >
+  Pick<MailService, 'recipientsForWaba' | 'recipientsByIds' | 'sendTo'>
 > {
   return {
-    queueFailedSend: jest.fn().mockResolvedValue(undefined),
-    queueInboundMessage: jest.fn().mockResolvedValue(undefined),
     recipientsForWaba: jest.fn().mockResolvedValue([]),
+    recipientsByIds: jest.fn().mockResolvedValue([]),
     sendTo: jest.fn().mockResolvedValue(true),
   } as never;
 }

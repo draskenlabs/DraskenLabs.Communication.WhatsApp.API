@@ -101,12 +101,11 @@ describe('NotificationsService', () => {
       expect(prefs).toEqual({
         inboundMessage: true,
         templateStatus: true,
-        messageFailed: true,
-        // Email defaults differ on purpose: nothing that would mail on every
-        // reply, and no marketing until it is asked for.
-        emailInboundMessage: false,
+        // Email defaults differ on purpose: the daily summary on, because it
+        // is the only thing that reports a failed send, and no marketing until
+        // it is asked for.
         emailTemplateStatus: true,
-        emailMessageFailed: true,
+        emailDailySummary: true,
         emailWeeklySummary: false,
         emailProductNews: false,
         deviceCount: 2,
