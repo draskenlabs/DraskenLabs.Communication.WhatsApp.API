@@ -112,7 +112,7 @@ describe('MessagingService', () => {
       await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toMatchObject({
         status: 402,
       });
-      expect(mockBilling.requireAccess).toHaveBeenCalledWith('w1');
+      expect(mockBilling.requireAccess).toHaveBeenCalledWith('sso_org_1', 'w1');
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 

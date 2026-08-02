@@ -79,7 +79,7 @@ export class TemplatesService {
 
     // Managing an account's templates is one of the things the subscription
     // pays for, in the console as much as through a key.
-    await this.billing.requireAccess(wabaId);
+    await this.billing.requireAccess(ssoOrgId, wabaId);
 
     const accessToken = this.encryptionService.decrypt(
       userWhatsapp.accessToken,
@@ -172,7 +172,7 @@ export class TemplatesService {
 
     // Managing an account's templates is one of the things the subscription
     // pays for, in the console as much as through a key.
-    await this.billing.requireAccess(wabaId);
+    await this.billing.requireAccess(ssoOrgId, wabaId);
 
     const accessToken = this.encryptionService.decrypt(
       userWhatsapp.accessToken,
@@ -721,7 +721,7 @@ export class TemplatesService {
 
     // Everything routed through here edits templates at Meta on the account's
     // behalf, which is what the subscription pays for.
-    await this.billing.requireAccess(wabaId);
+    await this.billing.requireAccess(ssoOrgId, wabaId);
 
     return {
       wabaId,

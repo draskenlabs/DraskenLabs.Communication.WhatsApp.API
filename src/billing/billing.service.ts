@@ -60,8 +60,18 @@ export class BillingService {
     return sub.status === 'active' || sub.status === 'authenticated';
   }
 
-  private find(wabaId: string) {
-    return this.prisma.subscription.findUnique({ where: { wabaId } });
+  /**
+   * The subscription for one organisation's use of one account.
+   *
+   * Both halves matter. An account can be connected by more than one
+   * organisation, and each pays for its own use of it — keying on the account
+   * alone told the second organisation the account was already subscribed, and
+   * would have let it call the API on the first one's payment.
+   */
+  private find(ssoOrgId: string, wabaId: string) {
+    return this.prisma.subscription.findUnique({
+      where: { wabaId_ssoOrgId: { wabaId, ssoOrgId } },
+    });
   }
 
   /** The WABA, if it belongs to the caller's organisation. */
@@ -124,16 +134,20 @@ export class BillingService {
   /**
    * Access for the API-key path, cached briefly.
    *
-   * Keyed by the account the key is scoped to, which the API-key middleware
-   * has already resolved — so "is this request paid for" is one lookup, with
-   * no allocation of seats to accounts to get wrong.
+   * Keyed by the organisation *and* the account the key is scoped to, both of
+   * which the API-key middleware has already resolved — so "is this request
+   * paid for" is one lookup, with no allocation of seats to accounts to get
+   * wrong. The organisation belongs in the key because the same WABA connected
+   * in two organisations is two subscriptions: one paying does not carry the
+   * other.
    */
-  async hasAccess(wabaId: string): Promise<boolean> {
-    const cached = await this.redis.getSubscriptionAccess(wabaId);
+  async hasAccess(ssoOrgId: string, wabaId: string): Promise<boolean> {
+    const key = `${ssoOrgId}:${wabaId}`;
+    const cached = await this.redis.getSubscriptionAccess(key);
     if (cached !== null) return cached;
 
-    const allowed = BillingService.grants(await this.find(wabaId));
-    await this.redis.setSubscriptionAccess(wabaId, allowed);
+    const allowed = BillingService.grants(await this.find(ssoOrgId, wabaId));
+    await this.redis.setSubscriptionAccess(key, allowed);
     return allowed;
   }
 
@@ -150,9 +164,9 @@ export class BillingService {
    * see their history, export it and subscribe again — ending a subscription is
    * not locking someone out of their own data.
    */
-  async requireAccess(wabaId: string): Promise<void> {
+  async requireAccess(ssoOrgId: string, wabaId: string): Promise<void> {
     if (!this.razorpay.isConfigured()) return;
-    if (await this.hasAccess(wabaId)) return;
+    if (await this.hasAccess(ssoOrgId, wabaId)) return;
 
     throw new HttpException(
       `WhatsApp Business Account ${wabaId} has no active subscription. Subscribe in the console to use it.`,
@@ -175,7 +189,7 @@ export class BillingService {
     }
 
     await this.ownedWaba(ssoOrgId, wabaId);
-    const existing = await this.find(wabaId);
+    const existing = await this.find(ssoOrgId, wabaId);
 
     // Registering again while one is running would leave two mandates against
     // the same account, and two debits a month.
@@ -185,7 +199,9 @@ export class BillingService {
           'This subscription is set to end at the close of the paid month. It cannot be replaced until then.',
         );
       }
-      throw new BadRequestException('This account already has a subscription');
+      throw new BadRequestException(
+        'This organisation already has a subscription for this account',
+      );
     }
 
     // Read the name and email from our own user row. The request only carries
@@ -233,11 +249,11 @@ export class BillingService {
     };
 
     await this.prisma.subscription.upsert({
-      where: { wabaId },
+      where: { wabaId_ssoOrgId: { wabaId, ssoOrgId } },
       create: { wabaId, ...data },
       update: data,
     });
-    await this.redis.invalidateSubscriptionAccess(wabaId);
+    await this.redis.invalidateSubscriptionAccess(`${ssoOrgId}:${wabaId}`);
 
     return {
       wabaId,
@@ -269,7 +285,7 @@ export class BillingService {
     dto: ConfirmSubscriptionDto,
   ): Promise<SubscriptionStateDto> {
     const waba = await this.ownedWaba(ssoOrgId, wabaId);
-    const sub = await this.find(wabaId);
+    const sub = await this.find(ssoOrgId, wabaId);
 
     if (!sub) throw new NotFoundException('No subscription to confirm');
 
@@ -295,7 +311,7 @@ export class BillingService {
     const remote = await this.razorpay.fetchSubscription(sub.razorpaySubscriptionId);
     const updated = await this.applyRemote(sub, remote);
 
-    await this.redis.invalidateSubscriptionAccess(wabaId);
+    await this.redis.invalidateSubscriptionAccess(`${ssoOrgId}:${wabaId}`);
     return this.toState(waba, updated);
   }
 
@@ -372,7 +388,7 @@ export class BillingService {
    */
   async cancel(ssoOrgId: string, wabaId: string): Promise<SubscriptionStateDto> {
     const waba = await this.ownedWaba(ssoOrgId, wabaId);
-    const sub = await this.find(wabaId);
+    const sub = await this.find(ssoOrgId, wabaId);
 
     if (!sub) throw new NotFoundException('No subscription to cancel');
     if (this.isFinished(sub)) {
@@ -389,7 +405,7 @@ export class BillingService {
     );
 
     const updated = await this.prisma.subscription.update({
-      where: { wabaId },
+      where: { id: sub.id },
       data: {
         status: this.toStatus(remote.status),
         cancelAtCycleEnd: paidMonthLeft,
@@ -397,7 +413,7 @@ export class BillingService {
         shortUrl: null,
       },
     });
-    await this.redis.invalidateSubscriptionAccess(wabaId);
+    await this.redis.invalidateSubscriptionAccess(`${ssoOrgId}:${wabaId}`);
 
     void this.mail.subscriptionCancelled(
       sub.createdByUserId,
@@ -461,7 +477,11 @@ export class BillingService {
 
     await this.applyRemote(sub, entity);
 
-    if (sub.wabaId) await this.redis.invalidateSubscriptionAccess(sub.wabaId);
+    if (sub.wabaId) {
+      await this.redis.invalidateSubscriptionAccess(
+        `${sub.ssoOrgId}:${sub.wabaId}`,
+      );
+    }
     await this.notify(event, sub, sub.waba?.name ?? sub.wabaId ?? 'your account', status, currentEnd ?? sub.currentEnd);
   }
 
@@ -529,7 +549,11 @@ export class BillingService {
       try {
         const remote = await this.razorpay.fetchSubscription(sub.razorpaySubscriptionId);
         await this.applyRemote(sub, remote);
-        if (sub.wabaId) await this.redis.invalidateSubscriptionAccess(sub.wabaId);
+        if (sub.wabaId) {
+          await this.redis.invalidateSubscriptionAccess(
+            `${sub.ssoOrgId}:${sub.wabaId}`,
+          );
+        }
       } catch (err) {
         // One unreachable subscription must not stop the rest of the sweep.
         this.logger.error(

@@ -158,17 +158,17 @@ describe('WabaPhoneNumberService', () => {
   describe('registerPhoneNumber', () => {
     it('throws NotFoundException when the WABA is not owned by the user', async () => {
       mockPrisma.waba.findFirst.mockResolvedValue(null);
-      await expect(service.registerPhoneNumber(1, 'w1', 'p1', '123456')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.registerPhoneNumber(1, 'org_1', 'w1', 'p1', '123456'),
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('throws NotFoundException when the phone is not on the WABA', async () => {
       mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'w1' });
       mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue(null);
-      await expect(service.registerPhoneNumber(1, 'w1', 'p1', '123456')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.registerPhoneNumber(1, 'org_1', 'w1', 'p1', '123456'),
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('posts the PIN to Meta then re-syncs and returns the updated number', async () => {
@@ -182,7 +182,13 @@ describe('WabaPhoneNumberService', () => {
       });
       mockPrisma.wabaPhoneNumber.upsert.mockImplementation(({ create }) => create);
 
-      const result = await service.registerPhoneNumber(1, 'w1', 'p1', '123456');
+      const result = await service.registerPhoneNumber(
+        1,
+        'org_1',
+        'w1',
+        'p1',
+        '123456',
+      );
 
       const [url, payload] = (mockedAxios.post as jest.Mock).mock.calls[0];
       expect(url).toContain('/p1/register');
@@ -201,9 +207,9 @@ describe('WabaPhoneNumberService', () => {
       });
       mockedAxios.get = jest.fn();
 
-      await expect(service.registerPhoneNumber(1, 'w1', 'p1', '000000')).rejects.toThrow(
-        'Invalid PIN',
-      );
+      await expect(
+        service.registerPhoneNumber(1, 'org_1', 'w1', 'p1', '000000'),
+      ).rejects.toThrow('Invalid PIN');
       expect(mockedAxios.get).not.toHaveBeenCalled();
     });
   });

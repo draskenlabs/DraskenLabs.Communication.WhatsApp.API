@@ -137,19 +137,22 @@ describe('BillingService', () => {
     it('answers from the cache without touching the database', async () => {
       mockRedis.getSubscriptionAccess.mockResolvedValue(true);
 
-      await expect(service.hasAccess('waba_1')).resolves.toBe(true);
+      await expect(service.hasAccess('org_1', 'waba_1')).resolves.toBe(true);
       expect(mockPrisma.subscription.findUnique).not.toHaveBeenCalled();
     });
 
-    it('reads through and caches on a miss, keyed by account', async () => {
+    it('reads through and caches on a miss, keyed by organisation and account', async () => {
       mockRedis.getSubscriptionAccess.mockResolvedValue(null);
       mockPrisma.subscription.findUnique.mockResolvedValue(row());
 
-      await expect(service.hasAccess('waba_1')).resolves.toBe(true);
+      await expect(service.hasAccess('org_1', 'waba_1')).resolves.toBe(true);
       expect(mockPrisma.subscription.findUnique).toHaveBeenCalledWith({
-        where: { wabaId: 'waba_1' },
+        where: { wabaId_ssoOrgId: { wabaId: 'waba_1', ssoOrgId: 'org_1' } },
       });
-      expect(mockRedis.setSubscriptionAccess).toHaveBeenCalledWith('waba_1', true);
+      expect(mockRedis.setSubscriptionAccess).toHaveBeenCalledWith(
+        'org_1:waba_1',
+        true,
+      );
     });
 
     it('refuses an account whose neighbour is the one that is paid for', async () => {
@@ -157,7 +160,24 @@ describe('BillingService', () => {
       mockRedis.getSubscriptionAccess.mockResolvedValue(null);
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
 
-      await expect(service.hasAccess('waba_2')).resolves.toBe(false);
+      await expect(service.hasAccess('org_1', 'waba_2')).resolves.toBe(false);
+    });
+
+    it('refuses an organisation riding on another organisation`s payment', async () => {
+      // The same account connected twice is two subscriptions. The lookup is
+      // the composite key, so org_2 asking about a WABA org_1 pays for finds
+      // nothing — and its own cache entry is the one that gets written.
+      mockRedis.getSubscriptionAccess.mockResolvedValue(null);
+      mockPrisma.subscription.findUnique.mockImplementation(({ where }: any) =>
+        where.wabaId_ssoOrgId.ssoOrgId === 'org_1' ? row() : null,
+      );
+
+      await expect(service.hasAccess('org_1', 'waba_1')).resolves.toBe(true);
+      await expect(service.hasAccess('org_2', 'waba_1')).resolves.toBe(false);
+      expect(mockRedis.setSubscriptionAccess).toHaveBeenCalledWith(
+        'org_2:waba_1',
+        false,
+      );
     });
   });
 
@@ -165,20 +185,26 @@ describe('BillingService', () => {
     it('passes when the account is paid for', async () => {
       mockRedis.getSubscriptionAccess.mockResolvedValue(true);
 
-      await expect(service.requireAccess('waba_1')).resolves.toBeUndefined();
+      await expect(
+        service.requireAccess('org_1', 'waba_1'),
+      ).resolves.toBeUndefined();
     });
 
     it('answers 402 when it is not', async () => {
       mockRedis.getSubscriptionAccess.mockResolvedValue(false);
 
-      await expect(service.requireAccess('waba_1')).rejects.toMatchObject({ status: 402 });
+      await expect(
+        service.requireAccess('org_1', 'waba_1'),
+      ).rejects.toMatchObject({ status: 402 });
     });
 
     it('lets everything through where no payment provider is configured', async () => {
       // Development and self-hosting must not need one.
       mockRazorpay.isConfigured.mockReturnValue(false);
 
-      await expect(service.requireAccess('waba_1')).resolves.toBeUndefined();
+      await expect(
+        service.requireAccess('org_1', 'waba_1'),
+      ).resolves.toBeUndefined();
       expect(mockRedis.getSubscriptionAccess).not.toHaveBeenCalled();
     });
   });
@@ -222,7 +248,7 @@ describe('BillingService', () => {
           }),
         }),
       );
-      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('waba_1');
+      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('org_1:waba_1');
     });
 
     it('names the customer from the user row, not the request context', async () => {
@@ -359,7 +385,7 @@ describe('BillingService', () => {
           data: expect.objectContaining({ status: 'active', currentEnd: new Date(end * 1000) }),
         }),
       );
-      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('waba_1');
+      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('org_1:waba_1');
       expect(state.active).toBe(true);
     });
 
@@ -417,7 +443,7 @@ describe('BillingService', () => {
         'Games',
         current.currentEnd,
       );
-      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('waba_1');
+      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('org_1:waba_1');
     });
 
     it('stops immediately when nothing has been paid for yet', async () => {
@@ -460,7 +486,7 @@ describe('BillingService', () => {
           data: expect.objectContaining({ status: 'active', currentEnd: new Date(end * 1000) }),
         }),
       );
-      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('waba_1');
+      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('org_1:waba_1');
       expect(mockMail.subscriptionCharged).toHaveBeenCalled();
     });
 
@@ -593,7 +619,7 @@ describe('BillingService', () => {
           data: expect.objectContaining({ currentEnd: new Date(end * 1000) }),
         }),
       );
-      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('waba_1');
+      expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith('org_1:waba_1');
     });
 
     it('carries on after one subscription fails to fetch', async () => {
