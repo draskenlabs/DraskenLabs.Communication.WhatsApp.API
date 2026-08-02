@@ -97,7 +97,9 @@ export class WebhooksService {
     opts: { page?: number; limit?: number } = {},
   ): Promise<BaseResponse<WebhookEventDto[]>> {
     // Authorise: the WABA must belong to the caller's organisation.
-    const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
+    });
     if (!waba) throw new ForbiddenException('WABA does not belong to your organisation');
 
     const page = Math.max(1, opts.page ?? 1);

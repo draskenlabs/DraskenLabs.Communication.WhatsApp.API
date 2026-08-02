@@ -136,7 +136,7 @@ describe('TemplatesService', () => {
       mockPrisma.messageTemplate.findMany.mockResolvedValue([baseTemplate]);
       await service.findAll('sso_org_1', { wabaId: 'w1' });
       expect(mockPrisma.waba.findFirst).toHaveBeenCalledWith({
-        where: { wabaId: 'w1', ssoOrgId: 'sso_org_1' },
+        where: { wabaId: 'w1', WabaOrganisation: { some: { ssoOrgId: 'sso_org_1' } } },
       });
       expect(mockPrisma.messageTemplate.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { wabaId: { in: ['w1'] } } }),
@@ -437,7 +437,7 @@ describe('TemplatesService', () => {
       const result = await service.statusCounts('sso_org_1', 'w1');
 
       expect(mockPrisma.waba.findFirst).toHaveBeenCalledWith({
-        where: { wabaId: 'w1', ssoOrgId: 'sso_org_1' },
+        where: { wabaId: 'w1', WabaOrganisation: { some: { ssoOrgId: 'sso_org_1' } } },
       });
       // No templates yet is a zero, not a missing block the console has to guess at.
       expect(result).toEqual({ total: 0, byStatus: {} });

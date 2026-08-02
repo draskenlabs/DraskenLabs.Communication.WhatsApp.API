@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { WabaPhoneNumberService } from './waba-phone-number.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { BillingService } from 'src/billing/billing.service';
+import { billingServiceDouble } from 'src/billing/billing.test-doubles';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
 import axios from 'axios';
@@ -39,6 +41,7 @@ describe('WabaPhoneNumberService', () => {
         { provide: MailNotifications, useValue: mockMailNotifications },
         WabaPhoneNumberService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: BillingService, useValue: billingServiceDouble() },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: RedisService, useValue: mockRedis },
       ],

@@ -74,9 +74,10 @@
   it, offer eNACH.
 - Nothing dunning-related is ours: retry cadence and pre-debit notices are
   Razorpay's.
-- Gated so far: sending, and template sync/create. Not yet gated: template
-  edit and delete, phone-number registration and sync, and contact operations —
-  each needs the same one-line check at the point it reaches Meta.
+- Gated: sending, template sync/create, template edit/delete (through
+  `resolveWabaContext`) and phone-number registration. Not gated, deliberately:
+  reads of any kind, and contact records, which are the organisation's own data
+  rather than an action on the account.
 - Reconciliation takes 100 subscriptions an hour; that is ample now and will
   need a cursor long before it is not.
 

@@ -80,7 +80,9 @@ export class WabaService {
     ssoOrgId: string,
     userId?: number,
   ): Promise<WabaResponseDto[]> {
-    const wabas = await this.prisma.waba.findMany({ where: { ssoOrgId } });
+    const wabas = await this.prisma.waba.findMany({
+      where: { WabaOrganisation: { some: { ssoOrgId } } },
+    });
     if (wabas.length === 0) return [];
 
     const connections = await this.prisma.userWhatsapp.findMany({
@@ -96,7 +98,9 @@ export class WabaService {
   }
 
   async findByWabaId(ssoOrgId: string, wabaId: string): Promise<Waba> {
-    const waba = await this.prisma.waba.findFirst({ where: { ssoOrgId, wabaId } });
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
+    });
     if (!waba) throw new NotFoundException('WABA not found');
     return waba;
   }
@@ -166,26 +170,26 @@ export class WabaService {
     timezoneId?: string;
     messageTemplateNamespace?: string;
   }): Promise<Waba> {
-    const existing = await this.prisma.waba.findUnique({ where: { wabaId: data.wabaId } });
-    if (existing && existing.userId !== data.userId) {
-      throw new ForbiddenException('WABA belongs to another account');
-    }
-
-    // A WABA row is unique on `wabaId` alone, so connecting one that is
-    // already connected in another organisation would update that row rather
-    // than create one here — the account would appear to reconnect over there
-    // and never arrive here. Refused explicitly until the row can be held per
-    // organisation; silently doing nothing visible is worse than saying so.
-    if (existing && existing.ssoOrgId !== data.ssoOrgId) {
-      throw new ConflictException(
-        'This WhatsApp Business Account is already connected in another of your organisations. ' +
-          'Disconnect it there first, or use that organisation to manage it.',
+    // Ownership is per organisation. Somebody else in *this* organisation
+    // having connected the account is a conflict; another organisation having
+    // it is not — the same business may run two of ours, and Meta has already
+    // proved this user can act for the account.
+    const membership = await this.prisma.wabaOrganisation.findUnique({
+      where: {
+        wabaId_ssoOrgId: { wabaId: data.wabaId, ssoOrgId: data.ssoOrgId },
+      },
+    });
+    if (membership && membership.userId !== data.userId) {
+      throw new ForbiddenException(
+        'This WhatsApp Business Account is connected by someone else in this organisation',
       );
     }
 
-    return this.prisma.waba.upsert({
+    const waba = await this.prisma.waba.upsert({
       where: { wabaId: data.wabaId },
       update: {
+        // Shared metadata: Meta's answer is the same whoever asked, so a
+        // second organisation connecting refreshes it rather than forking it.
         name: data.name,
         currency: data.currency,
         timezoneId: data.timezoneId,
@@ -201,10 +205,27 @@ export class WabaService {
         messageTemplateNamespace: data.messageTemplateNamespace,
       },
     });
+
+    // The membership is what makes the account appear in this organisation.
+    await this.prisma.wabaOrganisation.upsert({
+      where: {
+        wabaId_ssoOrgId: { wabaId: data.wabaId, ssoOrgId: data.ssoOrgId },
+      },
+      create: {
+        wabaId: data.wabaId,
+        ssoOrgId: data.ssoOrgId,
+        userId: data.userId,
+      },
+      update: {},
+    });
+
+    return waba;
   }
 
   async disconnectWaba(userId: number, ssoOrgId: string, wabaId: string): Promise<void> {
-    const waba = await this.prisma.waba.findFirst({ where: { wabaId, ssoOrgId } });
+    const waba = await this.prisma.waba.findFirst({
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
+    });
     if (!waba) throw new NotFoundException('WABA not found in your organisation');
 
     const userWhatsapp = await this.prisma.userWhatsapp.findUnique({
@@ -223,10 +244,15 @@ export class WabaService {
     // the delete there is nobody left to look up.
     void this.mail.wabaDisconnected(wabaId, waba.name);
 
-    // Remove the connection (access token) — Waba and WabaPhoneNumber records are preserved for audit
-    await this.prisma.userWhatsapp.delete({
-      where: { userId_wabaId: { userId, wabaId } },
-    });
+    // Remove the connection (access token) — Waba and WabaPhoneNumber records
+    // are preserved for audit — and this organisation's membership with it, so
+    // the account leaves this organisation and stays in any other that has it.
+    await this.prisma.$transaction([
+      this.prisma.userWhatsapp.delete({
+        where: { userId_wabaId: { userId, wabaId } },
+      }),
+      this.prisma.wabaOrganisation.deleteMany({ where: { wabaId, ssoOrgId } }),
+    ]);
   }
 
   /**
@@ -248,7 +274,7 @@ export class WabaService {
     wabaId: string,
   ): Promise<WabaDeletionCounts> {
     const waba = await this.prisma.waba.findFirst({
-      where: { wabaId, ssoOrgId },
+      where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
     });
     if (!waba) {
       throw new NotFoundException('WABA not found in your organisation');
@@ -256,6 +282,19 @@ export class WabaService {
     if (waba.userId !== userId) {
       throw new ForbiddenException(
         'Only the person who connected this account can delete it',
+      );
+    }
+
+    // Phone numbers, templates and inbound messages belong to the account, not
+    // to one organisation's copy of it. Erasing them while another
+    // organisation still has the account connected would delete their data
+    // too, so this refuses; disconnecting leaves that organisation alone.
+    const organisations = await this.prisma.wabaOrganisation.count({
+      where: { wabaId },
+    });
+    if (organisations > 1) {
+      throw new ConflictException(
+        'This account is still connected in another organisation. Disconnect it there first, or disconnect it here instead of deleting it.',
       );
     }
 

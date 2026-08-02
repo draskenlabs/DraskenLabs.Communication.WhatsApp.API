@@ -504,7 +504,10 @@ export class AnalyticsService {
     wabaId?: string,
   ): Promise<string[]> {
     const wabas = await this.prisma.waba.findMany({
-      where: { ssoOrgId, ...(wabaId && { wabaId }) },
+      where: {
+        WabaOrganisation: { some: { ssoOrgId } },
+        ...(wabaId && { wabaId }),
+      },
       select: { wabaId: true },
     });
     return wabas.map((w) => w.wabaId);
