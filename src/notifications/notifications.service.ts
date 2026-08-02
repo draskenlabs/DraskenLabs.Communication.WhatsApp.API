@@ -10,20 +10,15 @@ import {
 } from './dto/notification.dto';
 
 /** The notifications a user can switch off, matching the preference columns. */
-export type NotificationKind =
-  | 'inboundMessage'
-  | 'templateStatus'
-  | 'messageFailed';
+export type NotificationKind = 'inboundMessage' | 'templateStatus';
 
 const DEFAULT_PREFERENCES = {
   inboundMessage: true,
   templateStatus: true,
-  messageFailed: true,
-  // Email defaults match the schema: nothing that would mail on every reply,
-  // and no marketing until it is asked for.
-  emailInboundMessage: false,
+  // Email defaults match the schema: the daily summary on, because it is how a
+  // failed send reaches anyone, and no marketing until it is asked for.
   emailTemplateStatus: true,
-  emailMessageFailed: true,
+  emailDailySummary: true,
   emailWeeklySummary: false,
   emailProductNews: false,
 };
@@ -84,13 +79,10 @@ export class NotificationsService {
     return {
       inboundMessage: row?.inboundMessage ?? DEFAULT_PREFERENCES.inboundMessage,
       templateStatus: row?.templateStatus ?? DEFAULT_PREFERENCES.templateStatus,
-      messageFailed: row?.messageFailed ?? DEFAULT_PREFERENCES.messageFailed,
-      emailInboundMessage:
-        row?.emailInboundMessage ?? DEFAULT_PREFERENCES.emailInboundMessage,
       emailTemplateStatus:
         row?.emailTemplateStatus ?? DEFAULT_PREFERENCES.emailTemplateStatus,
-      emailMessageFailed:
-        row?.emailMessageFailed ?? DEFAULT_PREFERENCES.emailMessageFailed,
+      emailDailySummary:
+        row?.emailDailySummary ?? DEFAULT_PREFERENCES.emailDailySummary,
       emailWeeklySummary:
         row?.emailWeeklySummary ?? DEFAULT_PREFERENCES.emailWeeklySummary,
       emailProductNews:

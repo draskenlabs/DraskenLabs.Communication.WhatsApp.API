@@ -24,5 +24,13 @@ describe('module graph', () => {
     // purpose — nothing was ever connected, so there is nothing to disconnect.
     const mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
     expect(mod).toBeDefined();
+
+    // The env above is everything a deployment must supply. Neither the docs
+    // nor the dev-only connect endpoint is in it, and both have to stay off
+    // for a deployment that never mentions them.
+    const { ConfigService } = await import('@nestjs/config');
+    const config = mod.get(ConfigService);
+    expect(String(config.get('SWAGGER_ENABLED')).toLowerCase()).not.toBe('true');
+    expect(String(config.get('ALLOW_MANUAL_CONNECT')).toLowerCase()).not.toBe('true');
   }, 60000);
 });

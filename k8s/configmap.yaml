@@ -9,6 +9,9 @@ data:
   # Non-secret runtime config. Secrets live in the Secret (see secret.example.yaml).
   PORT: "3000"
   NODE_ENV: "production"
+  # API docs. Off here on purpose — this instance is public, and the docs
+  # describe every endpoint and payload to anyone who finds the URL.
+  SWAGGER_ENABLED: "false"
   # Redis connection string lives in the Secret (REDIS_URL) since it may carry
   # credentials. For a passwordless in-cluster Redis you may instead set it here:
   #   REDIS_URL: "redis://redis:6379"

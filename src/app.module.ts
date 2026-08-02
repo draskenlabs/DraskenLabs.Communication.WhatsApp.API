@@ -40,6 +40,9 @@ import * as Joi from 'joi';
         META_REDIRECT_URI: Joi.string().required(),
         WEBHOOK_VERIFY_TOKEN: Joi.string().required(),
         ALLOW_MANUAL_CONNECT: Joi.boolean().truthy('true').falsy('false').default(false),
+        // Off by default, so a deployment publishes the API docs only when it
+        // says to rather than because nobody remembered to turn them off.
+        SWAGGER_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
         SSO_CLIENT_ID: Joi.string().required(),
         SSO_CLIENT_SECRET: Joi.string().required(),
         SSO_API_URL: Joi.string().required(),

@@ -63,25 +63,18 @@ export class UpdateNotificationPreferencesDto {
   @IsBoolean()
   templateStatus?: boolean;
 
-  @ApiPropertyOptional({ description: 'An outbound message failed to deliver' })
-  @IsOptional()
-  @IsBoolean()
-  messageFailed?: boolean;
-
-  @ApiPropertyOptional({ description: 'Email: a summary of new customer messages' })
-  @IsOptional()
-  @IsBoolean()
-  emailInboundMessage?: boolean;
-
   @ApiPropertyOptional({ description: 'Email: template decisions and account changes' })
   @IsOptional()
   @IsBoolean()
   emailTemplateStatus?: boolean;
 
-  @ApiPropertyOptional({ description: 'Email: a summary of failed sends' })
+  @ApiPropertyOptional({
+    description:
+      'Email: yesterday\'s activity, including anything that failed to deliver',
+  })
   @IsOptional()
   @IsBoolean()
-  emailMessageFailed?: boolean;
+  emailDailySummary?: boolean;
 
   @ApiPropertyOptional({ description: 'Email: the weekly activity summary' })
   @IsOptional()
@@ -101,17 +94,14 @@ export class NotificationPreferencesDto {
   @ApiProperty()
   templateStatus: boolean;
 
-  @ApiProperty()
-  messageFailed: boolean;
-
-  @ApiProperty({ description: 'Email: a summary of new customer messages' })
-  emailInboundMessage: boolean;
-
   @ApiProperty({ description: 'Email: template decisions and account changes' })
   emailTemplateStatus: boolean;
 
-  @ApiProperty({ description: 'Email: a summary of failed sends' })
-  emailMessageFailed: boolean;
+  @ApiProperty({
+    description:
+      'Email: yesterday\'s activity, including anything that failed to deliver',
+  })
+  emailDailySummary: boolean;
 
   @ApiProperty({ description: 'Email: the weekly activity summary' })
   emailWeeklySummary: boolean;
@@ -153,7 +143,7 @@ export class NotificationDto {
   id: number;
 
   @ApiProperty({
-    enum: ['inboundMessage', 'templateStatus', 'messageFailed', 'system'],
+    enum: ['inboundMessage', 'templateStatus', 'system'],
     example: 'inboundMessage',
     description: 'What happened, matching the preference switches',
   })

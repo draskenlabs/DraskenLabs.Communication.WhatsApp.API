@@ -5,7 +5,8 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { BaseResponse } from './common/responses/base-response';
 import { FieldErrorResponse } from './common/responses/field-error.util';
-import { ValidationPipe } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as cookieParser from 'cookie-parser';
 import { json } from 'express';
 
@@ -52,6 +53,39 @@ async function bootstrap() {
   app.useGlobalFilters(new GlobalExceptionFilter());
   app.useGlobalInterceptors(new BaseResponseInterceptor());
 
+  // Swagger describes every endpoint, its payloads and its auth scheme — a map
+  // of the API for anyone who finds the URL. It is off unless a deployment asks
+  // for it, so the public one publishes nothing it did not mean to.
+  if (isSwaggerEnabled(app.get(ConfigService))) {
+    mountSwagger(app);
+  }
+
+  const shutdown = async (signal: NodeJS.Signals) => {
+    await app.close();
+    process.exit(signal === 'SIGINT' ? 130 : 0);
+  };
+
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGQUIT'] as const) {
+    process.once(signal, () => {
+      void shutdown(signal);
+    });
+  }
+
+  await app.listen(process.env.PORT ?? 3000);
+}
+
+/**
+ * Whether this deployment serves the API docs.
+ *
+ * Read as a string rather than a boolean: the same value arrives as `'true'`
+ * from the environment and as `true` once Joi has coerced it, and only one of
+ * those is a boolean.
+ */
+function isSwaggerEnabled(config: ConfigService): boolean {
+  return String(config.get('SWAGGER_ENABLED')).toLowerCase() === 'true';
+}
+
+function mountSwagger(app: INestApplication): void {
   const swaggerConfig = new DocumentBuilder()
     .setTitle('DraskenLabs WhatsApp Communication API')
     .setDescription(
@@ -81,18 +115,5 @@ async function bootstrap() {
     .getHttpAdapter()
     .getInstance()
     .get('/swagger/json', (_req, res) => res.json(swaggerDocument));
-
-  const shutdown = async (signal: NodeJS.Signals) => {
-    await app.close();
-    process.exit(signal === 'SIGINT' ? 130 : 0);
-  };
-
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGQUIT'] as const) {
-    process.once(signal, () => {
-      void shutdown(signal);
-    });
-  }
-
-  await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();

@@ -22,20 +22,109 @@ export class MailScheduler {
     private readonly prisma: PrismaService,
   ) {}
 
-  /** N5/N6 — batched failed sends and inbound replies. */
-  @Cron(CronExpression.EVERY_HOUR, { name: 'mail-digests' })
-  async sendDigests(): Promise<void> {
+  /**
+   * N5/N6 — yesterday, in one email.
+   *
+   * This is the only thing that reports a failed send. Nothing is mailed or
+   * pushed as messages fail any more: a bad campaign can fail hundreds in a
+   * row, and per-failure alerts made that a stream of interruptions about
+   * something nobody can act on one message at a time. The same email carries
+   * what was sent and what came back, so a quiet day is one email and a bad day
+   * is still one email.
+   */
+  @Cron('0 8 * * *', { name: 'mail-daily-summary' })
+  async sendDailySummary(): Promise<void> {
     if (!this.mail.enabled) return;
+
     try {
-      const { failed, inbound } = await this.mail.flushDigests();
-      if (failed || inbound) {
-        this.logger.log(
-          `Digests sent — failed sends: ${failed}, inbound: ${inbound}`,
-        );
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const wanted = await this.prisma.notificationPreference.findMany({
+        where: { emailDailySummary: true },
+        select: { userId: true },
+      });
+      // A user with no preference row has the schema's defaults, and the daily
+      // summary is one of them — so they are candidates too, or the people who
+      // never touched their settings would silently stop hearing about
+      // failures.
+      const configured = new Set(wanted.map((w) => w.userId));
+      const unconfigured = await this.prisma.user.findMany({
+        where: { email: { not: null }, NotificationPreference: { is: null } },
+        select: { id: true },
+      });
+      const userIds = [
+        ...configured,
+        ...unconfigured.map((u) => u.id).filter((id) => !configured.has(id)),
+      ];
+      if (userIds.length === 0) return;
+
+      const recipients = await this.mail.recipientsByIds(userIds);
+
+      for (const recipient of recipients) {
+        const activity = await this.activitySince(recipient.userId, since);
+
+        // A day where nothing happened is not worth an email.
+        if (
+          activity.sent === 0 &&
+          activity.failed === 0 &&
+          activity.inbound === 0
+        ) {
+          continue;
+        }
+
+        await this.mail.sendTo(recipient, {
+          kind: 'emailDailySummary',
+          template: 'summary.daily',
+          subject: activity.failed
+            ? `Yesterday on WhatsApp — ${activity.failed} failed to deliver`
+            : 'Yesterday on WhatsApp',
+          heading: 'Yesterday on your account',
+          intro: activity.failed
+            ? 'Here is yesterday, including the messages WhatsApp could not deliver.'
+            : 'Here is what happened on your account yesterday.',
+          facts: [
+            ['Messages sent', String(activity.sent)],
+            ['Failed to deliver', String(activity.failed)],
+            ['Replies received', String(activity.inbound)],
+          ],
+          paragraphs: activity.failed
+            ? [
+                'Open the console to see which messages failed and why. A run of failures usually points at one cause — an expired template, a number that has opted out, or a messaging limit.',
+              ]
+            : undefined,
+          action: { label: 'Open the console', path: '/dashboard' },
+          footnote:
+            'You are receiving this because the daily summary is on in your notification settings.',
+        });
       }
     } catch (err: unknown) {
-      this.logger.error(`Digest flush failed: ${this.reason(err)}`);
+      this.logger.error(`Daily summary failed: ${this.reason(err)}`);
     }
+  }
+
+  /** What one person's account did in a window. */
+  private async activitySince(
+    userId: number,
+    since: Date,
+  ): Promise<{ sent: number; failed: number; inbound: number }> {
+    const [sent, failed, wabas] = await Promise.all([
+      this.prisma.message.count({ where: { userId, createdAt: { gte: since } } }),
+      this.prisma.message.count({
+        where: { userId, status: 'failed', createdAt: { gte: since } },
+      }),
+      this.prisma.userWhatsapp.findMany({
+        where: { userId },
+        select: { wabaId: true },
+      }),
+    ]);
+
+    const wabaIds = wabas.map((w) => w.wabaId);
+    const inbound = wabaIds.length
+      ? await this.prisma.inboundMessage.count({
+          where: { wabaId: { in: wabaIds }, createdAt: { gte: since } },
+        })
+      : 0;
+
+    return { sent, failed, inbound };
   }
 
   /** N7 — Monday morning summary of the week just gone. */

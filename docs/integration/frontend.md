@@ -28,8 +28,8 @@ Complete reference for integrating a frontend application with the DraskenLabs W
 
 ```
 Base URL:  https://api.drasken.dev   (or http://localhost:3000 locally)
-Swagger:   <base>/swagger/docs
-JSON spec: <base>/swagger/json
+Swagger:   <base>/swagger/docs   (only where SWAGGER_ENABLED=true)
+JSON spec: <base>/swagger/json   (only where SWAGGER_ENABLED=true)
 ```
 
 All requests that send a body must include:
