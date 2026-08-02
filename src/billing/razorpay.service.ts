@@ -133,6 +133,12 @@ export class RazorpayService {
     throw new BadGatewayException(description ?? 'Payment provider request failed');
   }
 
+  /** Razorpay's wording when an email or contact is already on a customer. */
+  private isDuplicateCustomer(err: unknown): boolean {
+    const error = err as AxiosError<{ error?: { description?: string } }>;
+    return /already exists/i.test(error.response?.data?.error?.description ?? '');
+  }
+
   async createCustomer(input: {
     name?: string;
     email?: string;
@@ -142,12 +148,84 @@ export class RazorpayService {
       const { data } = await this.api().post<{ id: string }>('/customers', {
         ...input,
         // A repeat registration after a cancellation would otherwise be
-        // rejected for reusing an email.
-        fail_existing: 0,
+        // rejected for reusing an email. Their API documents this as a string
+        // and does not honour the integer form.
+        fail_existing: '0',
       });
       return data;
     } catch (err) {
+      // Razorpay dedupes customers by email across the whole merchant account,
+      // so this collides whenever we ask for a customer that exists but whose
+      // id we never stored: the same person subscribing under a second
+      // organisation, or an earlier attempt that created the customer and then
+      // failed before the subscription row was written. `fail_existing` is
+      // meant to hand back the existing customer instead of erroring and
+      // cannot be relied on to, so the id is recovered by hand — the
+      // alternative is somebody permanently unable to pay us.
+      const existing =
+        this.isDuplicateCustomer(err) && input.email
+          ? await this.findCustomerByEmail(input.email)
+          : null;
+
+      if (existing) {
+        this.logger.log(
+          `Razorpay customer for that email already exists — reusing ${existing.id}`,
+        );
+        // It may predate having a name to give it, exactly as for a customer
+        // reused from our own records. Only the name: the email is what it was
+        // matched on, and re-sending it is what their edit call rejects.
+        await this.updateCustomer(existing.id, { name: input.name });
+        return existing;
+      }
+
       this.fail('Razorpay customer creation failed', err);
+    }
+  }
+
+  /**
+   * The customer holding an email address, if the merchant account has one.
+   *
+   * Razorpay has no lookup by email — `GET /customers` takes only `count` and
+   * `skip` — so this pages through them. Newest first, so the duplicate that
+   * provoked the search is normally on the first page; the cap stops a large
+   * merchant account turning one failed registration into a hundred requests.
+   * Only ever reached on the duplicate path, never on a first-time customer.
+   */
+  async findCustomerByEmail(email: string): Promise<{ id: string } | null> {
+    const wanted = email.trim().toLowerCase();
+    if (!wanted || !this.client) return null;
+
+    const pageSize = 100;
+    const maxPages = 10;
+
+    try {
+      for (let page = 0; page < maxPages; page++) {
+        const { data } = await this.api().get<{
+          items?: { id: string; email?: string | null }[];
+        }>('/customers', { params: { count: pageSize, skip: page * pageSize } });
+
+        const items = data.items ?? [];
+        const hit = items.find(
+          (customer) => customer.email?.trim().toLowerCase() === wanted,
+        );
+        if (hit) return { id: hit.id };
+        // A short page is the last one.
+        if (items.length < pageSize) return null;
+      }
+
+      this.logger.warn(
+        `Gave up looking for an existing Razorpay customer after ${maxPages * pageSize} records`,
+      );
+      return null;
+    } catch (err) {
+      // The caller reports the original creation failure; this is only ever a
+      // recovery attempt, so its own failure must not replace that error.
+      const error = err as AxiosError<{ error?: { description?: string } }>;
+      this.logger.warn(
+        'Could not search Razorpay customers: ' +
+          (error.response?.data?.error?.description ?? error.message),
+      );
+      return null;
     }
   }
 

@@ -272,7 +272,10 @@ export class BillingService {
     const profile = await this.profileFor(userId);
 
     // One Razorpay customer per organisation, so a customer paying for three
-    // accounts still has one payment history rather than three.
+    // accounts still has one payment history rather than three. Razorpay
+    // dedupes by email across the merchant account, so one person running two
+    // organisations gets one customer for both whatever we ask for; the
+    // subscription's notes are what tie a payment back to an organisation.
     const reused = existing?.razorpayCustomerId ?? (await this.orgCustomerId(ssoOrgId));
 
     if (reused) {
