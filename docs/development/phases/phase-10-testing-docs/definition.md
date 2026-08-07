@@ -1,4 +1,4 @@
-# Phase 6 – Testing & Documentation: Definition
+# Phase 10 – Testing & Documentation: Definition
 
 ## Purpose
 
@@ -34,8 +34,8 @@ Ensures the reliability and maintainability of the WhatsApp API through comprehe
 
 | Doc Type | Format | Location |
 |----------|--------|----------|
-| API Reference | Swagger/OpenAPI | `/swagger/docs` |
-| OpenAPI JSON | JSON | `/swagger/json` |
+| API Reference | Swagger/OpenAPI | `/swagger/docs` — mounted only when `SWAGGER_ENABLED=true` |
+| OpenAPI JSON | JSON | `/swagger/json` — same gate |
 | Development phases | Markdown tables | `docs/development/phases/` |
 | Module docs | Markdown tables | `docs/development/modules/` |
 | Environment setup | Markdown | `README.md` |

@@ -93,7 +93,10 @@ function mountSwagger(app: INestApplication): void {
       '**Authentication**\n\n' +
       'Most endpoints use the internal JWT issued by `POST /auth/callback` in the `Authorization: Bearer <token>` header.\n\n' +
       '**Organisation endpoints** (`/organisation/*`) are a thin proxy to the Drasken SSO API. ' +
-      'Pass the **SSO access token** (received from the SSO during login) in the `Authorization: Bearer <sso_token>` header — not the internal JWT.',
+      'They take the same internal JWT as everything else: the API reads the session it carries and ' +
+      'attaches the SSO access token server-side, so the browser never holds one.\n\n' +
+      '**Messaging endpoints** (`/messages/*`) accept either the internal JWT or an API key pair ' +
+      '(`x-access-key` / `x-secret-key`), and require a paid subscription for the account being used.',
     )
     .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT', description: 'Internal JWT issued by POST /auth/callback' }, 'jwt')
     .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT', description: 'SSO access token from Drasken SSO (used for /organisation endpoints)' }, 'sso-token')
@@ -104,8 +107,13 @@ function mountSwagger(app: INestApplication): void {
     .addTag('Templates', 'Message template management via Meta Graph API')
     .addTag('Contacts', 'Contact and opt-out management')
     .addTag('API Keys', 'Programmatic access key management')
-    .addTag('Organisations', 'SSO organisation and member management — pass the SSO access token, not the internal JWT')
+    .addTag('Organisations', 'SSO organisation and member management, proxied behind the internal JWT')
     .addTag('Webhooks', 'Meta webhook verification and event ingestion')
+    .addTag('Analytics', 'Delivery, template, contact and phone-number analytics, plus CSV export')
+    .addTag('Search', 'One query across contacts, messages, templates, numbers and accounts')
+    .addTag('Billing', 'Razorpay subscriptions per organisation per account')
+    .addTag('Notifications', 'Push devices, the notification feed and per-kind preferences')
+    .addTag('Mail', 'Support mailboxes, unsubscribe and delivery feedback')
     .setVersion('1.0.0')
     .build();
 
