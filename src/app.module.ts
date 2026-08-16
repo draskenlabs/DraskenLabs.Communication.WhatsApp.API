@@ -22,6 +22,7 @@ import { MailModule } from './mail/mail.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { SearchModule } from './search/search.module';
 import { BillingModule } from './billing/billing.module';
+import { PlansModule } from './plans/plans.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import * as Joi from 'joi';
 
@@ -110,6 +111,7 @@ import * as Joi from 'joi';
     AnalyticsModule,
     SearchModule,
     BillingModule,
+    PlansModule,
   ],
   controllers: [AppController],
   providers: [AppService],

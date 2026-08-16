@@ -139,6 +139,88 @@ model UserApiKey {
   @@index([wabaId])
 }
 
+/// A published plan: what it costs, and what it allows.
+///
+/// The price list is data, not code. The console reads this table to render
+/// the pricing page, and the limits are columns rather than a JSON blob
+/// because they are the thing enforcement asks about — "how many numbers may
+/// this account have" is a query, not a document to parse.
+///
+/// Amounts are in paise, like everything else that touches money here.
+model Plan {
+  id Int @id @default(autoincrement())
+  /// Stable identifier used in seeds, analytics and URLs: starter, growth,
+  /// business, agency. The primary key is an integer for the foreign keys;
+  /// this is what a human names a plan by.
+  code String @unique
+  name String
+  /// Who the plan is for, in one line.
+  audience String
+
+  /// Per WABA per month. Null where pricing is quoted rather than published.
+  price      Int?
+  /// Shown instead of an amount when `price` is null, e.g. "Custom".
+  priceLabel String?
+  currency   String  @default("INR")
+  /// What the price is per, e.g. "/WABA/month".
+  unit       String
+  /// Every WABA includes one number; each additional one costs this a month.
+  additionalNumberPrice Int?
+
+  /// Limits, one column each. Null means the plan puts no number on it —
+  /// unlimited on a published plan, negotiated on Agency.
+  maxWabas               Int?
+  maxPhoneNumbersPerWaba Int?
+  maxTeamMembers         Int?
+  maxWebhookEndpoints    Int?
+  /// How long message and webhook-event history is kept, in days.
+  historyDays            Int?
+
+  /// The Razorpay plan a subscription on this tier is created against. Never
+  /// leaves the API: the console is told a price, not a provider's id.
+  razorpayPlanId String? @unique
+
+  /// The plan this one builds on, so a card can say "Everything in Growth,
+  /// plus:" without repeating the tier below it.
+  inheritsPlanId Int?
+  /// The one plan the pricing page highlights.
+  recommended    Boolean @default(false)
+  /// subscribe | contact — Agency is quoted, so it gets an email, not a
+  /// checkout.
+  ctaKind        String  @default("subscribe")
+  ctaLabel       String
+  sortOrder      Int     @default(0)
+  /// A withdrawn plan stays here for the subscriptions still on it; it simply
+  /// stops being offered.
+  active         Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inherits      Plan?          @relation("PlanInheritance", fields: [inheritsPlanId], references: [id], onDelete: Restrict)
+  inheritedBy   Plan[]         @relation("PlanInheritance")
+  features      PlanFeature[]
+  subscriptions Subscription[]
+
+  @@index([active, sortOrder])
+}
+
+/// One bullet on a plan card, in the order it is published.
+///
+/// Its own table rather than a string array: the list is what the pricing page
+/// renders line by line, and a row per line is what lets one be reordered or
+/// withdrawn without rewriting the plan.
+model PlanFeature {
+  id        Int    @id @default(autoincrement())
+  planId    Int
+  label     String
+  sortOrder Int    @default(0)
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId, sortOrder])
+}
+
 /// Razorpay's own subscription states, kept verbatim so a support question can
 /// be answered by comparing this row against their dashboard.
 enum SubscriptionStatus {
@@ -176,6 +258,12 @@ model Subscription {
   /// The Razorpay plan charged, recorded per subscription so a later price
   /// change cannot rewrite what an existing customer agreed to.
   planId                 String
+  /// Which published plan this is, when it was sold from the price list.
+  ///
+  /// Null for subscriptions created before plans were a table — those are on
+  /// the single configured Razorpay plan and are read through `planId` above,
+  /// which stays the record of what is actually charged.
+  planRefId              Int?
 
   status SubscriptionStatus @default(created)
 
@@ -200,9 +288,11 @@ model Subscription {
   updatedAt DateTime @updatedAt
 
   waba     Waba?                 @relation(fields: [wabaId], references: [wabaId])
+  plan     Plan?                 @relation(fields: [planRefId], references: [id], onDelete: Restrict)
   payments SubscriptionPayment[]
 
   @@unique([wabaId, ssoOrgId])
+  @@index([planRefId])
   @@index([ssoOrgId])
   @@index([status])
 }
