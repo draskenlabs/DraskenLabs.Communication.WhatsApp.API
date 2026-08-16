@@ -36,9 +36,17 @@ data:
   SES_CONFIGURATION_SET: "whatsapp-console"
   # Absolute console URL, used for links inside emails.
   APP_BASE_URL: "https://wa.draskenapis.com"
-  # Mailboxes the support form delivers to.
+  # The support form delivers to one mailbox, tagged with the topic:
+  # privacy → support+privacy@, security → support+security@, and so on. The
+  # `support` topic is left untagged. One inbox to watch, still filterable on
+  # the To: header.
   SUPPORT_EMAIL: "support@draskenlabs.com"
-  PRIVACY_EMAIL: "privacy@draskenlabs.com"
-  SECURITY_EMAIL: "security@draskenlabs.com"
-  ABUSE_EMAIL: "abuse@draskenlabs.com"
-  LEGAL_EMAIL: "legal@draskenlabs.com"
+  # Set to "false" for a mail provider without +tag subaddressing — every topic
+  # then goes to SUPPORT_EMAIL unchanged.
+  SUPPORT_EMAIL_TAGGING: "true"
+  # Per-topic overrides. Set one to send that topic somewhere else entirely
+  # (a real security@ mailbox, say); unset, the tagged address above is used.
+  # PRIVACY_EMAIL: "privacy@draskenlabs.com"
+  # SECURITY_EMAIL: "security@draskenlabs.com"
+  # ABUSE_EMAIL: "abuse@draskenlabs.com"
+  # LEGAL_EMAIL: "legal@draskenlabs.com"

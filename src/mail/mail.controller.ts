@@ -14,6 +14,7 @@ import { ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { MailService } from './mail.service';
 import { MailNotifications } from './mail.notifications';
+import { resolveSupportMailbox } from './support-mailbox';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   BroadcastDto,
@@ -28,7 +29,7 @@ import {
   ApiWrappedOkResponse,
 } from 'src/common/responses/swagger.decorators';
 
-/** Where each support topic is delivered. */
+/** The per-topic override, when a deployment wants one mailbox to differ. */
 const TOPIC_MAILBOX: Record<string, string> = {
   support: 'SUPPORT_EMAIL',
   privacy: 'PRIVACY_EMAIL',
@@ -74,7 +75,11 @@ export class MailController {
     }
 
     const topic = dto.topic ?? 'support';
-    const mailbox = this.config.get<string>(TOPIC_MAILBOX[topic]);
+    const mailbox = resolveSupportMailbox(topic, {
+      base: this.config.get<string>('SUPPORT_EMAIL'),
+      override: this.config.get<string>(TOPIC_MAILBOX[topic]),
+      tagging: this.config.get<string>('SUPPORT_EMAIL_TAGGING') !== 'false',
+    });
     if (!mailbox) {
       throw new BadRequestException(`No mailbox is configured for "${topic}".`);
     }
@@ -89,6 +94,7 @@ export class MailController {
       fromName: dto.name,
       subject: dto.subject,
       message: dto.message,
+      topic,
       userId,
     });
     await this.notifications.supportAcknowledgement(dto.email, dto.subject);
