@@ -17,6 +17,7 @@ const mockMail = {
   enabled: true,
   recipientsByIds: jest.fn(),
   sendTo: jest.fn().mockResolvedValue(true),
+  retryFailed: jest.fn().mockResolvedValue({ retried: 0, sent: 0, abandoned: 0 }),
 };
 
 const RECIPIENT = { userId: 7, email: 'ada@example.com', firstName: 'Ada' };
@@ -121,5 +122,46 @@ describe('MailScheduler — daily summary', () => {
     );
 
     await expect(scheduler.sendDailySummary()).resolves.toBeUndefined();
+  });
+});
+
+describe('MailScheduler — retry sweep', () => {
+  let scheduler: MailScheduler;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockMail.enabled = true;
+    mockMail.retryFailed.mockResolvedValue({ retried: 0, sent: 0, abandoned: 0 });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        MailScheduler,
+        { provide: MailService, useValue: mockMail },
+        { provide: PrismaService, useValue: mockPrisma },
+      ],
+    }).compile();
+    scheduler = module.get<MailScheduler>(MailScheduler);
+  });
+
+  it('sweeps the failed sends', async () => {
+    mockMail.retryFailed.mockResolvedValue({ retried: 2, sent: 1, abandoned: 1 });
+
+    await scheduler.retryFailedMail();
+
+    expect(mockMail.retryFailed).toHaveBeenCalled();
+  });
+
+  it('does not run when SES is not configured', async () => {
+    mockMail.enabled = false;
+
+    await scheduler.retryFailedMail();
+
+    expect(mockMail.retryFailed).not.toHaveBeenCalled();
+  });
+
+  it('survives a sweep that throws — the next one still runs', async () => {
+    mockMail.retryFailed.mockRejectedValue(new Error('database down'));
+
+    await expect(scheduler.retryFailedMail()).resolves.toBeUndefined();
   });
 });

@@ -9,7 +9,12 @@ const mockPrisma = {
   userWhatsapp: { findMany: jest.fn() },
   notificationPreference: { findUnique: jest.fn(), upsert: jest.fn() },
   mailSuppression: { findUnique: jest.fn(), upsert: jest.fn() },
-  mailLog: { create: jest.fn() },
+  mailLog: {
+    create: jest.fn(),
+    findMany: jest.fn(),
+    update: jest.fn(),
+    updateMany: jest.fn(),
+  },
 };
 
 const mockSes = { enabled: true, send: jest.fn() };
@@ -48,6 +53,9 @@ describe('MailService', () => {
     mockPrisma.mailSuppression.findUnique.mockResolvedValue(null);
     mockPrisma.notificationPreference.findUnique.mockResolvedValue(null);
     mockPrisma.mailLog.create.mockResolvedValue({});
+    mockPrisma.mailLog.findMany.mockResolvedValue([]);
+    mockPrisma.mailLog.update.mockResolvedValue({});
+    mockPrisma.mailLog.updateMany.mockResolvedValue({ count: 1 });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -242,6 +250,184 @@ describe('MailService', () => {
         select: { id: true, email: true, firstName: true },
       });
       expect(recipients).toHaveLength(1);
+    });
+  });
+
+  describe('retryFailed', () => {
+    const failedRow = (over = {}) => ({
+      id: 1,
+      kind: 'template.status',
+      email: 'ada@example.com',
+      attempts: 1,
+      payload: { recipient: RECIPIENT, options: OPTIONS },
+      ...over,
+    });
+
+    it('sends again, and settles the row it delivered', async () => {
+      mockPrisma.mailLog.findMany.mockResolvedValue([failedRow()]);
+
+      await expect(service.retryFailed()).resolves.toEqual({
+        retried: 1,
+        sent: 1,
+        abandoned: 0,
+      });
+
+      expect(mockSes.send).toHaveBeenCalledWith(
+        expect.objectContaining({ to: 'ada@example.com' }),
+      );
+      expect(mockPrisma.mailLog.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        // The content is dropped once it is delivered: a support message is
+        // the sender's, not ours to keep.
+        data: expect.objectContaining({
+          status: 'sent',
+          attempts: 2,
+          retryAt: null,
+          payload: expect.anything(),
+        }),
+      });
+    });
+
+    it('backs off and keeps the row when it fails again', async () => {
+      mockPrisma.mailLog.findMany.mockResolvedValue([failedRow()]);
+      mockSes.send.mockResolvedValue({ ok: false, error: 'throttled' });
+
+      await expect(service.retryFailed()).resolves.toEqual({
+        retried: 1,
+        sent: 0,
+        abandoned: 0,
+      });
+
+      expect(mockPrisma.mailLog.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: expect.objectContaining({
+          attempts: 2,
+          retryAt: expect.any(Date),
+          error: 'throttled',
+        }),
+      });
+    });
+
+    it('gives up after three retries rather than mailing forever', async () => {
+      // Attempt 4 — the first send plus three retries.
+      mockPrisma.mailLog.findMany.mockResolvedValue([
+        failedRow({ attempts: 3 }),
+      ]);
+      mockSes.send.mockResolvedValue({ ok: false, error: 'still down' });
+
+      await expect(service.retryFailed()).resolves.toEqual({
+        retried: 1,
+        sent: 0,
+        abandoned: 1,
+      });
+
+      expect(mockPrisma.mailLog.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: expect.objectContaining({
+          status: 'abandoned',
+          attempts: 4,
+          retryAt: null,
+        }),
+      });
+    });
+
+    it('honours a suppression that landed after the failure', async () => {
+      // A bounce between the first attempt and this one: a queue that ignored
+      // that would keep mailing an address SES told us to stop mailing.
+      mockPrisma.mailLog.findMany.mockResolvedValue([failedRow()]);
+      mockPrisma.mailSuppression.findUnique.mockResolvedValue({
+        email: 'ada@example.com',
+      });
+
+      await expect(service.retryFailed()).resolves.toEqual({
+        retried: 1,
+        sent: 0,
+        abandoned: 1,
+      });
+
+      expect(mockSes.send).not.toHaveBeenCalled();
+      expect(mockPrisma.mailLog.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: expect.objectContaining({ status: 'suppressed', retryAt: null }),
+      });
+    });
+
+    it('settles a row it cannot rebuild instead of asking forever', async () => {
+      mockPrisma.mailLog.findMany.mockResolvedValue([
+        failedRow({ payload: null }),
+      ]);
+
+      await expect(service.retryFailed()).resolves.toEqual({
+        retried: 0,
+        sent: 0,
+        abandoned: 1,
+      });
+
+      expect(mockSes.send).not.toHaveBeenCalled();
+      expect(mockPrisma.mailLog.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: expect.objectContaining({
+          status: 'abandoned',
+          error: 'no payload',
+        }),
+      });
+    });
+
+    it('carries on when one row throws', async () => {
+      mockPrisma.mailLog.findMany.mockResolvedValue([
+        failedRow({ id: 1 }),
+        failedRow({ id: 2 }),
+      ]);
+      mockPrisma.mailLog.update
+        .mockRejectedValueOnce(new Error('row gone'))
+        .mockResolvedValue({});
+
+      // The second row is still attempted and still delivered; only the row
+      // whose write blew up is left for the next sweep.
+      await expect(service.retryFailed()).resolves.toEqual({
+        retried: 2,
+        sent: 1,
+        abandoned: 0,
+      });
+      expect(mockSes.send).toHaveBeenCalledTimes(2);
+    });
+
+    it('asks only for rows whose retry is due', async () => {
+      await service.retryFailed();
+
+      expect(mockPrisma.mailLog.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            status: 'failed',
+            retryAt: { not: null, lte: expect.any(Date) },
+          },
+        }),
+      );
+    });
+
+    it('leaves a row another replica already claimed alone', async () => {
+      // Both pods run this timer. Without the claim the recipient gets the
+      // same message twice.
+      mockPrisma.mailLog.findMany.mockResolvedValue([failedRow()]);
+      mockPrisma.mailLog.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.retryFailed()).resolves.toEqual({
+        retried: 0,
+        sent: 0,
+        abandoned: 0,
+      });
+      expect(mockSes.send).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when SES is not configured', async () => {
+      mockSes.enabled = false;
+
+      await expect(service.retryFailed()).resolves.toEqual({
+        retried: 0,
+        sent: 0,
+        abandoned: 0,
+      });
+      expect(mockPrisma.mailLog.findMany).not.toHaveBeenCalled();
     });
   });
 });

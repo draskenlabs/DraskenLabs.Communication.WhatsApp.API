@@ -544,12 +544,14 @@ export class MailNotifications {
     message: string;
     topic?: string;
     userId?: number;
-  }): Promise<void> {
+  }): Promise<boolean> {
     // The topic is in the subject as well as the `To:` tag: one inbox holds
     // every topic now, and a provider that ignores subaddressing would
     // otherwise leave a vulnerability report looking like a billing question.
     const topic = input.topic?.trim() || 'support';
-    await this.mail.sendRaw(input.to, {
+    // Returned rather than swallowed: the console tells the sender we have
+    // their message, and it must not say that when nothing was delivered.
+    return this.mail.sendRaw(input.to, {
       template: 'support.request',
       subject: `[${this.humanise(topic)}] ${input.subject}`,
       heading: input.subject,

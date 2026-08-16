@@ -23,6 +23,31 @@ export class MailScheduler {
   ) {}
 
   /**
+   * Another go at the sends that failed.
+   *
+   * SES is normally unavailable for minutes, so the sweep runs often and the
+   * backoff carries the waiting: a message that failed is tried again after 5
+   * minutes, then 30, then 2 hours, and given up on after that. Each attempt
+   * goes back through the ordinary send path, so a bounce or an unsubscribe
+   * that landed in between still stops it.
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'mail-retry' })
+  async retryFailedMail(): Promise<void> {
+    if (!this.mail.enabled) return;
+
+    try {
+      const { retried, sent, abandoned } = await this.mail.retryFailed();
+      if (retried === 0 && abandoned === 0) return;
+      this.logger.log(
+        `Mail retry: ${retried} retried, ${sent} delivered, ${abandoned} given up on`,
+      );
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Mail retry sweep failed: ${detail}`);
+    }
+  }
+
+  /**
    * N5/N6 — yesterday, in one email.
    *
    * This is the only thing that reports a failed send. Nothing is mailed or
@@ -107,7 +132,9 @@ export class MailScheduler {
     since: Date,
   ): Promise<{ sent: number; failed: number; inbound: number }> {
     const [sent, failed, wabas] = await Promise.all([
-      this.prisma.message.count({ where: { userId, createdAt: { gte: since } } }),
+      this.prisma.message.count({
+        where: { userId, createdAt: { gte: since } },
+      }),
       this.prisma.message.count({
         where: { userId, status: 'failed', createdAt: { gte: since } },
       }),
