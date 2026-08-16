@@ -11,12 +11,18 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiExcludeEndpoint,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { Request } from 'express';
 import { BillingService } from './billing.service';
 import {
   ConfirmSubscriptionDto,
+  RegisterSubscriptionDto,
   SubscriptionRegisteredDto,
   SubscriptionStateDto,
 } from './dto/billing.dto';
@@ -43,7 +49,8 @@ export class BillingController {
   })
   async list(@Req() req: Request): Promise<SubscriptionStateDto[]> {
     const orgId = (req as any).orgId;
-    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
     return this.billing.listStates(orgId);
   }
 
@@ -54,9 +61,10 @@ export class BillingController {
   @ApiOperation({
     summary: 'Subscribe one account',
     description:
-      'Creates the subscription and returns the id to open Razorpay Checkout ' +
-      'with, plus the hosted page as a fallback. Nothing is charged until the ' +
-      'customer authorises the mandate.',
+      'Creates the subscription on the chosen tier and returns the id to open ' +
+      'Razorpay Checkout with, plus the hosted page as a fallback. Nothing is ' +
+      'charged until the customer authorises the mandate. Omit `planCode` to ' +
+      'use the deployment’s configured plan.',
   })
   @ApiWrappedOkResponse({
     dataDto: SubscriptionRegisteredDto,
@@ -65,14 +73,16 @@ export class BillingController {
   async register(
     @Req() req: Request,
     @Param('wabaId') wabaId: string,
+    @Body() dto: RegisterSubscriptionDto,
   ): Promise<SubscriptionRegisteredDto> {
     const user = (req as any).user;
     const orgId = (req as any).orgId;
-    if (!user || !orgId) throw new UnauthorizedException('User not found in context');
+    if (!user || !orgId)
+      throw new UnauthorizedException('User not found in context');
 
     // The name and email come from the user row, not from the request: this
     // context holds only an id and an SSO id.
-    return this.billing.register(user.id, orgId, wabaId);
+    return this.billing.register(user.id, orgId, wabaId, dto?.planCode);
   }
 
   @Post('subscriptions/:wabaId/confirm')
@@ -85,14 +95,18 @@ export class BillingController {
       'Razorpay, so the console reflects the payment without waiting for the ' +
       'webhook that says the same thing.',
   })
-  @ApiWrappedOkResponse({ dataDto: SubscriptionStateDto, description: 'Subscription state' })
+  @ApiWrappedOkResponse({
+    dataDto: SubscriptionStateDto,
+    description: 'Subscription state',
+  })
   async confirm(
     @Req() req: Request,
     @Param('wabaId') wabaId: string,
     @Body() dto: ConfirmSubscriptionDto,
   ): Promise<SubscriptionStateDto> {
     const orgId = (req as any).orgId;
-    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
     return this.billing.confirm(orgId, wabaId, dto);
   }
 
@@ -105,13 +119,17 @@ export class BillingController {
       'Stops the next debit. The month already paid for is kept — access ' +
       'continues until the end of it.',
   })
-  @ApiWrappedOkResponse({ dataDto: SubscriptionStateDto, description: 'Subscription state' })
+  @ApiWrappedOkResponse({
+    dataDto: SubscriptionStateDto,
+    description: 'Subscription state',
+  })
   async cancel(
     @Req() req: Request,
     @Param('wabaId') wabaId: string,
   ): Promise<SubscriptionStateDto> {
     const orgId = (req as any).orgId;
-    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
     return this.billing.cancel(orgId, wabaId);
   }
 
@@ -119,7 +137,10 @@ export class BillingController {
   @Post('webhook')
   @HttpCode(200)
   @ApiExcludeEndpoint()
-  async webhook(@Req() req: Request, @Body() body: unknown): Promise<{ received: true }> {
+  async webhook(
+    @Req() req: Request,
+    @Body() body: unknown,
+  ): Promise<{ received: true }> {
     const eventId = req.headers['x-razorpay-event-id'] as string | undefined;
     if (!eventId) throw new BadRequestException('Missing X-Razorpay-Event-Id');
 

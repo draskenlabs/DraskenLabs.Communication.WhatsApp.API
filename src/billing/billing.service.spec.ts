@@ -21,7 +21,18 @@ const mockPrisma = {
   subscriptionPayment: { findMany: jest.fn(), upsert: jest.fn() },
   waba: { findFirst: jest.fn(), findMany: jest.fn() },
   user: { findUnique: jest.fn() },
+  plan: { findFirst: jest.fn() },
 };
+
+/** A published tier, as `sellablePlan` selects it. */
+const tier = (over: Record<string, unknown> = {}) => ({
+  id: 2,
+  code: 'growth',
+  name: 'Growth',
+  ctaKind: 'subscribe',
+  razorpayPlanId: 'plan_growth',
+  ...over,
+});
 
 const mockRedis = {
   getSubscriptionAccess: jest.fn(),
@@ -166,6 +177,87 @@ describe('BillingService', () => {
         }),
       );
       expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
+    });
+
+    it('sells the chosen tier: its Razorpay plan, and the row says which', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.plan.findFirst.mockResolvedValue(tier());
+      mockRazorpay.createSubscription.mockResolvedValue({
+        id: 'sub_new',
+        plan_id: 'plan_growth',
+        status: 'created',
+        short_url: 'https://rzp.io/i/abc',
+      });
+
+      const result = await service.register(7, 'org_1', 'waba_1', 'growth');
+
+      expect(mockRazorpay.createSubscription).toHaveBeenCalledWith(
+        expect.objectContaining({
+          planId: 'plan_growth',
+          // The tier travels to Razorpay too, so a payment in their dashboard
+          // can be read back to a plan without our database.
+          notes: expect.objectContaining({ planCode: 'growth' }),
+        }),
+      );
+      expect(mockPrisma.subscription.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            planId: 'plan_growth',
+            planRefId: 2,
+          }),
+        }),
+      );
+      expect(result.planCode).toBe('growth');
+    });
+
+    it('falls back to the configured plan when no tier is named', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+
+      const result = await service.register(7, 'org_1', 'waba_1');
+
+      expect(mockPrisma.plan.findFirst).not.toHaveBeenCalled();
+      expect(mockRazorpay.createSubscription).toHaveBeenCalledWith(
+        expect.objectContaining({ planId: undefined }),
+      );
+      expect(mockPrisma.subscription.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ planRefId: null }) }),
+      );
+      expect(result.planCode).toBeNull();
+    });
+
+    it('refuses a tier that is not on offer, before creating anything', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.plan.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.register(7, 'org_1', 'waba_1', 'enterprise'),
+      ).rejects.toThrow(NotFoundException);
+      expect(mockRazorpay.createCustomer).not.toHaveBeenCalled();
+      expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
+    });
+
+    it('refuses to sell a tier that is quoted rather than priced', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.plan.findFirst.mockResolvedValue(
+        tier({ code: 'agency', name: 'Agency', ctaKind: 'contact' }),
+      );
+
+      // Opening Checkout on Agency would charge whichever plan happened to be
+      // wired up — a price nobody agreed.
+      await expect(service.register(7, 'org_1', 'waba_1', 'agency')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
+    });
+
+    it('refuses a tier with no Razorpay plan behind it', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.plan.findFirst.mockResolvedValue(tier({ razorpayPlanId: null }));
+
+      await expect(service.register(7, 'org_1', 'waba_1', 'growth')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
     });
 
     it('names the customer from the user row, not the request context', async () => {
@@ -741,6 +833,67 @@ describe('BillingService', () => {
       expect(states[1]).toEqual(
         expect.objectContaining({ wabaId: 'waba_2', active: false, status: null }),
       );
+    });
+
+    it('prices each account from its own tier, not one price for the org', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'waba_1', name: 'Games' },
+        { wabaId: 'waba_2', name: 'Support' },
+      ]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        row({ planId: 'plan_starter', plan: { code: 'starter', name: 'Starter' } }),
+        {
+          ...row({ planId: 'plan_growth', plan: { code: 'growth', name: 'Growth' } }),
+          id: 2,
+          wabaId: 'waba_2',
+          razorpaySubscriptionId: 'sub_2',
+        },
+      ]);
+      mockRazorpay.fetchPlan.mockImplementation((id: string) =>
+        Promise.resolve(
+          id === 'plan_growth'
+            ? { ...PLAN, id, item: { ...PLAN.item, amount: 99900 } }
+            : { ...PLAN, id },
+        ),
+      );
+
+      const states = await service.listStates('org_1');
+
+      // A Growth customer shown the Starter price is the whole reason this is
+      // read per subscription.
+      expect(states[0].plan?.amount).toBe(49900);
+      expect(states[0].planCode).toBe('starter');
+      expect(states[1].plan?.amount).toBe(99900);
+      expect(states[1].planName).toBe('Growth');
+    });
+
+    it('asks Razorpay once per tier, however many accounts are on it', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'waba_1', name: 'Games' },
+        { wabaId: 'waba_2', name: 'Support' },
+      ]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        row({ planId: 'plan_growth' }),
+        { ...row({ planId: 'plan_growth' }), id: 2, wabaId: 'waba_2' },
+      ]);
+      mockRazorpay.fetchPlan.mockResolvedValue(PLAN);
+
+      await service.listStates('org_1');
+
+      expect(mockRazorpay.fetchPlan).toHaveBeenCalledTimes(1);
+    });
+
+    it('quotes no price for an account nobody has chosen a plan for', async () => {
+      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'waba_2', name: 'Support' }]);
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+
+      const [state] = await service.listStates('org_1');
+
+      // What it would cost depends on a tier nobody has picked; the console
+      // sends the reader to the price list instead of guessing one.
+      expect(state.plan).toBeNull();
+      expect(state.planCode).toBeNull();
+      expect(mockRazorpay.fetchPlan).not.toHaveBeenCalled();
     });
 
     it('offers the authorisation page only while nothing is charged', async () => {

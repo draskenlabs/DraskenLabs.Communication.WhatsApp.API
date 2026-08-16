@@ -85,7 +85,46 @@ export class BillingService {
   private find(ssoOrgId: string, wabaId: string) {
     return this.prisma.subscription.findUnique({
       where: { wabaId_ssoOrgId: { wabaId, ssoOrgId } },
+      include: { plan: { select: { code: true, name: true } } },
     });
+  }
+
+  /**
+   * The tier being bought, checked against what can actually be charged.
+   *
+   * Null for a request that names no plan: a deployment with a single
+   * configured Razorpay plan carries on exactly as it did.
+   */
+  private async sellablePlan(planCode?: string) {
+    if (!planCode) return null;
+
+    const plan = await this.prisma.plan.findFirst({
+      where: { code: planCode, active: true },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        ctaKind: true,
+        razorpayPlanId: true,
+      },
+    });
+    if (!plan) throw new NotFoundException(`Plan ${planCode} is not on offer`);
+
+    // Agency is quoted, not sold. Letting Checkout open on it would charge
+    // whatever plan happened to be wired up, which is nobody's agreed price.
+    if (plan.ctaKind === 'contact') {
+      throw new BadRequestException(
+        `${plan.name} is priced individually — contact sales rather than subscribing here.`,
+      );
+    }
+    // A tier with no Razorpay plan behind it cannot be debited. Better to say
+    // so than to sell it against the default plan at the wrong price.
+    if (!plan.razorpayPlanId) {
+      throw new BadRequestException(
+        `${plan.name} is not available for checkout on this deployment yet.`,
+      );
+    }
+    return plan;
   }
 
   /** The WABA, if it belongs to the caller's organisation. */
@@ -95,14 +134,18 @@ export class BillingService {
       select: { wabaId: true, name: true },
     });
     if (!waba) {
-      throw new NotFoundException(`WABA ${wabaId} not found in this organisation`);
+      throw new NotFoundException(
+        `WABA ${wabaId} not found in this organisation`,
+      );
     }
     return waba;
   }
 
   private toState(
     waba: { wabaId: string; name: string | null },
-    sub: Subscription | null,
+    sub:
+      | (Subscription & { plan?: { code: string; name: string } | null })
+      | null,
     extras: {
       plan?: SubscriptionPlanDto | null;
       payments?: SubscriptionPaymentDto[];
@@ -126,6 +169,11 @@ export class BillingService {
       authorisationUrl: awaiting ? sub.shortUrl : null,
       keyId: awaiting ? (this.razorpay.keyId ?? null) : null,
       billingEnabled: this.razorpay.isConfigured(),
+      // Which published tier this was sold as. Null for a subscription taken
+      // out before the price list existed — it is on the deployment's single
+      // configured plan, and `plan` below still says what that costs.
+      planCode: sub?.plan?.code ?? null,
+      planName: sub?.plan?.name ?? null,
       plan: extras.plan ?? null,
       lastPayment: payments[0] ?? null,
       payments,
@@ -170,15 +218,30 @@ export class BillingService {
    * missing from the list would read as "not connected" rather than "not paid".
    */
   async listStates(ssoOrgId: string): Promise<SubscriptionStateDto[]> {
-    const [wabas, subs, plan] = await Promise.all([
+    const [wabas, subs] = await Promise.all([
       this.prisma.waba.findMany({
         where: { WabaOrganisation: { some: { ssoOrgId } } },
         select: { wabaId: true, name: true },
         orderBy: { createdAt: 'asc' },
       }),
-      this.prisma.subscription.findMany({ where: { ssoOrgId } }),
-      this.plan(),
+      this.prisma.subscription.findMany({
+        where: { ssoOrgId },
+        include: { plan: { select: { code: true, name: true } } },
+      }),
     ]);
+
+    // One lookup per distinct tier rather than per account: an organisation
+    // with six accounts on Growth asks Razorpay about Growth once, and the
+    // answers are cached for the process after that.
+    const planIds = [...new Set(subs.map((s) => s.planId).filter(Boolean))];
+    const plans = new Map<string, SubscriptionPlanDto | null>(
+      await Promise.all(
+        planIds.map(
+          async (id) =>
+            [id, await this.plan(id)] as [string, SubscriptionPlanDto | null],
+        ),
+      ),
+    );
 
     // One query for the debits of every subscription in the organisation,
     // rather than one per account.
@@ -205,11 +268,16 @@ export class BillingService {
       bySub.set(subscriptionId, list);
     }
 
-    const byWaba = new Map(subs.filter((s) => s.wabaId).map((s) => [s.wabaId!, s]));
+    const byWaba = new Map(
+      subs.filter((s) => s.wabaId).map((s) => [s.wabaId!, s]),
+    );
     return wabas.map((waba) => {
       const sub = byWaba.get(waba.wabaId) ?? null;
       return this.toState(waba, sub, {
-        plan,
+        // An account with no subscription has no price of its own — what it
+        // would cost depends on the tier nobody has chosen yet, and the
+        // console sends the reader to the price list for that.
+        plan: sub ? (plans.get(sub.planId) ?? null) : null,
         payments: sub ? (bySub.get(sub.id) ?? []) : [],
       });
     });
@@ -218,12 +286,16 @@ export class BillingService {
   /**
    * What a subscription costs, in the shape the console shows it.
    *
+   * Read per subscription rather than once for the deployment: with more than
+   * one tier on sale, a single price would show a Growth customer the Starter
+   * amount. Falls back to the configured plan when no id is given.
+   *
    * Null rather than an error when Razorpay cannot be reached: the page's job
    * is to say whether an account is paid for, and it can still do that without
    * a price.
    */
-  private async plan(): Promise<SubscriptionPlanDto | null> {
-    const plan = await this.razorpay.fetchPlan();
+  private async plan(planId?: string): Promise<SubscriptionPlanDto | null> {
+    const plan = await this.razorpay.fetchPlan(planId);
     if (!plan) return null;
 
     return {
@@ -238,19 +310,29 @@ export class BillingService {
 
   /**
    * Start a subscription for one account: a Razorpay customer, a monthly
-   * subscription against the configured plan, and the hosted page where the
+   * subscription against the chosen tier, and the hosted page where the
    * customer authorises the mandate. Nothing is charged until they do.
+   *
+   * @param planCode The tier from the published price list. Omitted, the
+   * deployment's configured Razorpay plan is used — which is what an
+   * installation selling a single price has always done.
    */
   async register(
     userId: number,
     ssoOrgId: string,
     wabaId: string,
+    planCode?: string,
   ): Promise<SubscriptionRegisteredDto> {
     if (!this.razorpay.isConfigured()) {
-      throw new BadRequestException('Payments are not configured on this deployment');
+      throw new BadRequestException(
+        'Payments are not configured on this deployment',
+      );
     }
 
     await this.ownedWaba(ssoOrgId, wabaId);
+    // Checked before anything is created at Razorpay: a bad tier must fail
+    // without leaving a customer or a half-made subscription behind.
+    const plan = await this.sellablePlan(planCode);
     const existing = await this.find(ssoOrgId, wabaId);
 
     // Registering again while one is running would leave two mandates against
@@ -276,7 +358,8 @@ export class BillingService {
     // dedupes by email across the merchant account, so one person running two
     // organisations gets one customer for both whatever we ask for; the
     // subscription's notes are what tie a payment back to an organisation.
-    const reused = existing?.razorpayCustomerId ?? (await this.orgCustomerId(ssoOrgId));
+    const reused =
+      existing?.razorpayCustomerId ?? (await this.orgCustomerId(ssoOrgId));
 
     if (reused) {
       // The customer may predate having a name to give it.
@@ -292,18 +375,29 @@ export class BillingService {
         })
       ).id;
 
-    // The account travels on the subscription so a webhook can be traced back
-    // even if the local row were lost.
+    // The account and the tier travel on the subscription so a webhook — or a
+    // support question against Razorpay's dashboard — can be traced back even
+    // if the local row were lost.
     const created = await this.razorpay.createSubscription({
       customerId,
-      notes: { ssoOrgId, wabaId, userId: String(userId) },
+      planId: plan?.razorpayPlanId ?? undefined,
+      notes: {
+        ssoOrgId,
+        wabaId,
+        userId: String(userId),
+        ...(plan ? { planCode: plan.code } : {}),
+      },
     });
 
     const data = {
       ssoOrgId,
       razorpayCustomerId: customerId,
       razorpaySubscriptionId: created.id,
+      // What Razorpay says it will charge, and which published tier that was
+      // sold as. The first is the record of the agreement; the second is how
+      // the console names it.
       planId: created.plan_id,
+      planRefId: plan?.id ?? null,
       status: this.toStatus(created.status),
       currentStart: at(created.current_start),
       currentEnd: at(created.current_end),
@@ -328,6 +422,7 @@ export class BillingService {
       keyId: this.razorpay.keyId ?? '',
       authorisationUrl: created.short_url ?? '',
       status: data.status,
+      planCode: plan?.code ?? null,
     };
   }
 
@@ -357,7 +452,9 @@ export class BillingService {
     // The signature covers the subscription id, so a valid signature for
     // somebody else's subscription must not pass for this account's.
     if (dto.razorpaySubscriptionId !== sub.razorpaySubscriptionId) {
-      throw new BadRequestException('That payment belongs to another subscription');
+      throw new BadRequestException(
+        'That payment belongs to another subscription',
+      );
     }
 
     const verified = this.razorpay.verifyCheckoutSignature({
@@ -373,12 +470,14 @@ export class BillingService {
       throw new BadRequestException('Payment could not be verified');
     }
 
-    const remote = await this.razorpay.fetchSubscription(sub.razorpaySubscriptionId);
+    const remote = await this.razorpay.fetchSubscription(
+      sub.razorpaySubscriptionId,
+    );
     const updated = await this.applyRemote(sub, remote);
 
     await this.access.invalidate(ssoOrgId, wabaId);
     return this.toState(waba, updated, {
-      plan: await this.plan(),
+      plan: await this.plan(updated.planId),
       payments: await this.paymentsFor(updated.id),
     });
   }
@@ -408,7 +507,9 @@ export class BillingService {
             ? currentEnd
             : sub.currentEnd,
         cancelledAt:
-          status === 'cancelled' ? (sub.cancelledAt ?? new Date()) : sub.cancelledAt,
+          status === 'cancelled'
+            ? (sub.cancelledAt ?? new Date())
+            : sub.cancelledAt,
         // Once there is a mandate the authorisation page is dead.
         shortUrl: status === 'created' ? sub.shortUrl : null,
       },
@@ -439,7 +540,10 @@ export class BillingService {
     if (SubscriptionAccessService.grants(before)) return;
     if (!SubscriptionAccessService.grants(after)) return;
 
-    const { ssoOrgId, wabaId } = { ssoOrgId: after.ssoOrgId, wabaId: after.wabaId };
+    const { ssoOrgId, wabaId } = {
+      ssoOrgId: after.ssoOrgId,
+      wabaId: after.wabaId,
+    };
 
     try {
       if (await this.provisioning.isProvisioned(wabaId)) return;
@@ -467,7 +571,10 @@ export class BillingService {
       select: { email: true, firstName: true, lastName: true },
     });
 
-    const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim();
+    const name = [user?.firstName, user?.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
 
     return {
       ...(name ? { name } : {}),
@@ -491,7 +598,10 @@ export class BillingService {
    * access here follows `currentEnd`. A subscription whose mandate was never
    * authorised has no paid month to protect, so it stops immediately.
    */
-  async cancel(ssoOrgId: string, wabaId: string): Promise<SubscriptionStateDto> {
+  async cancel(
+    ssoOrgId: string,
+    wabaId: string,
+  ): Promise<SubscriptionStateDto> {
     const waba = await this.ownedWaba(ssoOrgId, wabaId);
     const sub = await this.find(ssoOrgId, wabaId);
 
@@ -503,7 +613,8 @@ export class BillingService {
       throw new BadRequestException('This subscription is already set to end');
     }
 
-    const paidMonthLeft = !!sub.currentEnd && sub.currentEnd.getTime() > Date.now();
+    const paidMonthLeft =
+      !!sub.currentEnd && sub.currentEnd.getTime() > Date.now();
     const remote = await this.razorpay.cancelSubscription(
       sub.razorpaySubscriptionId,
       paidMonthLeft,
@@ -528,7 +639,7 @@ export class BillingService {
     );
 
     return this.toState(waba, updated, {
-      plan: await this.plan(),
+      plan: await this.plan(updated.planId),
       payments: await this.paymentsFor(updated.id),
     });
   }
@@ -593,7 +704,13 @@ export class BillingService {
     if (sub.wabaId) {
       await this.access.invalidate(sub.ssoOrgId, sub.wabaId);
     }
-    await this.notify(event, sub, sub.waba?.name ?? sub.wabaId ?? 'your account', status, currentEnd ?? sub.currentEnd);
+    await this.notify(
+      event,
+      sub,
+      sub.waba?.name ?? sub.wabaId ?? 'your account',
+      status,
+      currentEnd ?? sub.currentEnd,
+    );
   }
 
   /**
@@ -644,10 +761,17 @@ export class BillingService {
     status: SubscriptionStatus,
     currentEnd: Date | null,
   ): Promise<void> {
-    if (event === 'subscription.charged' || event === 'subscription.activated') {
+    if (
+      event === 'subscription.charged' ||
+      event === 'subscription.activated'
+    ) {
       // Both fire around the first successful debit; the mail is sent for the
       // one that carries the period, and only when the period actually moved.
-      if (status === 'active' && currentEnd && currentEnd > (sub.currentEnd ?? new Date(0))) {
+      if (
+        status === 'active' &&
+        currentEnd &&
+        currentEnd > (sub.currentEnd ?? new Date(0))
+      ) {
         void this.mail.subscriptionCharged(
           sub.createdByUserId,
           sub.ssoOrgId,
@@ -704,7 +828,9 @@ export class BillingService {
 
     for (const sub of stale) {
       try {
-        const remote = await this.razorpay.fetchSubscription(sub.razorpaySubscriptionId);
+        const remote = await this.razorpay.fetchSubscription(
+          sub.razorpaySubscriptionId,
+        );
         await this.applyRemote(sub, remote);
         if (sub.wabaId) {
           await this.access.invalidate(sub.ssoOrgId, sub.wabaId);
