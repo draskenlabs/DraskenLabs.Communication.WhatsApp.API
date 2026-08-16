@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { PlansController } from './plans.controller';
 import { PlansService } from './plans.service';
+import { PlanLimitsService } from './plan-limits.service';
+import { PlanSyncService } from './plan-sync.service';
 import { PrismaModule } from 'src/prisma/prisma.module';
 
 /**
@@ -13,7 +15,8 @@ import { PrismaModule } from 'src/prisma/prisma.module';
 @Module({
   imports: [PrismaModule],
   controllers: [PlansController],
-  providers: [PlansService],
-  exports: [PlansService],
+  providers: [PlansService, PlanLimitsService, PlanSyncService],
+  // The limits are asked for by every module that can exceed one.
+  exports: [PlansService, PlanLimitsService],
 })
 export class PlansModule {}

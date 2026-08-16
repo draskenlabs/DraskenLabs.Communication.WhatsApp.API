@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { BaseResponse } from 'src/common/responses/base-response';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
 import { assertSafeWebhookUrl } from './webhook-url.util';
 import {
@@ -17,9 +18,6 @@ import {
   WebhookEndpointDto,
   WebhookTestResultDto,
 } from './dto/webhook-endpoint.dto';
-
-/** Endpoints one organisation may register per account. */
-const MAX_ENDPOINTS_PER_WABA = 5;
 
 /** The row shape the response mapper needs. */
 interface EndpointRow {
@@ -53,6 +51,7 @@ export class WebhookEndpointsService {
     private readonly config: ConfigService,
     private readonly encryption: EncryptionService,
     private readonly dispatcher: WebhookDispatcherService,
+    private readonly limits: PlanLimitsService,
   ) {
     this.allowInsecureUrls =
       String(
@@ -80,14 +79,20 @@ export class WebhookEndpointsService {
 
     const url = assertSafeWebhookUrl(dto.url, this.allowInsecureUrls);
 
-    const existing = await this.prisma.webhookEndpoint.count({
-      where: { ssoOrgId, wabaId: waba.wabaId },
-    });
-    if (existing >= MAX_ENDPOINTS_PER_WABA) {
-      throw new BadRequestException(
-        `An account may have at most ${MAX_ENDPOINTS_PER_WABA} webhook endpoints. Delete one before adding another.`,
-      );
-    }
+    // How many endpoints this account may have is what its plan says — the
+    // number is on the pricing page, so a constant here would contradict it.
+    const [existing, limits] = await Promise.all([
+      this.prisma.webhookEndpoint.count({
+        where: { ssoOrgId, wabaId: waba.wabaId },
+      }),
+      this.limits.forWaba(ssoOrgId, waba.wabaId),
+    ]);
+    this.limits.assertWithin(
+      limits,
+      limits.webhookEndpoints,
+      existing,
+      'webhook endpoint',
+    );
 
     const duplicate = await this.prisma.webhookEndpoint.findFirst({
       where: { ssoOrgId, wabaId: waba.wabaId, url },

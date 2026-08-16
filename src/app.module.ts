@@ -50,6 +50,15 @@ import * as Joi from 'joi';
           .truthy('true')
           .falsy('false')
           .default(false),
+        // Retention. The webhook window is what the Privacy Policy promises for
+        // raw Meta envelopes and the delivery log that carries them. Message
+        // history is held to the window each plan publishes — destructive, so
+        // it only counts and logs until a deployment turns it on.
+        WEBHOOK_EVENT_RETENTION_DAYS: Joi.number().min(1).max(3650).default(30),
+        PLAN_RETENTION_ENFORCED: Joi.boolean()
+          .truthy('true')
+          .falsy('false')
+          .default(false),
         ALLOW_MANUAL_CONNECT: Joi.boolean().truthy('true').falsy('false').default(false),
         // Off by default, so a deployment publishes the API docs only when it
         // says to rather than because nobody remembered to turn them off.
@@ -87,6 +96,11 @@ import * as Joi from 'joi';
         RAZORPAY_KEY_ID: Joi.string().optional(),
         RAZORPAY_KEY_SECRET: Joi.string().optional(),
         RAZORPAY_PLAN_ID: Joi.string().optional(),
+        // Which Razorpay plan charges for each published tier, as
+        // `code:plan_id` pairs. Without it only RAZORPAY_PLAN_ID above can be
+        // sold, and the console offers to talk about the rest rather than
+        // opening a checkout that would be refused.
+        RAZORPAY_PLAN_IDS: Joi.string().optional(),
         RAZORPAY_WEBHOOK_SECRET: Joi.string().optional(),
       }),
     }),

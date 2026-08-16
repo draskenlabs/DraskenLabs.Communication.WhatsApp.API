@@ -9,6 +9,27 @@
 
 ## Implemented
 
+- **Tiers are wired to Razorpay from configuration.** `RAZORPAY_PLAN_IDS`
+  (`code:plan_id` pairs) is applied to the `Plan` table at boot by
+  `PlanSyncService`. A tier with no id is published as `available: false`, and
+  the console offers to talk rather than opening a checkout that would refuse.
+- **The limits are enforced.** `PlanLimitsService` answers "how many" — the best
+  tier the organisation holds for anything organisation-wide, that account's own
+  plan for anything per account, and the cheapest published plan as the floor
+  for anyone not paying yet. Applied to WABAs at connect, phone numbers at
+  registration, webhook endpoints at creation and team members at invite (the
+  one point the platform sees an organisation grow, since membership is the
+  SSO's).
+- **Additional numbers are charged.** As each cycle is charged, the numbers
+  beyond the one the plan includes are raised as a Razorpay add-on on the next
+  invoice, at the plan's `additionalNumberPrice`. Only numbers live on the
+  Cloud API count; the path is deduplicated by the webhook event id, so a retry
+  cannot bill a cycle twice.
+- **Retention runs.** A nightly sweep deletes raw webhook events and settled
+  deliveries past the window the Privacy Policy promises, and holds message
+  history to each plan's window — the destructive half only counts and logs
+  until `PLAN_RETENTION_ENFORCED=true`.
+
 - **Checkout sells the chosen tier.** `POST /billing/subscriptions/:wabaId`
   takes an optional `planCode`; the subscription is created against that plan's
   `razorpayPlanId`, `Subscription.planRefId` records which tier it was sold as,
@@ -34,7 +55,8 @@
 | Item | Notes |
 |------|-------|
 | Enforcing the limits | The columns are published and queryable; nothing counts WABAs, numbers, members or endpoints against them yet |
-| A Razorpay plan per tier | The wiring is done; each deployment must still create the plans at Razorpay and set `Plan.razorpayPlanId` on each row, or only the configured fallback can be sold |
+| Creating the plans at Razorpay | The mapping is configuration; somebody still has to create one plan per tier in the Razorpay account, at the published price, and list them in `RAZORPAY_PLAN_IDS` |
+| Team-member limit on acceptance | The invite path is ours and is capped; somebody added directly in the SSO is not seen by this API |
 | Changing tier on a live subscription | Upgrading is cancel-and-resubscribe today. An in-place `PATCH /subscriptions/:id` with a new plan needs a decision on proration and on re-authorising the mandate for a higher amount |
 | Billing additional numbers | The per-number price is published, not charged — that needs subscription quantity |
 | Admin editing | The catalogue changes by migration; there is no write endpoint |

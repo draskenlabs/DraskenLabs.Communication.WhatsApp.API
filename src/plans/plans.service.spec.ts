@@ -22,6 +22,7 @@ const row = (over: Record<string, unknown> = {}) => ({
   recommended: true,
   ctaKind: 'subscribe',
   ctaLabel: 'Choose Growth',
+  razorpayPlanId: 'plan_growth',
   inherits: { code: 'starter' },
   features: [{ label: 'Up to 3 WABAs' }, { label: '3 phone numbers per WABA' }],
   ...over,
@@ -73,14 +74,23 @@ describe('PlansService', () => {
     ]);
   });
 
-  it('never sends the Razorpay plan id to the browser', async () => {
+  it('never sends the Razorpay plan id to the browser, only whether there is one', async () => {
     mockPrisma.plan.findMany.mockResolvedValue([row()]);
 
     const plans = await service.findAll();
 
     expect(plans[0]).not.toHaveProperty('razorpayPlanId');
-    const { select } = mockPrisma.plan.findMany.mock.calls[0][0];
-    expect(select.razorpayPlanId).toBeUndefined();
+    expect(plans[0].available).toBe(true);
+  });
+
+  it('marks a tier with no Razorpay plan as unavailable rather than sellable', async () => {
+    mockPrisma.plan.findMany.mockResolvedValue([row({ razorpayPlanId: null })]);
+
+    const [plan] = await service.findAll();
+
+    // The console offers to talk instead of opening a checkout the API would
+    // refuse.
+    expect(plan.available).toBe(false);
   });
 
   it('keeps an unpriced plan unpriced rather than calling it zero', async () => {
@@ -96,6 +106,7 @@ describe('PlansService', () => {
         maxWebhookEndpoints: null,
         historyDays: null,
         ctaKind: 'contact',
+        razorpayPlanId: null,
         inherits: null,
       }),
     ]);
@@ -105,6 +116,8 @@ describe('PlansService', () => {
     expect(agency.price).toBeNull();
     expect(agency.priceLabel).toBe('Custom');
     expect(agency.ctaKind).toBe('contact');
+    // Quoted, so never "available" however it is wired up.
+    expect(agency.available).toBe(false);
     expect(agency.inherits).toBeNull();
     // Null is "no number on it", not a limit of zero.
     expect(Object.values(agency.limits).every((value) => value === null)).toBe(

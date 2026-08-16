@@ -9,6 +9,7 @@ import { WebhooksService } from './webhooks.service';
 import { WebhookEndpointsService } from './webhook-endpoints.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
 import { WebhooksScheduler } from './webhooks.scheduler';
+import { RetentionService } from './retention.service';
 import { WebhookSignatureMiddleware } from './middleware/webhook-signature.middleware';
 import { InboundMessageHandler } from './handlers/inbound-message.handler';
 import { StatusUpdateHandler } from './handlers/status-update.handler';
@@ -17,15 +18,17 @@ import { TemplateStatusHandler } from './handlers/template-status.handler';
 import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
 import { UserModule } from 'src/user/user.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
+import { PlansModule } from 'src/plans/plans.module';
 
 @Module({
-  imports: [UserModule, NotificationsModule],
+  imports: [UserModule, NotificationsModule, PlansModule],
   controllers: [WebhooksController],
   providers: [
     WebhooksService,
     WebhookEndpointsService,
     WebhookDispatcherService,
     WebhooksScheduler,
+    RetentionService,
     WebhookSignatureMiddleware,
     AuthMiddleware,
     InboundMessageHandler,

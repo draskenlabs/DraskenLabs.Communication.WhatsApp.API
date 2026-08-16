@@ -78,6 +78,35 @@ between test and live accounts.
 
 ---
 
+## Enforcement
+
+`PlanLimitsService` is the one place that answers "how many", so no call site
+keeps a constant that could contradict the price list.
+
+| Limit | Enforced at | Measured against |
+|-------|-------------|------------------|
+| `maxWabas` | `WabaService.createOrUpdateWaba`, only for an account the organisation does not already hold | The best tier the organisation holds |
+| `maxPhoneNumbersPerWaba` | `WabaPhoneNumberService.registerPhoneNumber`, only for a number not already live | That account's own plan |
+| `maxWebhookEndpoints` | `WebhookEndpointsService.create` | That account's own plan |
+| `maxTeamMembers` | `OrgService.inviteMember`, counting members *and* invitations already out | The best tier the organisation holds |
+| `historyDays` | The nightly retention sweep | Each organisation's own plan |
+
+An organisation with nothing subscribed is held to the cheapest published
+plan — it can try the product without exceeding what the entry price buys — and
+a deployment with no price list at all limits nothing.
+
+## Charging for additional numbers
+
+Razorpay has no second recurring price on a plan, so the per-number charge is
+an add-on raised once per cycle: as `subscription.charged` lands, the numbers
+beyond the one the plan includes are added to the *next* invoice at
+`Plan.additionalNumberPrice`. That is also why a number added today is billed
+from the next invoice rather than prorated into the current one. The path runs
+inside the webhook handler, which deduplicates on the event id, so a retried
+webhook cannot bill the same cycle twice — and a failure to raise the add-on is
+logged rather than thrown, because the webhook's real job is recording a
+payment that has already happened.
+
 ## Business rules
 
 - Amounts are in paise. Nothing divides until it is displayed.

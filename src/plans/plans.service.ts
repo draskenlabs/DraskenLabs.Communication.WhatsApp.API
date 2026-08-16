@@ -20,6 +20,7 @@ interface PlanRow {
   recommended: boolean;
   ctaKind: string;
   ctaLabel: string;
+  razorpayPlanId: string | null;
   inherits: { code: string } | null;
   features: { label: string }[];
 }
@@ -58,9 +59,10 @@ export class PlansService {
   /**
    * Everything the console is told about a plan — and nothing else.
    *
-   * `razorpayPlanId` is deliberately absent: the browser is told a price, not
-   * the provider's identifier for it, and a plan id in a public payload is one
-   * more thing to keep consistent between test and live accounts.
+   * `razorpayPlanId` is read but never sent: the browser is told whether a
+   * tier can be bought, not the provider's identifier for it, and a plan id in
+   * a public payload is one more thing to keep consistent between test and
+   * live accounts.
    */
   private readonly selection = {
     code: true,
@@ -79,6 +81,8 @@ export class PlansService {
     recommended: true,
     ctaKind: true,
     ctaLabel: true,
+    // Read to answer "can this be bought", never sent on.
+    razorpayPlanId: true,
     inherits: { select: { code: true } },
     features: {
       orderBy: { sortOrder: 'asc' as const },
@@ -108,6 +112,8 @@ export class PlansService {
       recommended: plan.recommended,
       ctaKind: plan.ctaKind,
       ctaLabel: plan.ctaLabel,
+      // The id itself stays here; only the yes/no goes out.
+      available: plan.ctaKind === 'subscribe' && !!plan.razorpayPlanId,
     };
   }
 }

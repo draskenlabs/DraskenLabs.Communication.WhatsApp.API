@@ -6,9 +6,16 @@ import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
 import { RedisModule } from 'src/redis/redis.module';
 import { WabaMembershipModule } from './waba-membership.module';
 import { OrgDirectoryModule } from 'src/org/org-directory.module';
+import { PlansModule } from 'src/plans/plans.module';
 
 @Module({
-  imports: [UserModule, RedisModule, WabaMembershipModule, OrgDirectoryModule],
+  imports: [
+    UserModule,
+    RedisModule,
+    WabaMembershipModule,
+    OrgDirectoryModule,
+    PlansModule,
+  ],
   providers: [WabaService],
   controllers: [WabaController],
   exports: [WabaService],

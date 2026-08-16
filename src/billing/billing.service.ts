@@ -17,6 +17,7 @@ import {
   RazorpaySubscription,
 } from './razorpay.service';
 import { SubscriptionAccessService } from './subscription-access.service';
+import { registeredNumbersWhere } from 'src/waba-phone-number/waba-phone-number.service';
 import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
 import {
   ConfirmSubscriptionDto,
@@ -700,6 +701,11 @@ export class BillingService {
 
     await this.applyRemote(sub, entity);
     await this.recordPayment(sub.id, payment);
+    // A cycle has just been paid for; queue what the next one owes for the
+    // numbers on the account beyond the one the plan includes.
+    if (event === 'subscription.charged') {
+      await this.billExtraNumbers(sub);
+    }
 
     if (sub.wabaId) {
       await this.access.invalidate(sub.ssoOrgId, sub.wabaId);
@@ -711,6 +717,64 @@ export class BillingService {
       status,
       currentEnd ?? sub.currentEnd,
     );
+  }
+
+  /**
+   * Charge for the phone numbers beyond the one the plan includes.
+   *
+   * Raised as an add-on on the next invoice, once per cycle, because Razorpay
+   * has no second recurring price on a plan. Called only from the
+   * `subscription.charged` path, which is deduplicated on the event id — so a
+   * webhook Razorpay retries cannot bill the same cycle twice.
+   *
+   * Never throws: this is money to collect, not state the subscription depends
+   * on, and throwing here would fail a webhook whose real job was to record a
+   * payment that has already happened.
+   */
+  private async billExtraNumbers(sub: {
+    id: number;
+    wabaId: string | null;
+    razorpaySubscriptionId: string;
+    planRefId: number | null;
+  }): Promise<void> {
+    try {
+      if (!sub.wabaId || !sub.planRefId) return;
+
+      const plan = await this.prisma.plan.findUnique({
+        where: { id: sub.planRefId },
+        select: { additionalNumberPrice: true, currency: true, name: true },
+      });
+      if (!plan?.additionalNumberPrice) return;
+
+      // Only numbers live on the Cloud API: an unregistered one cannot send
+      // and is not what the price list is charging for.
+      const registered = await this.prisma.wabaPhoneNumber.count({
+        where: registeredNumbersWhere(sub.wabaId),
+      });
+      // The first is included in the plan.
+      const extras = Math.max(0, registered - 1);
+      if (extras === 0) return;
+
+      const addon = await this.razorpay.addSubscriptionAddon(
+        sub.razorpaySubscriptionId,
+        {
+          name: `Additional phone number${extras === 1 ? '' : 's'}`,
+          amount: plan.additionalNumberPrice,
+          currency: plan.currency,
+          quantity: extras,
+        },
+      );
+      if (addon) {
+        this.logger.log(
+          `Queued ${extras} additional number(s) on ${sub.razorpaySubscriptionId} for the next invoice`,
+        );
+      }
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Could not bill extra numbers for ${sub.id}: ${detail}`,
+      );
+    }
   }
 
   /**

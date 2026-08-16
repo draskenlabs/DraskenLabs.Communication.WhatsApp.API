@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { WebhookEndpointsService } from './webhook-endpoints.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 
@@ -36,6 +37,22 @@ const mockEncryption = {
 };
 const mockDispatcher = { sendTest: jest.fn() };
 
+/** The real assertion, so a spec cannot pass a limit the product would refuse. */
+const realLimits = new PlanLimitsService({} as never);
+const mockLimits = {
+  forWaba: jest.fn(),
+  assertWithin: realLimits.assertWithin.bind(realLimits),
+};
+const limitsOf = (webhookEndpoints: number | null) => ({
+  planCode: 'starter',
+  planName: 'Starter',
+  wabas: 1,
+  phoneNumbersPerWaba: 1,
+  teamMembers: 2,
+  webhookEndpoints,
+  historyDays: 30,
+});
+
 const ORG = 'org_1';
 const row = (over: Record<string, unknown> = {}) => ({
   id: 7,
@@ -62,6 +79,7 @@ describe('WebhookEndpointsService', () => {
     jest.clearAllMocks();
     mockPrisma.webhookEndpoint.count.mockResolvedValue(0);
     mockPrisma.webhookEndpoint.findFirst.mockResolvedValue(null);
+    mockLimits.forWaba.mockResolvedValue(limitsOf(2));
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WebhookEndpointsService,
@@ -69,6 +87,7 @@ describe('WebhookEndpointsService', () => {
         { provide: ConfigService, useValue: mockConfig },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: WebhookDispatcherService, useValue: mockDispatcher },
+        { provide: PlanLimitsService, useValue: mockLimits },
       ],
     }).compile();
     service = module.get(WebhookEndpointsService);

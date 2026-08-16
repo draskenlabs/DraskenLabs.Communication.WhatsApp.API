@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
+import { RetentionService } from './retention.service';
 
 /**
  * The scheduled half of outbound webhooks.
@@ -15,7 +16,10 @@ import { WebhookDispatcherService } from './webhook-dispatcher.service';
 export class WebhooksScheduler {
   private readonly logger = new Logger(WebhooksScheduler.name);
 
-  constructor(private readonly dispatcher: WebhookDispatcherService) {}
+  constructor(
+    private readonly dispatcher: WebhookDispatcherService,
+    private readonly retention: RetentionService,
+  ) {}
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'webhook-delivery' })
   async deliverDue(): Promise<void> {
@@ -28,6 +32,29 @@ export class WebhooksScheduler {
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.error(`Webhook delivery sweep failed: ${detail}`);
+    }
+  }
+
+  /**
+   * Retention, nightly and off-peak.
+   *
+   * Raw events and the delivery log both hold customer message content, and
+   * the Privacy Policy puts a window on them; message history is held to
+   * whatever window the organisation's plan names. Left to run for ever,
+   * "30-day history" is a line on a pricing page and nothing else.
+   */
+  @Cron('30 3 * * *', { name: 'retention-sweep' })
+  async pruneExpired(): Promise<void> {
+    try {
+      const { events, deliveries, messages, inbound } = await this.retention.sweep();
+      if (!events && !deliveries && !messages && !inbound) return;
+      this.logger.log(
+        `Retention: removed ${events} webhook events, ${deliveries} deliveries, ` +
+          `${messages} sent and ${inbound} received messages`,
+      );
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Retention sweep failed: ${detail}`);
     }
   }
 }

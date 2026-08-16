@@ -21,7 +21,8 @@ const mockPrisma = {
   subscriptionPayment: { findMany: jest.fn(), upsert: jest.fn() },
   waba: { findFirst: jest.fn(), findMany: jest.fn() },
   user: { findUnique: jest.fn() },
-  plan: { findFirst: jest.fn() },
+  plan: { findFirst: jest.fn(), findUnique: jest.fn() },
+  wabaPhoneNumber: { count: jest.fn() },
 };
 
 /** A published tier, as `sellablePlan` selects it. */
@@ -50,6 +51,7 @@ const mockRazorpay = {
   fetchSubscription: jest.fn(),
   verifyCheckoutSignature: jest.fn(),
   fetchPlan: jest.fn(),
+  addSubscriptionAddon: jest.fn(),
 };
 
 /** The monthly plan, as Razorpay describes it. */
@@ -147,7 +149,10 @@ describe('BillingService', () => {
         short_url: 'https://rzp.io/i/abc',
       });
       mockPrisma.subscription.upsert.mockResolvedValue({});
-      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1', name: 'Games' });
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        wabaId: 'waba_1',
+        name: 'Games',
+      });
       mockPrisma.subscription.findFirst.mockResolvedValue(null);
       mockPrisma.user.findUnique.mockResolvedValue({
         email: 'suraj@example.com',
@@ -220,7 +225,9 @@ describe('BillingService', () => {
         expect.objectContaining({ planId: undefined }),
       );
       expect(mockPrisma.subscription.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({ create: expect.objectContaining({ planRefId: null }) }),
+        expect.objectContaining({
+          create: expect.objectContaining({ planRefId: null }),
+        }),
       );
       expect(result.planCode).toBeNull();
     });
@@ -244,19 +251,21 @@ describe('BillingService', () => {
 
       // Opening Checkout on Agency would charge whichever plan happened to be
       // wired up — a price nobody agreed.
-      await expect(service.register(7, 'org_1', 'waba_1', 'agency')).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.register(7, 'org_1', 'waba_1', 'agency'),
+      ).rejects.toThrow(BadRequestException);
       expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
     });
 
     it('refuses a tier with no Razorpay plan behind it', async () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
-      mockPrisma.plan.findFirst.mockResolvedValue(tier({ razorpayPlanId: null }));
-
-      await expect(service.register(7, 'org_1', 'waba_1', 'growth')).rejects.toThrow(
-        BadRequestException,
+      mockPrisma.plan.findFirst.mockResolvedValue(
+        tier({ razorpayPlanId: null }),
       );
+
+      await expect(
+        service.register(7, 'org_1', 'waba_1', 'growth'),
+      ).rejects.toThrow(BadRequestException);
       expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
     });
 
@@ -268,7 +277,10 @@ describe('BillingService', () => {
       await service.register(7, 'org_1', 'waba_1');
 
       expect(mockRazorpay.createCustomer).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'Suraj Aggarwal', email: 'suraj@example.com' }),
+        expect.objectContaining({
+          name: 'Suraj Aggarwal',
+          email: 'suraj@example.com',
+        }),
       );
     });
 
@@ -290,7 +302,9 @@ describe('BillingService', () => {
 
     it('fills in the details of a customer created before we had them', async () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
-      mockPrisma.subscription.findFirst.mockResolvedValue({ razorpayCustomerId: 'cust_1' });
+      mockPrisma.subscription.findFirst.mockResolvedValue({
+        razorpayCustomerId: 'cust_1',
+      });
 
       await service.register(7, 'org_1', 'waba_2');
 
@@ -308,7 +322,10 @@ describe('BillingService', () => {
 
       expect(mockRazorpay.createSubscription).toHaveBeenCalledWith(
         expect.objectContaining({
-          notes: expect.objectContaining({ ssoOrgId: 'org_1', wabaId: 'waba_1' }),
+          notes: expect.objectContaining({
+            ssoOrgId: 'org_1',
+            wabaId: 'waba_1',
+          }),
         }),
       );
     });
@@ -328,14 +345,18 @@ describe('BillingService', () => {
       // Two mandates on one account means two debits a month.
       mockPrisma.subscription.findUnique.mockResolvedValue(row());
 
-      await expect(service.register(7, 'org_1', 'waba_1')).rejects.toThrow(BadRequestException);
+      await expect(service.register(7, 'org_1', 'waba_1')).rejects.toThrow(
+        BadRequestException,
+      );
       expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
     });
 
     it('reuses the organisation’s Razorpay customer for a second account', async () => {
       // Three accounts on one payment history, not three customers.
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
-      mockPrisma.subscription.findFirst.mockResolvedValue({ razorpayCustomerId: 'cust_1' });
+      mockPrisma.subscription.findFirst.mockResolvedValue({
+        razorpayCustomerId: 'cust_1',
+      });
 
       await service.register(7, 'org_1', 'waba_2');
 
@@ -359,7 +380,9 @@ describe('BillingService', () => {
 
     it('refuses when the deployment has no payment provider', async () => {
       mockRazorpay.isConfigured.mockReturnValue(false);
-      await expect(service.register(7, 'org_1', 'waba_1')).rejects.toThrow(BadRequestException);
+      await expect(service.register(7, 'org_1', 'waba_1')).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -371,7 +394,10 @@ describe('BillingService', () => {
     };
 
     beforeEach(() => {
-      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1', name: 'Games' });
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        wabaId: 'waba_1',
+        name: 'Games',
+      });
       mockPrisma.subscription.findUnique.mockResolvedValue(
         row({ status: 'created', currentEnd: null }),
       );
@@ -382,7 +408,10 @@ describe('BillingService', () => {
       mockRazorpay.verifyCheckoutSignature.mockReturnValue(true);
       const end = Math.floor((Date.now() + 30 * 24 * HOUR) / 1000);
       mockRazorpay.fetchSubscription.mockResolvedValue({
-        id: 'sub_1', plan_id: 'plan_1', status: 'active', current_end: end,
+        id: 'sub_1',
+        plan_id: 'plan_1',
+        status: 'active',
+        current_end: end,
       });
 
       const state = await service.confirm('org_1', 'waba_1', payload);
@@ -391,7 +420,10 @@ describe('BillingService', () => {
       expect(mockRazorpay.fetchSubscription).toHaveBeenCalledWith('sub_1');
       expect(mockPrisma.subscription.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ status: 'active', currentEnd: new Date(end * 1000) }),
+          data: expect.objectContaining({
+            status: 'active',
+            currentEnd: new Date(end * 1000),
+          }),
         }),
       );
       expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
@@ -414,7 +446,10 @@ describe('BillingService', () => {
       mockRazorpay.verifyCheckoutSignature.mockReturnValue(true);
 
       await expect(
-        service.confirm('org_1', 'waba_1', { ...payload, razorpaySubscriptionId: 'sub_other' }),
+        service.confirm('org_1', 'waba_1', {
+          ...payload,
+          razorpaySubscriptionId: 'sub_other',
+        }),
       ).rejects.toThrow(BadRequestException);
       expect(mockRazorpay.verifyCheckoutSignature).not.toHaveBeenCalled();
     });
@@ -437,7 +472,10 @@ describe('BillingService', () => {
     const end = Math.floor((Date.now() + 30 * 24 * HOUR) / 1000);
 
     beforeEach(() => {
-      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1', name: 'Games' });
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        wabaId: 'waba_1',
+        name: 'Games',
+      });
       mockRazorpay.verifyCheckoutSignature.mockReturnValue(true);
       mockRazorpay.fetchSubscription.mockResolvedValue({
         id: 'sub_1',
@@ -457,7 +495,10 @@ describe('BillingService', () => {
 
       await service.confirm('org_1', 'waba_1', payload);
 
-      expect(mockProvisioning.provision).toHaveBeenCalledWith('org_1', 'waba_1');
+      expect(mockProvisioning.provision).toHaveBeenCalledWith(
+        'org_1',
+        'waba_1',
+      );
     });
 
     it('does not pull again on a renewal', async () => {
@@ -477,7 +518,9 @@ describe('BillingService', () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(
         row({ ssoOrgId: 'org_2', status: 'created', currentEnd: null }),
       );
-      mockPrisma.subscription.update.mockResolvedValue(row({ ssoOrgId: 'org_2' }));
+      mockPrisma.subscription.update.mockResolvedValue(
+        row({ ssoOrgId: 'org_2' }),
+      );
       mockProvisioning.isProvisioned.mockResolvedValue(true);
 
       await service.confirm('org_2', 'waba_1', payload);
@@ -492,9 +535,13 @@ describe('BillingService', () => {
         row({ status: 'created', currentEnd: null }),
       );
       mockPrisma.subscription.update.mockResolvedValue(row());
-      mockProvisioning.provision.mockRejectedValueOnce(new Error('Meta is down'));
+      mockProvisioning.provision.mockRejectedValueOnce(
+        new Error('Meta is down'),
+      );
 
-      await expect(service.confirm('org_1', 'waba_1', payload)).resolves.toMatchObject({
+      await expect(
+        service.confirm('org_1', 'waba_1', payload),
+      ).resolves.toMatchObject({
         active: true,
       });
     });
@@ -502,18 +549,27 @@ describe('BillingService', () => {
 
   describe('cancel', () => {
     beforeEach(() => {
-      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1', name: 'Games' });
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        wabaId: 'waba_1',
+        name: 'Games',
+      });
     });
 
     it('stops at the end of the month already paid for', async () => {
       const current = row();
       mockPrisma.subscription.findUnique.mockResolvedValue(current);
-      mockRazorpay.cancelSubscription.mockResolvedValue({ id: 'sub_1', status: 'active' });
+      mockRazorpay.cancelSubscription.mockResolvedValue({
+        id: 'sub_1',
+        status: 'active',
+      });
       mockPrisma.subscription.update.mockResolvedValue({});
 
       await service.cancel('org_1', 'waba_1');
 
-      expect(mockRazorpay.cancelSubscription).toHaveBeenCalledWith('sub_1', true);
+      expect(mockRazorpay.cancelSubscription).toHaveBeenCalledWith(
+        'sub_1',
+        true,
+      );
       expect(mockPrisma.subscription.update).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ cancelAtCycleEnd: true }),
@@ -532,28 +588,42 @@ describe('BillingService', () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(
         row({ status: 'created', currentEnd: null }),
       );
-      mockRazorpay.cancelSubscription.mockResolvedValue({ id: 'sub_1', status: 'cancelled' });
+      mockRazorpay.cancelSubscription.mockResolvedValue({
+        id: 'sub_1',
+        status: 'cancelled',
+      });
       mockPrisma.subscription.update.mockResolvedValue({});
 
       await service.cancel('org_1', 'waba_1');
 
-      expect(mockRazorpay.cancelSubscription).toHaveBeenCalledWith('sub_1', false);
+      expect(mockRazorpay.cancelSubscription).toHaveBeenCalledWith(
+        'sub_1',
+        false,
+      );
     });
 
     it('refuses to cancel twice', async () => {
-      mockPrisma.subscription.findUnique.mockResolvedValue(row({ cancelAtCycleEnd: true }));
-      await expect(service.cancel('org_1', 'waba_1')).rejects.toThrow(BadRequestException);
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ cancelAtCycleEnd: true }),
+      );
+      await expect(service.cancel('org_1', 'waba_1')).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('refuses when there is nothing to cancel', async () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
-      await expect(service.cancel('org_1', 'waba_1')).rejects.toThrow(NotFoundException);
+      await expect(service.cancel('org_1', 'waba_1')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
   describe('what the console is told about the money', () => {
     beforeEach(() => {
-      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'waba_1', name: 'Games' }]);
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'waba_1', name: 'Games' },
+      ]);
       mockPrisma.subscription.findMany.mockResolvedValue([row()]);
     });
 
@@ -639,8 +709,28 @@ describe('BillingService', () => {
         row({ id: 2, wabaId: 'waba_2' }),
       ]);
       mockPrisma.subscriptionPayment.findMany.mockResolvedValue([
-        { subscriptionId: 2, razorpayPaymentId: 'pay_b', amount: 49900, currency: 'INR', status: 'captured', method: 'upi', methodDetail: 'suraj@upi', razorpayInvoiceId: null, paidAt: new Date() },
-        { subscriptionId: 1, razorpayPaymentId: 'pay_a', amount: 49900, currency: 'INR', status: 'captured', method: 'card', methodDetail: 'Visa ···· 4242', razorpayInvoiceId: null, paidAt: new Date() },
+        {
+          subscriptionId: 2,
+          razorpayPaymentId: 'pay_b',
+          amount: 49900,
+          currency: 'INR',
+          status: 'captured',
+          method: 'upi',
+          methodDetail: 'suraj@upi',
+          razorpayInvoiceId: null,
+          paidAt: new Date(),
+        },
+        {
+          subscriptionId: 1,
+          razorpayPaymentId: 'pay_a',
+          amount: 49900,
+          currency: 'INR',
+          status: 'captured',
+          method: 'card',
+          methodDetail: 'Visa ···· 4242',
+          razorpayInvoiceId: null,
+          paidAt: new Date(),
+        },
       ]);
 
       const [games, support] = await service.listStates('org_1');
@@ -666,17 +756,113 @@ describe('BillingService', () => {
       mockPrisma.subscription.update.mockResolvedValue(row());
     });
 
+    describe('additional phone numbers', () => {
+      const chargedNoPayment = () => ({
+        event: 'subscription.charged',
+        payload: {
+          subscription: {
+            entity: { id: 'sub_1', plan_id: 'plan_growth', status: 'active' },
+          },
+        },
+      });
+
+      beforeEach(() => {
+        mockPrisma.subscription.findUnique.mockResolvedValue(
+          row({ planRefId: 2, wabaId: 'waba_1' }),
+        );
+        mockPrisma.plan.findUnique.mockResolvedValue({
+          additionalNumberPrice: 19900,
+          currency: 'INR',
+          name: 'Growth',
+        });
+        mockRazorpay.addSubscriptionAddon.mockResolvedValue({ id: 'ao_1' });
+      });
+
+      it('bills every number after the first, on the next invoice', async () => {
+        mockPrisma.wabaPhoneNumber.count.mockResolvedValue(3);
+
+        await service.handleWebhook('evt_extra', chargedNoPayment() as never);
+
+        expect(mockRazorpay.addSubscriptionAddon).toHaveBeenCalledWith(
+          'sub_1',
+          {
+            name: 'Additional phone numbers',
+            amount: 19900,
+            currency: 'INR',
+            // Three registered numbers, one of them included in the plan.
+            quantity: 2,
+          },
+        );
+      });
+
+      it('charges nothing when the account runs the one number it includes', async () => {
+        mockPrisma.wabaPhoneNumber.count.mockResolvedValue(1);
+
+        await service.handleWebhook('evt_extra_1', chargedNoPayment() as never);
+
+        expect(mockRazorpay.addSubscriptionAddon).not.toHaveBeenCalled();
+      });
+
+      it('charges nothing on a plan that prices no extra numbers', async () => {
+        mockPrisma.plan.findUnique.mockResolvedValue({
+          additionalNumberPrice: null,
+          currency: 'INR',
+          name: 'Agency',
+        });
+        mockPrisma.wabaPhoneNumber.count.mockResolvedValue(4);
+
+        await service.handleWebhook('evt_extra_2', chargedNoPayment() as never);
+
+        expect(mockRazorpay.addSubscriptionAddon).not.toHaveBeenCalled();
+      });
+
+      it('counts only numbers live on the Cloud API', async () => {
+        mockPrisma.wabaPhoneNumber.count.mockResolvedValue(2);
+
+        await service.handleWebhook('evt_extra_3', chargedNoPayment() as never);
+
+        expect(mockPrisma.wabaPhoneNumber.count).toHaveBeenCalledWith({
+          where: { wabaId: 'waba_1', platformType: 'CLOUD_API' },
+        });
+      });
+
+      it('records the payment even when the extra charge cannot be raised', async () => {
+        mockPrisma.wabaPhoneNumber.count.mockRejectedValue(
+          new Error('db down'),
+        );
+
+        // The webhook's real job is the payment that already happened; failing
+        // it would have Razorpay retry a charge we have recorded.
+        await expect(
+          service.handleWebhook('evt_extra_4', chargedNoPayment() as never),
+        ).resolves.toBeUndefined();
+      });
+
+      it('leaves a subscription sold before the price list alone', async () => {
+        mockPrisma.subscription.findUnique.mockResolvedValue(
+          row({ planRefId: null, wabaId: 'waba_1' }),
+        );
+
+        await service.handleWebhook('evt_extra_5', chargedNoPayment() as never);
+
+        expect(mockRazorpay.addSubscriptionAddon).not.toHaveBeenCalled();
+      });
+    });
+
     it('stores the amount and the instrument, keyed on the payment id', async () => {
-      await service.handleWebhook('evt_pay', charged({
-        id: 'pay_9',
-        invoice_id: 'inv_9',
-        amount: 49900,
-        currency: 'INR',
-        status: 'captured',
-        method: 'card',
-        card: { network: 'Visa', last4: '4242' },
-        created_at: 1785000000,
-      }) as never);
+      await service.handleWebhook(
+        'evt_pay',
+        charged({
+          id: 'pay_9',
+          invoice_id: 'inv_9',
+          amount: 49900,
+          currency: 'INR',
+          status: 'captured',
+          method: 'card',
+          card: { network: 'Visa', last4: '4242' },
+          created_at: 1785000000,
+        }) as never,
+      );
 
       expect(mockPrisma.subscriptionPayment.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -692,14 +878,17 @@ describe('BillingService', () => {
     });
 
     it('describes a UPI debit by its handle', async () => {
-      await service.handleWebhook('evt_upi', charged({
-        id: 'pay_10',
-        amount: 49900,
-        currency: 'INR',
-        status: 'captured',
-        method: 'upi',
-        vpa: 'suraj@okhdfcbank',
-      }) as never);
+      await service.handleWebhook(
+        'evt_upi',
+        charged({
+          id: 'pay_10',
+          amount: 49900,
+          currency: 'INR',
+          status: 'captured',
+          method: 'upi',
+          vpa: 'suraj@okhdfcbank',
+        }) as never,
+      );
 
       const written = mockPrisma.subscriptionPayment.upsert.mock.calls[0][0];
       expect(written.create.methodDetail).toBe('suraj@okhdfcbank');
@@ -708,7 +897,9 @@ describe('BillingService', () => {
     it('records nothing for an event with no payment half', async () => {
       await service.handleWebhook('evt_auth', {
         event: 'subscription.authenticated',
-        payload: { subscription: { entity: { id: 'sub_1', status: 'authenticated' } } },
+        payload: {
+          subscription: { entity: { id: 'sub_1', status: 'authenticated' } },
+        },
       } as never);
 
       expect(mockPrisma.subscriptionPayment.upsert).not.toHaveBeenCalled();
@@ -717,15 +908,20 @@ describe('BillingService', () => {
     it('applies the subscription even when the payment cannot be stored', async () => {
       // Billing history is worth having, not worth failing a webhook over:
       // Razorpay would retry the whole delivery and re-apply the state.
-      mockPrisma.subscriptionPayment.upsert.mockRejectedValueOnce(new Error('db down'));
+      mockPrisma.subscriptionPayment.upsert.mockRejectedValueOnce(
+        new Error('db down'),
+      );
 
       await expect(
-        service.handleWebhook('evt_bad', charged({
-          id: 'pay_11',
-          amount: 49900,
-          currency: 'INR',
-          status: 'captured',
-        }) as never),
+        service.handleWebhook(
+          'evt_bad',
+          charged({
+            id: 'pay_11',
+            amount: 49900,
+            currency: 'INR',
+            status: 'captured',
+          }) as never,
+        ),
       ).resolves.toBeUndefined();
       expect(mockPrisma.subscription.update).toHaveBeenCalled();
     });
@@ -735,17 +931,25 @@ describe('BillingService', () => {
     it('moves the paid-until date on a successful charge', async () => {
       const end = Math.floor((Date.now() + 30 * 24 * HOUR) / 1000);
       mockPrisma.subscriptionEvent.create.mockResolvedValue({});
-      mockPrisma.subscription.findUnique.mockResolvedValue(row({ currentEnd: past() }));
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ currentEnd: past() }),
+      );
       mockPrisma.subscription.update.mockResolvedValue({});
 
       await service.handleWebhook(
         'evt_1',
-        hook('subscription.charged', { current_end: end, current_start: end - 2592000 }),
+        hook('subscription.charged', {
+          current_end: end,
+          current_start: end - 2592000,
+        }),
       );
 
       expect(mockPrisma.subscription.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ status: 'active', currentEnd: new Date(end * 1000) }),
+          data: expect.objectContaining({
+            status: 'active',
+            currentEnd: new Date(end * 1000),
+          }),
         }),
       );
       expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
@@ -757,8 +961,9 @@ describe('BillingService', () => {
       const duplicate = Object.assign(new Error('dup'), { code: 'P2002' });
       Object.setPrototypeOf(
         duplicate,
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        require('@prisma/client').Prisma.PrismaClientKnownRequestError.prototype,
+
+        require('@prisma/client').Prisma.PrismaClientKnownRequestError
+          .prototype,
       );
       mockPrisma.subscriptionEvent.create.mockRejectedValue(duplicate);
 
@@ -770,7 +975,9 @@ describe('BillingService', () => {
     it('never shortens a paid month when events arrive out of order', async () => {
       const paidUntil = soon();
       mockPrisma.subscriptionEvent.create.mockResolvedValue({});
-      mockPrisma.subscription.findUnique.mockResolvedValue(row({ currentEnd: paidUntil }));
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ currentEnd: paidUntil }),
+      );
       mockPrisma.subscription.update.mockResolvedValue({});
 
       // An `authenticated` delivered late carries an earlier period.
@@ -783,7 +990,9 @@ describe('BillingService', () => {
       );
 
       expect(mockPrisma.subscription.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ currentEnd: paidUntil }) }),
+        expect.objectContaining({
+          data: expect.objectContaining({ currentEnd: paidUntil }),
+        }),
       );
     });
 
@@ -792,7 +1001,10 @@ describe('BillingService', () => {
       mockPrisma.subscription.findUnique.mockResolvedValue(row());
       mockPrisma.subscription.update.mockResolvedValue({});
 
-      await service.handleWebhook('evt_3', hook('subscription.halted', { status: 'halted' }));
+      await service.handleWebhook(
+        'evt_3',
+        hook('subscription.halted', { status: 'halted' }),
+      );
 
       expect(mockMail.subscriptionPaymentFailed).toHaveBeenCalledWith(
         7,
@@ -828,10 +1040,18 @@ describe('BillingService', () => {
 
       expect(states).toHaveLength(2);
       expect(states[0]).toEqual(
-        expect.objectContaining({ wabaId: 'waba_1', wabaName: 'Games', active: true }),
+        expect.objectContaining({
+          wabaId: 'waba_1',
+          wabaName: 'Games',
+          active: true,
+        }),
       );
       expect(states[1]).toEqual(
-        expect.objectContaining({ wabaId: 'waba_2', active: false, status: null }),
+        expect.objectContaining({
+          wabaId: 'waba_2',
+          active: false,
+          status: null,
+        }),
       );
     });
 
@@ -841,9 +1061,15 @@ describe('BillingService', () => {
         { wabaId: 'waba_2', name: 'Support' },
       ]);
       mockPrisma.subscription.findMany.mockResolvedValue([
-        row({ planId: 'plan_starter', plan: { code: 'starter', name: 'Starter' } }),
+        row({
+          planId: 'plan_starter',
+          plan: { code: 'starter', name: 'Starter' },
+        }),
         {
-          ...row({ planId: 'plan_growth', plan: { code: 'growth', name: 'Growth' } }),
+          ...row({
+            planId: 'plan_growth',
+            plan: { code: 'growth', name: 'Growth' },
+          }),
           id: 2,
           wabaId: 'waba_2',
           razorpaySubscriptionId: 'sub_2',
@@ -884,7 +1110,9 @@ describe('BillingService', () => {
     });
 
     it('quotes no price for an account nobody has chosen a plan for', async () => {
-      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'waba_2', name: 'Support' }]);
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'waba_2', name: 'Support' },
+      ]);
       mockPrisma.subscription.findMany.mockResolvedValue([]);
 
       const [state] = await service.listStates('org_1');
@@ -897,9 +1125,15 @@ describe('BillingService', () => {
     });
 
     it('offers the authorisation page only while nothing is charged', async () => {
-      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'waba_1', name: 'Games' }]);
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'waba_1', name: 'Games' },
+      ]);
       mockPrisma.subscription.findMany.mockResolvedValue([
-        row({ status: 'created', currentEnd: null, shortUrl: 'https://rzp.io/i/abc' }),
+        row({
+          status: 'created',
+          currentEnd: null,
+          shortUrl: 'https://rzp.io/i/abc',
+        }),
       ]);
 
       const [state] = await service.listStates('org_1');
@@ -912,7 +1146,9 @@ describe('BillingService', () => {
 
     it('offers nothing to authorise once the mandate exists', async () => {
       // Checkout has nothing left to do, and the hosted page is retired.
-      mockPrisma.waba.findMany.mockResolvedValue([{ wabaId: 'waba_1', name: 'Games' }]);
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'waba_1', name: 'Games' },
+      ]);
       mockPrisma.subscription.findMany.mockResolvedValue([row()]);
 
       const [state] = await service.listStates('org_1');
@@ -926,7 +1162,9 @@ describe('BillingService', () => {
   describe('reconcile', () => {
     it('re-reads subscriptions whose paid month has run out', async () => {
       // A missed `charged` webhook looks exactly like a lapsed customer.
-      mockPrisma.subscription.findMany.mockResolvedValue([row({ currentEnd: past() })]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        row({ currentEnd: past() }),
+      ]);
       const end = Math.floor((Date.now() + 30 * 24 * HOUR) / 1000);
       mockRazorpay.fetchSubscription.mockResolvedValue({
         id: 'sub_1',
@@ -953,7 +1191,11 @@ describe('BillingService', () => {
       ]);
       mockRazorpay.fetchSubscription
         .mockRejectedValueOnce(new Error('gateway down'))
-        .mockResolvedValueOnce({ id: 'sub_ok', plan_id: 'plan_1', status: 'active' });
+        .mockResolvedValueOnce({
+          id: 'sub_ok',
+          plan_id: 'plan_1',
+          status: 'active',
+        });
       mockPrisma.subscription.update.mockResolvedValue({});
 
       await service.reconcile();

@@ -302,6 +302,45 @@ export class RazorpayService {
   }
 
   /**
+   * Add a recurring extra to the *next* invoice of a subscription.
+   *
+   * Razorpay has no second recurring price on a plan, so a per-number charge
+   * is an add-on raised once per cycle: this is called as each cycle is
+   * charged, for the cycle after it. That is also why a number added today is
+   * billed from the next invoice rather than prorated into the current one —
+   * nobody is charged mid-month for something they have just switched on.
+   */
+  async addSubscriptionAddon(
+    subscriptionId: string,
+    input: { name: string; amount: number; currency: string; quantity: number },
+  ): Promise<{ id: string } | null> {
+    try {
+      const { data } = await this.api().post<{ id: string }>(
+        `/subscriptions/${subscriptionId}/addons`,
+        {
+          item: {
+            name: input.name,
+            amount: input.amount,
+            currency: input.currency,
+          },
+          quantity: input.quantity,
+        },
+      );
+      return data;
+    } catch (err) {
+      // Never fatal: the add-on is money we have not collected, not a state
+      // the subscription depends on, and the caller is a webhook Razorpay will
+      // stop retrying if we throw.
+      const error = err as AxiosError<{ error?: { description?: string } }>;
+      this.logger.error(
+        `Could not add the extra-numbers charge to ${subscriptionId}: ` +
+          (error.response?.data?.error?.description ?? error.message),
+      );
+      return null;
+    }
+  }
+
+  /**
    * @param atCycleEnd Stop after the month already paid for, rather than now.
    */
   async cancelSubscription(

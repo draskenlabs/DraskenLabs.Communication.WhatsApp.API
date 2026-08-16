@@ -1,6 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { WabaService } from './waba.service';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { WabaMembershipService } from './waba-membership.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { orgDirectoryDouble } from 'src/org/org.test-doubles';
@@ -41,6 +46,20 @@ const mockMailNotifications = mailNotificationsDouble();
 const mockMembership = wabaMembershipDouble();
 const mockOrgDirectory = orgDirectoryDouble();
 
+const realPlanLimits = new PlanLimitsService({} as never);
+const mockPlanLimits = {
+  forOrg: jest.fn().mockResolvedValue({
+    planCode: 'growth',
+    planName: 'Growth',
+    wabas: 3,
+    phoneNumbersPerWaba: 3,
+    teamMembers: 5,
+    webhookEndpoints: 10,
+    historyDays: 90,
+  }),
+  assertWithin: realPlanLimits.assertWithin.bind(realPlanLimits),
+};
+
 describe('WabaService', () => {
   let service: WabaService;
 
@@ -53,6 +72,7 @@ describe('WabaService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: WabaMembershipService, useValue: mockMembership },
         { provide: OrgDirectoryService, useValue: mockOrgDirectory },
+        { provide: PlanLimitsService, useValue: mockPlanLimits },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: RedisService, useValue: mockRedis },
       ],
@@ -109,6 +129,7 @@ describe('WabaService', () => {
 
     it('creates a new WABA when none exists', async () => {
       mockPrisma.wabaOrganisation.findUnique.mockResolvedValue(null);
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(0);
       mockPrisma.waba.upsert.mockResolvedValue({ ...data });
       mockPrisma.wabaOrganisation.upsert.mockResolvedValue({});
 
@@ -118,6 +139,7 @@ describe('WabaService', () => {
     });
 
     it('updates WABA when requester is the owner', async () => {
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(0);
       mockPrisma.wabaOrganisation.findUnique.mockResolvedValue({
         wabaId: 'w1',
         ssoOrgId: 'sso_org_1',
@@ -145,6 +167,32 @@ describe('WabaService', () => {
           create: expect.objectContaining({ wabaId: 'w1', ssoOrgId: 'sso_org_second' }),
         }),
       );
+    });
+
+    it("refuses a new account past the organisation's plan limit", async () => {
+      mockPrisma.wabaOrganisation.findUnique.mockResolvedValue(null);
+      // Growth includes three; a fourth is what the plan is upgraded for.
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(3);
+
+      await expect(service.createOrUpdateWaba(data)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrisma.waba.upsert).not.toHaveBeenCalled();
+    });
+
+    it('lets an account already connected here through, at any count', async () => {
+      // Reconnecting or refreshing metadata must not start failing because the
+      // organisation is at its limit — it is not adding anything.
+      mockPrisma.wabaOrganisation.findUnique.mockResolvedValue({
+        wabaId: data.wabaId,
+        ssoOrgId: data.ssoOrgId,
+        userId: data.userId,
+      });
+      mockPrisma.wabaOrganisation.count.mockResolvedValue(9);
+      mockPrisma.waba.upsert.mockResolvedValue({ ...data });
+      mockPrisma.wabaOrganisation.upsert.mockResolvedValue({});
+
+      await expect(service.createOrUpdateWaba(data)).resolves.toBeDefined();
     });
 
     it('refuses when someone else in the same organisation connected it', async () => {

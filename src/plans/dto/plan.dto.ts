@@ -96,6 +96,15 @@ export class PlanDto {
   @ApiProperty({ description: 'subscribe | contact' })
   ctaKind: string;
 
+  @ApiProperty({
+    description:
+      'Whether this tier can be bought right now — a sellable plan with a ' +
+      'Razorpay plan behind it. False for a quoted tier, and for one this ' +
+      'deployment has not wired up yet, so the console can offer to talk ' +
+      'rather than open a checkout that would be refused.',
+  })
+  available: boolean;
+
   @ApiProperty()
   ctaLabel: string;
 }
