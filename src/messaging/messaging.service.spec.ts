@@ -330,6 +330,54 @@ describe('MessagingService', () => {
 
       await expect(service.findOne('sso_org_1', 1, 'w1')).rejects.toThrow(NotFoundException);
     });
+
+    it("returns Meta's reason for a failure, so the console need not guess", async () => {
+      mockPrisma.message.findUnique.mockResolvedValue({
+        id: 1,
+        ssoOrgId: 'sso_org_1',
+        phoneNumberId: 'p1',
+        to: '111',
+        type: 'text',
+        status: 'failed',
+        payload: {},
+        failureReason: 'Re-engagement message',
+        failureCode: 131047,
+        failureDetail:
+          'Message failed to send because more than 24 hours have passed since ' +
+          'the customer last replied to this number.',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const message = await service.findOne('sso_org_1', 1);
+
+      expect(message.error).toEqual({
+        code: 131047,
+        title: 'Re-engagement message',
+        detail:
+          'Message failed to send because more than 24 hours have passed since ' +
+          'the customer last replied to this number.',
+      });
+    });
+
+    it('carries no error block for a message that did not fail', async () => {
+      mockPrisma.message.findUnique.mockResolvedValue({
+        id: 1,
+        ssoOrgId: 'sso_org_1',
+        phoneNumberId: 'p1',
+        to: '111',
+        type: 'text',
+        status: 'delivered',
+        payload: {},
+        failureReason: null,
+        failureCode: null,
+        failureDetail: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      expect((await service.findOne('sso_org_1', 1)).error).toBeUndefined();
+    });
   });
 
   describe('analytics', () => {

@@ -42,8 +42,7 @@ export class StatusUpdateHandler {
       // Only advance status forward — never go read → delivered
       if (STATUS_ORDER[status] <= STATUS_ORDER[existing.status]) return;
 
-      const reason =
-        status === 'failed' ? this.failureReason(statusUpdate) : null;
+      const failure = status === 'failed' ? this.failure(statusUpdate) : null;
       const now = new Date();
 
       await this.prisma.message.update({
@@ -59,7 +58,12 @@ export class StatusUpdateHandler {
             readAt: now,
             deliveredAt: existing.deliveredAt ?? now,
           }),
-          ...(status === 'failed' && { failedAt: now, failureReason: reason }),
+          ...(status === 'failed' && {
+            failedAt: now,
+            failureReason: failure?.title ?? null,
+            failureCode: failure?.code ?? null,
+            failureDetail: failure?.detail ?? null,
+          }),
         },
       });
 
@@ -72,12 +76,43 @@ export class StatusUpdateHandler {
     }
   }
 
-  /** Meta's own words for why a send failed, when it gives any. */
-  private failureReason(statusUpdate: unknown): string | null {
+  /**
+   * Meta's own account of why a send failed, when it gives one.
+   *
+   * The title is the short label ("Re-engagement message"); `error_data.details`
+   * is the sentence that actually tells a sender what went wrong ("more than 24
+   * hours have passed since the customer last replied to this number"). Both
+   * are kept: the title groups in the analytics, the detail is what the console
+   * shows.
+   */
+  private failure(statusUpdate: unknown): {
+    code: number | null;
+    title: string | null;
+    detail: string | null;
+  } | null {
     const { errors } = (statusUpdate ?? {}) as { errors?: unknown };
     if (!Array.isArray(errors) || errors.length === 0) return null;
-    const first = errors[0] as { title?: unknown; message?: unknown };
-    const text: unknown = first.title ?? first.message;
-    return typeof text === 'string' && text.trim() ? text : null;
+
+    const first = (errors[0] ?? {}) as {
+      code?: unknown;
+      title?: unknown;
+      message?: unknown;
+      error_data?: { details?: unknown };
+    };
+
+    const text = (value: unknown): string | null =>
+      typeof value === 'string' && value.trim() ? value.trim() : null;
+
+    return {
+      code: typeof first.code === 'number' ? first.code : null,
+      title: text(first.title) ?? text(first.message),
+      // Meta repeats the title in `message` on some errors, so it is only a
+      // detail when it says something the title did not.
+      detail:
+        text(first.error_data?.details) ??
+        (text(first.message) !== text(first.title)
+          ? text(first.message)
+          : null),
+    };
   }
 }
