@@ -3,6 +3,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { WabaPhoneNumberService } from './waba-phone-number.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { WabaMembershipService } from 'src/waba/waba-membership.service';
 import { billingServiceDouble } from 'src/billing/billing.test-doubles';
 import { wabaMembershipDouble } from 'src/waba/waba.test-doubles';
@@ -18,6 +19,7 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 const mockPrisma = {
   waba: { findFirst: jest.fn() },
   wabaPhoneNumber: {
+    count: jest.fn(),
     findFirst: jest.fn(),
     findMany: jest.fn(),
     upsert: jest.fn(),
@@ -32,6 +34,20 @@ const mockRedis = { setPhoneCache: jest.fn(), invalidatePhoneCache: jest.fn() };
 
 const mockMailNotifications = mailNotificationsDouble();
 
+const realPlanLimits = new PlanLimitsService({} as never);
+const mockPlanLimits = {
+  forWaba: jest.fn().mockResolvedValue({
+    planCode: 'starter',
+    planName: 'Starter',
+    wabas: 1,
+    phoneNumbersPerWaba: 1,
+    teamMembers: 2,
+    webhookEndpoints: 2,
+    historyDays: 30,
+  }),
+  assertWithin: realPlanLimits.assertWithin.bind(realPlanLimits),
+};
+
 describe('WabaPhoneNumberService', () => {
   let service: WabaPhoneNumberService;
 
@@ -39,12 +55,16 @@ describe('WabaPhoneNumberService', () => {
     jest.clearAllMocks();
     // No stale numbers to prune unless a test overrides it.
     mockPrisma.wabaPhoneNumber.findMany.mockResolvedValue([]);
+    // Nothing registered on the account yet, so the plan's first number is free
+    // to take unless a test says otherwise.
+    mockPrisma.wabaPhoneNumber.count.mockResolvedValue(0);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         { provide: MailNotifications, useValue: mockMailNotifications },
         WabaPhoneNumberService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: SubscriptionAccessService, useValue: billingServiceDouble() },
+        { provide: PlanLimitsService, useValue: mockPlanLimits },
         { provide: WabaMembershipService, useValue: mockMembership },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: RedisService, useValue: mockRedis },
@@ -204,6 +224,40 @@ describe('WabaPhoneNumberService', () => {
       expect(result.platformType).toBe('CLOUD_API');
       // No user in the entry: who may send is a membership question now.
       expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 'w1', 'enc_token');
+    });
+
+    it("refuses a number past the account's plan limit, before calling Meta", async () => {
+      // Starter includes one number; the second is an upgrade, not a request
+      // Meta should be asked to register.
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({
+        phoneNumberId: 'phone_2',
+        wabaId: 'waba_1',
+        platformType: 'NOT_APPLICABLE',
+      });
+      mockPrisma.wabaPhoneNumber.count.mockResolvedValue(1);
+
+      await expect(
+        service.registerPhoneNumber(1, 'org_1', 'waba_1', 'phone_2', '123456'),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('re-registers a number already live without counting it again', async () => {
+      // It is already one of the numbers being paid for; registering it again
+      // adds nothing to the count.
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({
+        phoneNumberId: 'phone_1',
+        wabaId: 'waba_1',
+        platformType: 'CLOUD_API',
+      });
+      mockPrisma.wabaPhoneNumber.count.mockResolvedValue(1);
+      mockedAxios.post.mockResolvedValue({ data: { success: true } });
+      mockedAxios.get.mockResolvedValue({ data: { data: [] } });
+
+      await expect(
+        service.registerPhoneNumber(1, 'org_1', 'waba_1', 'phone_1', '123456'),
+      ).resolves.toBeDefined();
+      expect(mockedAxios.post).toHaveBeenCalled();
     });
 
     it('translates a Meta failure into a BadRequestException and does not re-sync', async () => {

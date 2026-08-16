@@ -15,6 +15,7 @@ import { WabaResponseDto } from './dto/waba-response.dto';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import { WabaMembershipService } from './waba-membership.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import {
   isMetaAuthFailure,
   metaErrorMessage,
@@ -33,6 +34,7 @@ export class WabaService {
     private readonly mail: MailNotifications,
     private readonly membership: WabaMembershipService,
     private readonly orgDirectory: OrgDirectoryService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
   /**
@@ -44,7 +46,10 @@ export class WabaService {
    * Non-fatal: a failure here (e.g. missing `whatsapp_business_management`
    * permission) is logged but must not break connecting/syncing.
    */
-  async subscribeAppToWaba(wabaId: string, rawAccessToken: string): Promise<boolean> {
+  async subscribeAppToWaba(
+    wabaId: string,
+    rawAccessToken: string,
+  ): Promise<boolean> {
     try {
       await axios.post(
         `https://graph.facebook.com/${this.metaApiVersion}/${wabaId}/subscribed_apps`,
@@ -70,8 +75,14 @@ export class WabaService {
     wabaId: string,
     userId?: number,
   ): Promise<boolean> {
-    const userWhatsapp = await this.membership.connection(ssoOrgId, wabaId, userId);
-    const rawAccessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
+    const userWhatsapp = await this.membership.connection(
+      ssoOrgId,
+      wabaId,
+      userId,
+    );
+    const rawAccessToken = this.encryptionService.decrypt(
+      userWhatsapp.accessToken,
+    );
     return this.subscribeAppToWaba(wabaId, rawAccessToken);
   }
 
@@ -99,7 +110,10 @@ export class WabaService {
     });
     const connected = new Set(connections.map((c) => c.wabaId));
 
-    return wabas.map((waba) => ({ ...waba, connected: connected.has(waba.wabaId) }));
+    return wabas.map((waba) => ({
+      ...waba,
+      connected: connected.has(waba.wabaId),
+    }));
   }
 
   async findByWabaId(ssoOrgId: string, wabaId: string): Promise<Waba> {
@@ -123,7 +137,11 @@ export class WabaService {
     wabaId: string,
     userId?: number,
   ): Promise<any> {
-    const userWhatsapp = await this.membership.connection(ssoOrgId, wabaId, userId);
+    const userWhatsapp = await this.membership.connection(
+      ssoOrgId,
+      wabaId,
+      userId,
+    );
 
     const accessToken = this.encryptionService.decrypt(
       userWhatsapp.accessToken,
@@ -196,6 +214,25 @@ export class WabaService {
       );
     }
 
+    // How many accounts an organisation may hold is what its plan says.
+    // Checked only for one it does not already have: reconnecting an existing
+    // account, or refreshing its metadata, must not start failing because the
+    // organisation is at its limit.
+    if (!membership) {
+      const [connected, limits] = await Promise.all([
+        this.prisma.wabaOrganisation.count({
+          where: { ssoOrgId: data.ssoOrgId },
+        }),
+        this.planLimits.forOrg(data.ssoOrgId),
+      ]);
+      this.planLimits.assertWithin(
+        limits,
+        limits.wabas,
+        connected,
+        'WhatsApp Business Account',
+      );
+    }
+
     const waba = await this.prisma.waba.upsert({
       where: { wabaId: data.wabaId },
       update: {
@@ -240,23 +277,35 @@ export class WabaService {
     return waba;
   }
 
-  async disconnectWaba(userId: number, ssoOrgId: string, wabaId: string): Promise<void> {
+  async disconnectWaba(
+    userId: number,
+    ssoOrgId: string,
+    wabaId: string,
+  ): Promise<void> {
     const waba = await this.prisma.waba.findFirst({
       where: { wabaId, WabaOrganisation: { some: { ssoOrgId } } },
     });
-    if (!waba) throw new NotFoundException('WABA not found in your organisation');
+    if (!waba)
+      throw new NotFoundException('WABA not found in your organisation');
 
     const userWhatsapp = await this.prisma.userWhatsapp.findUnique({
       where: { userId_wabaId: { userId, wabaId } },
     });
-    if (!userWhatsapp) throw new ForbiddenException('You are not the owner of this WABA connection');
+    if (!userWhatsapp)
+      throw new ForbiddenException(
+        'You are not the owner of this WABA connection',
+      );
 
     // Invalidate Redis phone cache for all phone numbers on this WABA
     const phoneNumbers = await this.prisma.wabaPhoneNumber.findMany({
       where: { wabaId },
       select: { phoneNumberId: true },
     });
-    await Promise.all(phoneNumbers.map((p) => this.redisService.invalidatePhoneCache(p.phoneNumberId)));
+    await Promise.all(
+      phoneNumbers.map((p) =>
+        this.redisService.invalidatePhoneCache(p.phoneNumberId),
+      ),
+    );
 
     // Everyone who used this WABA is told, before the connection goes — after
     // the delete there is nobody left to look up.

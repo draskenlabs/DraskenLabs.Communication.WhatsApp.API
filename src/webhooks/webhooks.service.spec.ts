@@ -7,17 +7,28 @@ import { InboundMessageHandler } from './handlers/inbound-message.handler';
 import { StatusUpdateHandler } from './handlers/status-update.handler';
 import { AccountHandler } from './handlers/account.handler';
 import { TemplateStatusHandler } from './handlers/template-status.handler';
+import { WebhookDispatcherService } from './webhook-dispatcher.service';
 
 const mockPrisma = {
-  webhookEvent: { create: jest.fn(), update: jest.fn(), findMany: jest.fn(), count: jest.fn() },
+  webhookEvent: {
+    create: jest.fn(),
+    update: jest.fn(),
+    findMany: jest.fn(),
+    count: jest.fn(),
+  },
   waba: { findFirst: jest.fn() },
   $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
 };
 const mockConfig = { get: jest.fn().mockReturnValue('a-verify-token') };
 const mockInbound = { handle: jest.fn() };
 const mockStatus = { handle: jest.fn() };
-const mockAccount = { handleAccountUpdate: jest.fn(), handlePhoneQualityUpdate: jest.fn(), handlePhoneNameUpdate: jest.fn() };
+const mockAccount = {
+  handleAccountUpdate: jest.fn(),
+  handlePhoneQualityUpdate: jest.fn(),
+  handlePhoneNameUpdate: jest.fn(),
+};
 const mockTemplateStatus = { handle: jest.fn() };
+const mockDispatcher = { enqueue: jest.fn() };
 
 describe('WebhooksService', () => {
   let service: WebhooksService;
@@ -34,6 +45,7 @@ describe('WebhooksService', () => {
         { provide: StatusUpdateHandler, useValue: mockStatus },
         { provide: AccountHandler, useValue: mockAccount },
         { provide: TemplateStatusHandler, useValue: mockTemplateStatus },
+        { provide: WebhookDispatcherService, useValue: mockDispatcher },
       ],
     }).compile();
     service = module.get<WebhooksService>(WebhooksService);
@@ -52,28 +64,62 @@ describe('WebhooksService', () => {
 
     const payload = {
       object: 'whatsapp_business_account',
-      entry: [{
-        id: 'waba1',
-        changes: [{
-          field: 'messages',
-          value: {
-            metadata: { phone_number_id: 'p1' },
-            contacts: [{ profile: { name: 'Alice' } }],
-            messages: [{ id: 'wamid.1', from: '111', timestamp: '1700000000', type: 'text', text: { body: 'Hi' } }],
-            statuses: [{ id: 'wamid.2', status: 'delivered', timestamp: '1700000001', recipient_id: '111' }],
-          },
-        }],
-      }],
+      entry: [
+        {
+          id: 'waba1',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                metadata: { phone_number_id: 'p1' },
+                contacts: [{ profile: { name: 'Alice' } }],
+                messages: [
+                  {
+                    id: 'wamid.1',
+                    from: '111',
+                    timestamp: '1700000000',
+                    type: 'text',
+                    text: { body: 'Hi' },
+                  },
+                ],
+                statuses: [
+                  {
+                    id: 'wamid.2',
+                    status: 'delivered',
+                    timestamp: '1700000001',
+                    recipient_id: '111',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
     };
 
     await service.processPayload(payload);
 
     expect(mockPrisma.webhookEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ eventType: 'messages', wabaId: 'waba1' }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: 'messages',
+          wabaId: 'waba1',
+        }),
+      }),
     );
-    expect(mockInbound.handle).toHaveBeenCalledWith('waba1', 'p1', payload.entry[0].changes[0].value.messages[0], 'Alice');
-    expect(mockStatus.handle).toHaveBeenCalledWith(payload.entry[0].changes[0].value.statuses[0]);
-    expect(mockPrisma.webhookEvent.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { processed: true } });
+    expect(mockInbound.handle).toHaveBeenCalledWith(
+      'waba1',
+      'p1',
+      payload.entry[0].changes[0].value.messages[0],
+      'Alice',
+    );
+    expect(mockStatus.handle).toHaveBeenCalledWith(
+      payload.entry[0].changes[0].value.statuses[0],
+    );
+    expect(mockPrisma.webhookEvent.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: { processed: true },
+    });
   });
 
   it('routes account_update to account handler', async () => {
@@ -83,7 +129,17 @@ describe('WebhooksService', () => {
 
     await service.processPayload({
       object: 'whatsapp_business_account',
-      entry: [{ id: 'w1', changes: [{ field: 'account_update', value: { event: 'ACCOUNT_RESTRICTION' } }] }],
+      entry: [
+        {
+          id: 'w1',
+          changes: [
+            {
+              field: 'account_update',
+              value: { event: 'ACCOUNT_RESTRICTION' },
+            },
+          ],
+        },
+      ],
     });
 
     expect(mockAccount.handleAccountUpdate).toHaveBeenCalled();
@@ -96,7 +152,17 @@ describe('WebhooksService', () => {
 
     await service.processPayload({
       object: 'whatsapp_business_account',
-      entry: [{ id: 'w1', changes: [{ field: 'message_template_status_update', value: { event: 'APPROVED' } }] }],
+      entry: [
+        {
+          id: 'w1',
+          changes: [
+            {
+              field: 'message_template_status_update',
+              value: { event: 'APPROVED' },
+            },
+          ],
+        },
+      ],
     });
 
     expect(mockTemplateStatus.handle).toHaveBeenCalled();
@@ -105,7 +171,9 @@ describe('WebhooksService', () => {
   it('records error on event when handler throws', async () => {
     mockPrisma.webhookEvent.create.mockResolvedValue({ id: 4 });
     mockPrisma.webhookEvent.update.mockResolvedValue({});
-    mockAccount.handleAccountUpdate.mockRejectedValue(new Error('handler blew up'));
+    mockAccount.handleAccountUpdate.mockRejectedValue(
+      new Error('handler blew up'),
+    );
 
     await service.processPayload({
       object: 'whatsapp_business_account',
@@ -116,6 +184,48 @@ describe('WebhooksService', () => {
       where: { id: 4 },
       data: { error: 'handler blew up' },
     });
+  });
+
+  it('forwards the event to customer endpoints, with the kind and the raw payload', async () => {
+    mockPrisma.webhookEvent.create.mockResolvedValue({ id: 11 });
+    mockPrisma.webhookEvent.update.mockResolvedValue({});
+    mockStatus.handle.mockResolvedValue(undefined);
+
+    const value = {
+      statuses: [{ id: 'wamid.1', status: 'delivered', recipient_id: '91982' }],
+    };
+    await service.processPayload({
+      object: 'whatsapp_business_account',
+      entry: [{ id: 'w1', changes: [{ field: 'messages', value }] }],
+    });
+
+    expect(mockDispatcher.enqueue).toHaveBeenCalledWith(
+      'w1',
+      11,
+      'messages',
+      expect.objectContaining({ kind: 'status_update', status: 'delivered' }),
+      value,
+    );
+  });
+
+  it('forwards even when our own handler failed — the customer is owed the event', async () => {
+    mockPrisma.webhookEvent.create.mockResolvedValue({ id: 12 });
+    mockPrisma.webhookEvent.update.mockResolvedValue({});
+    mockAccount.handleAccountUpdate.mockRejectedValue(
+      new Error('handler blew up'),
+    );
+
+    await service.processPayload({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'w1',
+          changes: [{ field: 'account_update', value: { event: 'VERIFIED' } }],
+        },
+      ],
+    });
+
+    expect(mockDispatcher.enqueue).toHaveBeenCalled();
   });
 
   describe('getConfig', () => {
@@ -140,33 +250,88 @@ describe('WebhooksService', () => {
   describe('getRecentEvents', () => {
     it('rejects a WABA that does not belong to the org', async () => {
       mockPrisma.waba.findFirst.mockResolvedValue(null);
-      await expect(service.getRecentEvents('org1', 'wabaX')).rejects.toThrow(ForbiddenException);
+      await expect(service.getRecentEvents('org1', 'wabaX')).rejects.toThrow(
+        ForbiddenException,
+      );
       expect(mockPrisma.webhookEvent.findMany).not.toHaveBeenCalled();
     });
 
     it('describes stored events in terms an operator can read', async () => {
-      mockPrisma.waba.findFirst.mockResolvedValue({ id: 1, wabaId: 'waba1', ssoOrgId: 'org1' });
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        id: 1,
+        wabaId: 'waba1',
+        ssoOrgId: 'org1',
+      });
       const created = new Date('2026-07-27T10:00:00.000Z');
       mockPrisma.webhookEvent.findMany.mockResolvedValue([
-        { id: 10, eventType: 'messages', wabaId: 'waba1', processed: true, error: null, createdAt: created,
-          payload: { statuses: [{ id: 'wamid.9', status: 'read', recipient_id: '919822010210',
-            conversation: { origin: { type: 'marketing' } } }] } },
-        { id: 11, eventType: 'messages', wabaId: 'waba1', processed: true, error: null, createdAt: created,
+        {
+          id: 10,
+          eventType: 'messages',
+          wabaId: 'waba1',
+          processed: true,
+          error: null,
+          createdAt: created,
+          payload: {
+            statuses: [
+              {
+                id: 'wamid.9',
+                status: 'read',
+                recipient_id: '919822010210',
+                conversation: { origin: { type: 'marketing' } },
+              },
+            ],
+          },
+        },
+        {
+          id: 11,
+          eventType: 'messages',
+          wabaId: 'waba1',
+          processed: true,
+          error: null,
+          createdAt: created,
           payload: {
             contacts: [{ profile: { name: 'Aanya' } }],
-            messages: [{ from: '919822010210', id: 'wamid.in', type: 'text', text: { body: 'Where is my order?' } }],
-          } },
-        { id: 12, eventType: 'message_template_status_update', wabaId: 'waba1', processed: false, error: 'x', createdAt: created,
-          payload: { message_template_name: 'order_confirmation', message_template_language: 'en_US', event: 'APPROVED', reason: 'NONE' } },
+            messages: [
+              {
+                from: '919822010210',
+                id: 'wamid.in',
+                type: 'text',
+                text: { body: 'Where is my order?' },
+              },
+            ],
+          },
+        },
+        {
+          id: 12,
+          eventType: 'message_template_status_update',
+          wabaId: 'waba1',
+          processed: false,
+          error: 'x',
+          createdAt: created,
+          payload: {
+            message_template_name: 'order_confirmation',
+            message_template_language: 'en_US',
+            event: 'APPROVED',
+            reason: 'NONE',
+          },
+        },
       ]);
 
       mockPrisma.webhookEvent.count.mockResolvedValue(3);
       const result = await service.getRecentEvents('org1', 'waba1');
 
       expect(mockPrisma.webhookEvent.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { wabaId: 'waba1' }, orderBy: { createdAt: 'desc' } }),
+        expect.objectContaining({
+          where: { wabaId: 'waba1' },
+          orderBy: { createdAt: 'desc' },
+        }),
       );
-      expect(result.meta).toEqual({ total: 3, totalPages: 1, page: 1, limit: 20 });
+      expect(result.meta).toEqual({
+        total: 3,
+        totalPages: 1,
+        page: 1,
+        limit: 20,
+      });
 
       // The wamid moves out of the headline into its own field — it is an id,
       // not something to read.
@@ -196,12 +361,39 @@ describe('WebhooksService', () => {
     });
 
     it('surfaces why a message failed', async () => {
-      mockPrisma.waba.findFirst.mockResolvedValue({ id: 1, wabaId: 'waba1', ssoOrgId: 'org1' });
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        id: 1,
+        wabaId: 'waba1',
+        ssoOrgId: 'org1',
+      });
       mockPrisma.webhookEvent.findMany.mockResolvedValue([
-        { id: 13, eventType: 'messages', wabaId: 'waba1', processed: true, error: null, createdAt: new Date(),
-          payload: { statuses: [{ id: 'wamid.f', status: 'failed', recipient_id: '919822010210',
-            errors: [{ code: 131026, title: 'Message undeliverable',
-              error_data: { details: 'Receiver is incapable of receiving this message' } }] }] } },
+        {
+          id: 13,
+          eventType: 'messages',
+          wabaId: 'waba1',
+          processed: true,
+          error: null,
+          createdAt: new Date(),
+          payload: {
+            statuses: [
+              {
+                id: 'wamid.f',
+                status: 'failed',
+                recipient_id: '919822010210',
+                errors: [
+                  {
+                    code: 131026,
+                    title: 'Message undeliverable',
+                    error_data: {
+                      details:
+                        'Receiver is incapable of receiving this message',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
       ]);
       mockPrisma.webhookEvent.count.mockResolvedValue(1);
 
@@ -210,12 +402,17 @@ describe('WebhooksService', () => {
       expect(result.data[0]).toMatchObject({
         title: 'Message failed',
         status: 'failed',
-        reason: 'Message undeliverable — Receiver is incapable of receiving this message',
+        reason:
+          'Message undeliverable — Receiver is incapable of receiving this message',
       });
     });
 
     it('clamps the limit to at most 100 and paginates', async () => {
-      mockPrisma.waba.findFirst.mockResolvedValue({ id: 1, wabaId: 'waba1', ssoOrgId: 'org1' });
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        id: 1,
+        wabaId: 'waba1',
+        ssoOrgId: 'org1',
+      });
       mockPrisma.webhookEvent.findMany.mockResolvedValue([]);
       mockPrisma.webhookEvent.count.mockResolvedValue(0);
       await service.getRecentEvents('org1', 'waba1', { page: 3, limit: 500 });

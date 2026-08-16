@@ -4,10 +4,11 @@ import { WabaPhoneNumberController } from './waba-phone-number.controller';
 import { SubscriptionAccessModule } from 'src/billing/subscription-access.module';
 import { WabaMembershipModule } from 'src/waba/waba-membership.module';
 import { UserModule } from 'src/user/user.module';
+import { PlansModule } from 'src/plans/plans.module';
 import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
 
 @Module({
-  imports: [UserModule, SubscriptionAccessModule, WabaMembershipModule],
+  imports: [UserModule, SubscriptionAccessModule, WabaMembershipModule, PlansModule],
   providers: [WabaPhoneNumberService],
   controllers: [WabaPhoneNumberController],
   exports: [WabaPhoneNumberService],

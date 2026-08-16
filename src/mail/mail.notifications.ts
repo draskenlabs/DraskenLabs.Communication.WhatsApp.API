@@ -120,6 +120,40 @@ export class MailNotifications {
     });
   }
 
+  /**
+   * T2b — we switched a webhook endpoint off after it kept failing.
+   *
+   * Nobody watches a delivery log, so without this the first sign that events
+   * stopped arriving is a customer asking why nothing was answered. The URL is
+   * theirs and safe to repeat; the payloads we could not deliver are not, and
+   * stay in the console.
+   */
+  async webhookEndpointDisabled(
+    userId: number,
+    ssoOrgId: string,
+    url: string,
+    failures: number,
+  ): Promise<void> {
+    const [recipient] = await this.mail.recipientsByIds([userId]);
+    if (!recipient) return;
+
+    await this.mail.sendTo(recipient, {
+      kind: 'transactional',
+      template: 'webhook.endpoint-disabled',
+      subject: 'A webhook endpoint was switched off',
+      heading: 'We stopped delivering to your webhook endpoint',
+      intro:
+        `The last ${failures} deliveries to this endpoint were given up on after ` +
+        'every retry failed, so we have switched it off. No events are being sent to it.',
+      facts: [...(await this.orgFacts({ ssoOrgId })), ['Endpoint', url]],
+      paragraphs: [
+        'Fix the endpoint, then send a test from the console — enabling it again clears the failure count and delivery resumes with the next event.',
+        'Events that failed while it was off are kept in the delivery log and can be sent again from there.',
+      ],
+      action: { label: 'Review webhooks', path: '/webhooks' },
+    });
+  }
+
   /** T3 — a key was revoked. */
   async apiKeyRevoked(userId: number, ssoOrgId: string, accessKey: string): Promise<void> {
     const [recipient] = await this.mail.recipientsByIds([userId]);

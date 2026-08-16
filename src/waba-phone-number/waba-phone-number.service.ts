@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { WabaMembershipService } from 'src/waba/waba-membership.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -18,6 +19,18 @@ import {
   metaFailureMessage,
 } from 'src/common/utils/meta-error';
 
+/**
+ * Meta's `platform_type` for a number that has been registered on the Cloud
+ * API — the only ones that can send, and so the only ones worth counting
+ * against a plan or charging for.
+ */
+export const CLOUD_API_PLATFORM = 'CLOUD_API';
+
+/** How many of an account's numbers are live on the Cloud API. */
+export function registeredNumbersWhere(wabaId: string) {
+  return { wabaId, platformType: CLOUD_API_PLATFORM };
+}
+
 @Injectable()
 export class WabaPhoneNumberService {
   private readonly logger = new Logger(WabaPhoneNumberService.name);
@@ -29,6 +42,7 @@ export class WabaPhoneNumberService {
     private readonly redisService: RedisService,
     private readonly mail: MailNotifications,
     private readonly billing: SubscriptionAccessService,
+    private readonly planLimits: PlanLimitsService,
     private readonly membership: WabaMembershipService,
   ) {}
 
@@ -54,11 +68,33 @@ export class WabaPhoneNumberService {
     const phone = await this.prisma.wabaPhoneNumber.findFirst({
       where: { phoneNumberId, wabaId },
     });
-    if (!phone) throw new NotFoundException('Phone number not found for this WABA');
+    if (!phone)
+      throw new NotFoundException('Phone number not found for this WABA');
 
-    const userWhatsapp = await this.membership.connection(ssoOrgId, wabaId, userId);
+    // How many numbers this account may run is what its plan says. Counted
+    // against numbers already registered on the Cloud API, not every number
+    // Meta lists on the account: the ones sitting unregistered cost nothing
+    // and send nothing.
+    const registered = await this.registeredCount(wabaId);
+    if (!this.isRegistered(phone)) {
+      const limits = await this.planLimits.forWaba(ssoOrgId, wabaId);
+      this.planLimits.assertWithin(
+        limits,
+        limits.phoneNumbersPerWaba,
+        registered,
+        'phone number',
+      );
+    }
 
-    const rawAccessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
+    const userWhatsapp = await this.membership.connection(
+      ssoOrgId,
+      wabaId,
+      userId,
+    );
+
+    const rawAccessToken = this.encryptionService.decrypt(
+      userWhatsapp.accessToken,
+    );
 
     try {
       await axios.post(
@@ -76,12 +112,26 @@ export class WabaPhoneNumberService {
         `Meta register failed for phone ${phoneNumberId} on WABA ${wabaId}`,
         err,
       );
-      throw new BadRequestException(metaMessage || 'Failed to register phone number');
+      throw new BadRequestException(
+        metaMessage || 'Failed to register phone number',
+      );
     }
 
     const phones = await this.fetchAndUpsert(wabaId, rawAccessToken);
     await this.populatePhoneCache(phones, wabaId, userWhatsapp.accessToken);
     return phones.find((p) => p.phoneNumberId === phoneNumberId) ?? phone;
+  }
+
+  /** Whether this number is already live on the Cloud API. */
+  private isRegistered(phone: { platformType: string | null }): boolean {
+    return phone.platformType?.toUpperCase() === CLOUD_API_PLATFORM;
+  }
+
+  /** How many of this account's numbers are registered on the Cloud API. */
+  private registeredCount(wabaId: string): Promise<number> {
+    return this.prisma.wabaPhoneNumber.count({
+      where: registeredNumbersWhere(wabaId),
+    });
   }
 
   /**
@@ -111,20 +161,27 @@ export class WabaPhoneNumberService {
    * connector, so listing numbers used to 404 for a second organisation — and
    * for every colleague of the person who first connected the account.
    */
-  async findAllByWabaId(ssoOrgId: string, wabaId: string): Promise<WabaPhoneNumber[]> {
+  async findAllByWabaId(
+    ssoOrgId: string,
+    wabaId: string,
+  ): Promise<WabaPhoneNumber[]> {
     await this.membership.require(ssoOrgId, wabaId);
     return this.prisma.wabaPhoneNumber.findMany({ where: { wabaId } });
   }
 
   // Fetches phone numbers from Meta and upserts them into the DB.
-  private async fetchAndUpsert(wabaId: string, rawAccessToken: string): Promise<WabaPhoneNumber[]> {
+  private async fetchAndUpsert(
+    wabaId: string,
+    rawAccessToken: string,
+  ): Promise<WabaPhoneNumber[]> {
     let response: { data?: { data?: any[] } };
     try {
       response = await axios.get(
         `https://graph.facebook.com/v25.0/${wabaId}/phone_numbers`,
         {
           params: {
-            fields: 'id,verified_name,code_verification_status,display_phone_number,quality_rating,platform_type,throughput,last_onboarded_time',
+            fields:
+              'id,verified_name,code_verification_status,display_phone_number,quality_rating,platform_type,throughput,last_onboarded_time',
           },
           headers: { Authorization: `Bearer ${rawAccessToken}` },
         },
@@ -136,7 +193,9 @@ export class WabaPhoneNumberService {
         err,
         'Could not read phone numbers from Meta.',
       );
-      this.logger.warn(`Meta phone-number sync failed for ${wabaId}: ${message}`);
+      this.logger.warn(
+        `Meta phone-number sync failed for ${wabaId}: ${message}`,
+      );
       if (isMetaAuthFailure(err)) {
         void this.mail.metaTokenRejected(wabaId, metaErrorMessage(err));
       }
@@ -186,7 +245,9 @@ export class WabaPhoneNumberService {
         where: { wabaId, phoneNumberId: { notIn: keepIds } },
       });
       await Promise.all(
-        stale.map((p) => this.redisService.invalidatePhoneCache(p.phoneNumberId)),
+        stale.map((p) =>
+          this.redisService.invalidatePhoneCache(p.phoneNumberId),
+        ),
       );
     }
 
@@ -222,9 +283,15 @@ export class WabaPhoneNumberService {
     ssoOrgId: string,
     wabaId: string,
   ): Promise<WabaPhoneNumber[]> {
-    const userWhatsapp = await this.membership.connection(ssoOrgId, wabaId, userId);
+    const userWhatsapp = await this.membership.connection(
+      ssoOrgId,
+      wabaId,
+      userId,
+    );
 
-    const rawAccessToken = this.encryptionService.decrypt(userWhatsapp.accessToken);
+    const rawAccessToken = this.encryptionService.decrypt(
+      userWhatsapp.accessToken,
+    );
     const phones = await this.fetchAndUpsert(wabaId, rawAccessToken);
     await this.populatePhoneCache(phones, wabaId, userWhatsapp.accessToken);
     return phones;

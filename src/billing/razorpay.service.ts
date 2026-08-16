@@ -23,7 +23,12 @@ export interface RazorpayPlan {
   id: string;
   period: string;
   interval: number;
-  item: { amount: number; currency: string; name?: string; description?: string };
+  item: {
+    amount: number;
+    currency: string;
+    name?: string;
+    description?: string;
+  };
 }
 
 /** A payment, as the `subscription.charged` webhook carries it. */
@@ -70,17 +75,25 @@ export class RazorpayService {
 
     // Billing is optional configuration, like push and email: an instance
     // without Razorpay credentials runs normally and charges nobody.
+    // Overridable so an integration test can point the whole client at a
+    // local stand-in and assert on the requests we actually send. Unset — as
+    // it is in every deployment — this is Razorpay.
+    const baseURL =
+      config.get<string>('RAZORPAY_API_BASE') ?? 'https://api.razorpay.com/v1';
+
     this.client =
       keyId && keySecret
         ? axios.create({
-            baseURL: 'https://api.razorpay.com/v1',
+            baseURL,
             auth: { username: keyId, password: keySecret },
             timeout: 15000,
           })
         : null;
 
     if (!this.client) {
-      this.logger.warn('Razorpay is not configured — subscriptions are disabled');
+      this.logger.warn(
+        'Razorpay is not configured — subscriptions are disabled',
+      );
     }
   }
 
@@ -119,7 +132,9 @@ export class RazorpayService {
 
   private api(): AxiosInstance {
     if (!this.client) {
-      throw new BadGatewayException('Payments are not configured on this deployment');
+      throw new BadGatewayException(
+        'Payments are not configured on this deployment',
+      );
     }
     return this.client;
   }
@@ -130,13 +145,17 @@ export class RazorpayService {
     this.logger.error(`${context}: ${description ?? error.message}`);
     // Their wording is usually the actionable part ("plan is not active"), so
     // it is passed through rather than replaced with a generic failure.
-    throw new BadGatewayException(description ?? 'Payment provider request failed');
+    throw new BadGatewayException(
+      description ?? 'Payment provider request failed',
+    );
   }
 
   /** Razorpay's wording when an email or contact is already on a customer. */
   private isDuplicateCustomer(err: unknown): boolean {
     const error = err as AxiosError<{ error?: { description?: string } }>;
-    return /already exists/i.test(error.response?.data?.error?.description ?? '');
+    return /already exists/i.test(
+      error.response?.data?.error?.description ?? '',
+    );
   }
 
   async createCustomer(input: {
@@ -202,7 +221,9 @@ export class RazorpayService {
       for (let page = 0; page < maxPages; page++) {
         const { data } = await this.api().get<{
           items?: { id: string; email?: string | null }[];
-        }>('/customers', { params: { count: pageSize, skip: page * pageSize } });
+        }>('/customers', {
+          params: { count: pageSize, skip: page * pageSize },
+        });
 
         const items = data.items ?? [];
         const hit = items.find(
@@ -258,24 +279,70 @@ export class RazorpayService {
    * A monthly subscription. `total_count` is Razorpay's required cycle count;
    * ten years of months stands in for "until cancelled", which their API has
    * no way to express.
+   *
+   * @param input.planId The tier being sold. Falls back to the deployment's
+   * configured plan, which is what a deployment with one price still uses.
    */
   async createSubscription(input: {
     customerId?: string;
     notes?: Record<string, string>;
+    planId?: string;
   }): Promise<RazorpaySubscription> {
     try {
-      const { data } = await this.api().post<RazorpaySubscription>('/subscriptions', {
-        plan_id: this.planId,
-        total_count: 120,
-        customer_id: input.customerId,
-        // Razorpay sends the mandate and pre-debit notifications the RBI
-        // requires; doing it ourselves would duplicate them.
-        customer_notify: 1,
-        notes: input.notes,
-      });
+      const { data } = await this.api().post<RazorpaySubscription>(
+        '/subscriptions',
+        {
+          plan_id: input.planId ?? this.planId,
+          total_count: 120,
+          customer_id: input.customerId,
+          // Razorpay sends the mandate and pre-debit notifications the RBI
+          // requires; doing it ourselves would duplicate them.
+          customer_notify: 1,
+          notes: input.notes,
+        },
+      );
       return data;
     } catch (err) {
       this.fail('Razorpay subscription creation failed', err);
+    }
+  }
+
+  /**
+   * Add a recurring extra to the *next* invoice of a subscription.
+   *
+   * Razorpay has no second recurring price on a plan, so a per-number charge
+   * is an add-on raised once per cycle: this is called as each cycle is
+   * charged, for the cycle after it. That is also why a number added today is
+   * billed from the next invoice rather than prorated into the current one —
+   * nobody is charged mid-month for something they have just switched on.
+   */
+  async addSubscriptionAddon(
+    subscriptionId: string,
+    input: { name: string; amount: number; currency: string; quantity: number },
+  ): Promise<{ id: string } | null> {
+    try {
+      const { data } = await this.api().post<{ id: string }>(
+        `/subscriptions/${subscriptionId}/addons`,
+        {
+          item: {
+            name: input.name,
+            amount: input.amount,
+            currency: input.currency,
+          },
+          quantity: input.quantity,
+        },
+      );
+      return data;
+    } catch (err) {
+      // Never fatal: the add-on is money we have not collected, not a state
+      // the subscription depends on, and the caller is a webhook Razorpay will
+      // stop retrying if we throw.
+      const error = err as AxiosError<{ error?: { description?: string } }>;
+      this.logger.error(
+        `Could not add the extra-numbers charge to ${subscriptionId}: ` +
+          (error.response?.data?.error?.description ?? error.message),
+      );
+      return null;
     }
   }
 
@@ -326,7 +393,9 @@ export class RazorpayService {
     }
   }
 
-  async fetchSubscription(subscriptionId: string): Promise<RazorpaySubscription> {
+  async fetchSubscription(
+    subscriptionId: string,
+  ): Promise<RazorpaySubscription> {
     try {
       const { data } = await this.api().get<RazorpaySubscription>(
         `/subscriptions/${subscriptionId}`,

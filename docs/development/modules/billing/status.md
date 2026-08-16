@@ -58,6 +58,20 @@
   customer reuse across accounts, listing accounts with and without
   subscriptions, register/cancel guards, webhook idempotency and out-of-order
   ordering, reconciliation resilience, the paywall, and signature verification.
+- **Payment is covered end to end as well** —
+  `test/integration/billing-payment.int-spec.ts`, 27 tests against a real
+  Postgres and a Razorpay stand-in over real HTTP: the plan id a subscription
+  is created against and the basic-auth pair it is created with; checkout over
+  HTTP with a real token (and 401/404/400 for unauthenticated, another
+  organisation, and a quoted tier); the Checkout signature, forged and genuine;
+  a signed `subscription.charged` (unsigned and tampered are refused); the
+  ₹199 add-on's amount and quantity, counting only Cloud-API numbers; the same
+  event delivered three times billing once; an add-on failure not losing the
+  payment; cancelling at cycle end and immediately, and Razorpay refusing. It
+  found one bug on its first run — `confirm()` answered `planCode: null`
+  because the update that re-read the subscription had no `include`.
+  It needs a database, so it is not part of `npm test`: see
+  [`test/integration/README.md`](../../../../test/integration/README.md).
 
 ## Before this can take money
 

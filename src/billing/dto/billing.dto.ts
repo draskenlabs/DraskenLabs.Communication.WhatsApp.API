@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 /** What the subscription costs, read from the Razorpay plan. */
 export class SubscriptionPlanDto {
@@ -20,7 +20,10 @@ export class SubscriptionPlanDto {
   @ApiProperty({ example: 'INR' })
   currency: string;
 
-  @ApiProperty({ description: 'monthly, yearly, weekly, daily', example: 'monthly' })
+  @ApiProperty({
+    description: 'monthly, yearly, weekly, daily',
+    example: 'monthly',
+  })
   period: string;
 
   @ApiProperty({ description: 'How many periods per charge', example: 1 })
@@ -41,7 +44,10 @@ export class SubscriptionPaymentDto {
   @ApiProperty({ example: 'INR' })
   currency: string;
 
-  @ApiProperty({ description: 'Razorpay’s own vocabulary', example: 'captured' })
+  @ApiProperty({
+    description: 'Razorpay’s own vocabulary',
+    example: 'captured',
+  })
   status: string;
 
   @ApiProperty({ nullable: true, example: 'card' })
@@ -62,7 +68,10 @@ export class SubscriptionStateDto {
   @ApiProperty({ description: 'The WhatsApp Business Account this covers' })
   wabaId: string;
 
-  @ApiProperty({ nullable: true, description: 'That account’s name, for display' })
+  @ApiProperty({
+    nullable: true,
+    description: 'That account’s name, for display',
+  })
   wabaName: string | null;
 
   @ApiProperty({
@@ -74,12 +83,16 @@ export class SubscriptionStateDto {
 
   @ApiProperty({
     nullable: true,
-    description: 'Razorpay status, or null when this account was never subscribed',
+    description:
+      'Razorpay status, or null when this account was never subscribed',
     example: 'active',
   })
   status: string | null;
 
-  @ApiProperty({ nullable: true, description: 'Start of the month currently paid for' })
+  @ApiProperty({
+    nullable: true,
+    description: 'Start of the month currently paid for',
+  })
   currentStart: Date | null;
 
   @ApiProperty({
@@ -112,12 +125,26 @@ export class SubscriptionStateDto {
 
   @ApiProperty({
     nullable: true,
-    description: 'Publishable Razorpay key id, which Checkout needs in the browser',
+    description:
+      'Publishable Razorpay key id, which Checkout needs in the browser',
   })
   keyId: string | null;
 
-  @ApiProperty({ description: 'Whether this deployment can sell subscriptions at all' })
+  @ApiProperty({
+    description: 'Whether this deployment can sell subscriptions at all',
+  })
   billingEnabled: boolean;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Published tier this was sold as (starter, growth, business). Null for ' +
+      'a subscription on the deployment’s configured plan.',
+  })
+  planCode: string | null;
+
+  @ApiProperty({ nullable: true, description: 'That tier’s name, for display' })
+  planName: string | null;
 
   @ApiProperty({
     type: SubscriptionPlanDto,
@@ -157,11 +184,28 @@ export class SubscriptionStateDto {
   paidCount: number;
 }
 
+/** Body for `POST /billing/subscriptions/:wabaId`. */
+export class RegisterSubscriptionDto {
+  @ApiPropertyOptional({
+    description:
+      'Tier from the published price list (`GET /plans`), e.g. growth. Omit ' +
+      'to use the deployment’s configured plan. A tier that is quoted rather ' +
+      'than sold, or that has no Razorpay plan behind it, is refused.',
+    example: 'growth',
+  })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  planCode?: string;
+}
+
 export class SubscriptionRegisteredDto {
   @ApiProperty({ description: 'The account the subscription was started for' })
   wabaId: string;
 
-  @ApiProperty({ description: 'Open Razorpay Checkout with this subscription id' })
+  @ApiProperty({
+    description: 'Open Razorpay Checkout with this subscription id',
+  })
   subscriptionId: string;
 
   @ApiProperty({ description: 'Publishable key id Checkout is opened with' })
@@ -175,6 +219,12 @@ export class SubscriptionRegisteredDto {
 
   @ApiProperty()
   status: string;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'The tier it was sold as, or null on the configured plan',
+  })
+  planCode: string | null;
 }
 
 /** What Razorpay Checkout hands back when the mandate is authorised. */

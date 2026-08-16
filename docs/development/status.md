@@ -101,6 +101,8 @@ Current overall status of the DraskenLabs WhatsApp Communication API.
 | GET | `/analytics/phone-numbers` | JWT | Per-number volume, failure rate, quality history |
 | GET | `/analytics/export` | JWT | Any of the above as CSV |
 | GET | `/search` | JWT | Contacts, messages, templates, numbers and WABAs in one query |
+| GET | `/plans` | None | The published price list — plans, prices and limits |
+| GET | `/plans/:code` | None | One plan by code |
 
 ---
 
@@ -118,6 +120,10 @@ Current overall status of the DraskenLabs WhatsApp Communication API.
 | `Contact` | ✅ Live | `ssoOrgId + phone` unique; opt-out enforced at send time |
 | `InboundMessage` | ✅ Live | Inbound messages; idempotent on `metaMessageId` |
 | `WebhookEvent` | ✅ Live | Raw event log with processed/error flags |
+| `WebhookEndpoint` | ✅ Live | Customer-registered delivery endpoints, per WABA; optional encrypted signing secret |
+| `WebhookDelivery` | ✅ Live | The outbound outbox — payload, attempts, retry time, response |
+| `Plan` | ✅ Live | The published price list; limits as columns, `razorpayPlanId` never leaves the API |
+| `PlanFeature` | ✅ Live | One row per bullet on a plan card, ordered |
 | `Organisation` | ❌ Removed | Managed entirely by Drasken SSO — no local table |
 | `OrgMember` | ❌ Removed | Managed entirely by Drasken SSO — no local table |
 
