@@ -200,6 +200,18 @@ export class MessagingService {
       templateName: m.templateName ?? undefined,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
+      // Why it failed, in Meta's words. A caller showing "failed" on its own
+      // leaves the sender guessing at a cause the webhook already reported.
+      ...(m.status === 'failed' &&
+      (m.failureReason || m.failureDetail || m.failureCode)
+        ? {
+            error: {
+              ...(m.failureCode !== null ? { code: m.failureCode } : {}),
+              ...(m.failureReason ? { title: m.failureReason } : {}),
+              ...(m.failureDetail ? { detail: m.failureDetail } : {}),
+            },
+          }
+        : {}),
     };
   }
 

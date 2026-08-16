@@ -109,6 +109,84 @@ describe('StatusUpdateHandler', () => {
     );
   });
 
+  it("keeps Meta's code and explanation, not just the title", async () => {
+    mockPrisma.message.findUnique.mockResolvedValue({ id: 1, status: 'sent' });
+    mockPrisma.message.update.mockResolvedValue({});
+
+    await handler.handle({
+      id: 'wamid.abc',
+      status: 'failed',
+      errors: [
+        {
+          code: 131047,
+          title: 'Re-engagement message',
+          message: 'Re-engagement message',
+          error_data: {
+            details:
+              'Message failed to send because more than 24 hours have passed ' +
+              'since the customer last replied to this number.',
+          },
+        },
+      ],
+    });
+
+    expect(mockPrisma.message.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          failureReason: 'Re-engagement message',
+          failureCode: 131047,
+          failureDetail:
+            'Message failed to send because more than 24 hours have passed ' +
+            'since the customer last replied to this number.',
+        }),
+      }),
+    );
+  });
+
+  it('does not repeat the title as the detail', async () => {
+    mockPrisma.message.findUnique.mockResolvedValue({ id: 1, status: 'sent' });
+    mockPrisma.message.update.mockResolvedValue({});
+
+    await handler.handle({
+      id: 'wamid.abc',
+      status: 'failed',
+      errors: [
+        {
+          code: 131026,
+          title: 'Message undeliverable',
+          message: 'Message undeliverable',
+        },
+      ],
+    });
+
+    expect(mockPrisma.message.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          failureReason: 'Message undeliverable',
+          failureCode: 131026,
+          failureDetail: null,
+        }),
+      }),
+    );
+  });
+
+  it('clears nothing it cannot read — an errorless failure stores nulls', async () => {
+    mockPrisma.message.findUnique.mockResolvedValue({ id: 1, status: 'sent' });
+    mockPrisma.message.update.mockResolvedValue({});
+
+    await handler.handle({ id: 'wamid.abc', status: 'failed' });
+
+    expect(mockPrisma.message.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          failureReason: null,
+          failureCode: null,
+          failureDetail: null,
+        }),
+      }),
+    );
+  });
+
   it('ignores unknown status values', async () => {
     mockPrisma.message.findUnique.mockResolvedValue({ id: 1, status: 'sent' });
     await handler.handle({ id: 'wamid.abc', status: 'unknown_status' });

@@ -319,8 +319,17 @@ model Message {
   readAt        DateTime?
   failedAt      DateTime?
   /// Meta's reason for a failure, so the analytics can rank causes instead of
-  /// just counting failures.
+  /// just counting failures. Its short title ("Re-engagement message"), which
+  /// is what groups usefully — the sentence explaining it lives in
+  /// `failureDetail`.
   failureReason String?
+  /// Meta's numeric error code, e.g. 131047. Identifies the failure exactly,
+  /// and is what their error-code reference is indexed by.
+  failureCode   Int?
+  /// Meta's own explanation of the failure — "more than 24 hours have passed
+  /// since the customer last replied to this number" — shown to the sender,
+  /// who cannot act on a four-word title.
+  failureDetail String?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 

@@ -91,5 +91,13 @@ Provides the core WhatsApp message sending capability of the platform. Enables a
 | `payload` | JSON | Full message payload |
 | `status` | Enum | `sent`, `delivered`, `read`, `failed` |
 | `userId` | Int | FK → User |
+| `failureReason` | String? | Meta's short title for a failure, e.g. `Re-engagement message` — what the analytics ranking groups by |
+| `failureCode` | Int? | Meta's error code, e.g. `131047` |
+| `failureDetail` | String? | Meta's explanation, e.g. "more than 24 hours have passed since the customer last replied to this number" |
 | `createdAt` | DateTime | Send time |
 | `updatedAt` | DateTime | Last status update |
+
+A failed message is returned with an `error` block — `{ code, title, detail }`,
+from the three columns above — on both the list and the detail endpoint. Without
+it a caller can only say "failed", while the status webhook already reported
+why.
