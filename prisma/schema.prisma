@@ -531,13 +531,25 @@ model MailLog {
   /// The template key, e.g. "template.status" or "digest.failed-sends".
   kind      String
   subject   String
-  /// sent | suppressed | skipped | failed
+  /// sent | suppressed | skipped | failed | abandoned
   status    String
   /// SES message id, for tracing a delivery with AWS support.
   messageId String?
   error     String?
+  /// Delivery attempts made, including the first. A failed row is retried by
+  /// the sweep until this passes the retry limit, then it is `abandoned`.
+  attempts  Int      @default(1)
+  /// When the sweep may try again. Null once the row is settled.
+  retryAt   DateTime?
+  /// What the message was made of, so a retry can rebuild it. Written only for
+  /// a row awaiting retry, and cleared the moment it is settled — a support
+  /// message body is the sender's content, not something to keep on file.
+  payload   Json?
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@index([kind, createdAt])
+  /// The sweep's query: rows due for another attempt.
+  @@index([status, retryAt])
 }

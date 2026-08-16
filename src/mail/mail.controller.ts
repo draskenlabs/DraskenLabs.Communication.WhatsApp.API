@@ -14,6 +14,7 @@ import { ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { MailService } from './mail.service';
 import { MailNotifications } from './mail.notifications';
+import { resolveSupportMailbox } from './support-mailbox';
 import { PrismaService } from 'src/prisma/prisma.service';
 import {
   BroadcastDto,
@@ -28,7 +29,7 @@ import {
   ApiWrappedOkResponse,
 } from 'src/common/responses/swagger.decorators';
 
-/** Where each support topic is delivered. */
+/** The per-topic override, when a deployment wants one mailbox to differ. */
 const TOPIC_MAILBOX: Record<string, string> = {
   support: 'SUPPORT_EMAIL',
   privacy: 'PRIVACY_EMAIL',
@@ -74,7 +75,11 @@ export class MailController {
     }
 
     const topic = dto.topic ?? 'support';
-    const mailbox = this.config.get<string>(TOPIC_MAILBOX[topic]);
+    const mailbox = resolveSupportMailbox(topic, {
+      base: this.config.get<string>('SUPPORT_EMAIL'),
+      override: this.config.get<string>(TOPIC_MAILBOX[topic]),
+      tagging: this.config.get<string>('SUPPORT_EMAIL_TAGGING') !== 'false',
+    });
     if (!mailbox) {
       throw new BadRequestException(`No mailbox is configured for "${topic}".`);
     }
@@ -83,14 +88,33 @@ export class MailController {
     // they are; anonymous ones are accepted too.
     const userId = (req as Request & { user?: { id: number } }).user?.id;
 
-    await this.notifications.supportRequest({
+    const delivered = await this.notifications.supportRequest({
       to: mailbox,
       fromEmail: dto.email,
       fromName: dto.name,
       subject: dto.subject,
       message: dto.message,
+      topic,
       userId,
     });
+
+    // A failed send used to be answered with "we have your message", which is
+    // the worst thing to tell someone whose message went nowhere. The retry
+    // sweep will try again — it is kept and re-sent, not dropped — but the
+    // sender is told plainly rather than reassured, and given the address to
+    // write to if it matters now.
+    if (!delivered) {
+      this.logger.error(
+        `Support request from ${dto.email} could not be delivered to ${mailbox}`,
+      );
+      throw new ServiceUnavailableException(
+        `We could not deliver your message just now. We will keep trying, but ` +
+          `if it is urgent please write to ${mailbox} directly.`,
+      );
+    }
+
+    // Only once the message is actually with us: an acknowledgement for
+    // something that never arrived is the same false promise in an email.
     await this.notifications.supportAcknowledgement(dto.email, dto.subject);
 
     return {

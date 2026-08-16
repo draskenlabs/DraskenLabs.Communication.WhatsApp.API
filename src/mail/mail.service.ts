@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SesService } from './ses.service';
@@ -16,6 +17,9 @@ export type MailKind =
   | 'emailDailySummary'
   | 'emailWeeklySummary'
   | 'emailProductNews';
+
+/** What one delivery attempt came to. Written verbatim to `MailLog.status`. */
+type MailOutcome = 'sent' | 'failed' | 'suppressed' | 'skipped';
 
 /** The preference columns an unsubscribe link may switch off. */
 const UNSUBSCRIBABLE = new Set<string>([
@@ -42,6 +46,30 @@ interface SendOptions {
   paragraphs?: string[];
   action?: { label: string; path: string };
   footnote?: string;
+}
+
+/**
+ * Retries after the first attempt before a message is given up on. SES is
+ * usually down for minutes, not hours, so three tries over roughly two and a
+ * half hours covers a blip without mailing someone yesterday's news.
+ */
+export const MAX_MAIL_RETRIES = 3;
+
+/** Minutes to wait before attempt 2, 3 and 4. */
+const BACKOFF_MINUTES = [5, 30, 120];
+
+/**
+ * How long a claimed row is held before another replica may take it. Longer
+ * than a send takes, short enough that a pod killed mid-send is not a message
+ * lost for the afternoon.
+ */
+const LEASE_MINUTES = 10;
+
+/** When the next attempt is due, or null once there are none left. */
+function nextRetryAt(attempts: number, now: Date): Date | null {
+  const wait = BACKOFF_MINUTES[attempts - 1];
+  if (wait === undefined) return null;
+  return new Date(now.getTime() + wait * 60_000);
 }
 
 @Injectable()
@@ -97,56 +125,68 @@ export class MailService {
     if (!this.ses.enabled) return false;
 
     try {
-      if (await this.isSuppressed(recipient.email)) {
-        await this.log(recipient, options, 'suppressed');
-        return false;
-      }
-      if (!(await this.wants(recipient.userId, options.kind))) {
-        await this.log(recipient, options, 'skipped');
-        return false;
-      }
-
-      const unsubscribeUrl =
-        options.kind === 'transactional'
-          ? undefined
-          : this.unsubscribeUrl(recipient.userId, options.kind);
-
-      const { html, text } = layout({
-        heading: options.heading,
-        intro: options.intro,
-        facts: options.facts,
-        paragraphs: options.paragraphs,
-        action: options.action
-          ? {
-              label: options.action.label,
-              url: this.appUrl(options.action.path),
-            }
-          : undefined,
-        footnote: options.footnote,
-        unsubscribeUrl,
-      });
-
-      const result = await this.ses.send({
-        to: recipient.email,
-        subject: options.subject,
-        html,
-        text,
-        unsubscribeUrl,
-      });
-
+      const outcome = await this.attempt(recipient, options);
       await this.log(
         recipient,
         options,
-        result.ok ? 'sent' : 'failed',
-        result.messageId,
-        result.error,
+        outcome.status,
+        outcome.messageId,
+        outcome.error,
       );
-      return result.ok;
+      return outcome.status === 'sent';
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.error(`Could not send ${options.template}: ${detail}`);
       return false;
     }
+  }
+
+  /**
+   * One delivery attempt: the checks, the layout and the SES call, with no
+   * logging. Shared by the first send and every retry, so a retry cannot skip
+   * a suppression that landed in between.
+   */
+  private async attempt(
+    recipient: Recipient,
+    options: SendOptions,
+  ): Promise<{ status: MailOutcome; messageId?: string; error?: string }> {
+    if (await this.isSuppressed(recipient.email))
+      return { status: 'suppressed' };
+    if (!(await this.wants(recipient.userId, options.kind))) {
+      return { status: 'skipped' };
+    }
+
+    const unsubscribeUrl =
+      options.kind === 'transactional'
+        ? undefined
+        : this.unsubscribeUrl(recipient.userId, options.kind);
+
+    const { html, text } = layout({
+      heading: options.heading,
+      intro: options.intro,
+      facts: options.facts,
+      paragraphs: options.paragraphs,
+      action: options.action
+        ? {
+            label: options.action.label,
+            url: this.appUrl(options.action.path),
+          }
+        : undefined,
+      footnote: options.footnote,
+      unsubscribeUrl,
+    });
+
+    const result = await this.ses.send({
+      to: recipient.email,
+      subject: options.subject,
+      html,
+      text,
+      unsubscribeUrl,
+    });
+
+    return result.ok
+      ? { status: 'sent', messageId: result.messageId }
+      : { status: 'failed', error: result.error };
   }
 
   /** Send the same message to several people. */
@@ -277,6 +317,7 @@ export class MailService {
     messageId?: string,
     error?: string,
   ): Promise<void> {
+    const failed = status === 'failed';
     try {
       await this.prisma.mailLog.create({
         data: {
@@ -287,11 +328,166 @@ export class MailService {
           status,
           messageId: messageId ?? null,
           error: error ?? null,
+          attempts: 1,
+          // Only a failure is worth keeping the content for: it is the one
+          // outcome another attempt could change.
+          ...(failed
+            ? {
+                retryAt: nextRetryAt(1, new Date()),
+                payload: {
+                  recipient,
+                  options,
+                } as unknown as Prisma.InputJsonValue,
+              }
+            : {}),
         },
       });
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Could not record mail log: ${detail}`);
     }
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Retry                                                             *
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Try again on the sends that failed and are due another attempt.
+   *
+   * A failed send used to end there: the row said what went wrong and nothing
+   * ever acted on it, so a support request lost to a network blip was lost for
+   * good. Each attempt goes through the ordinary send path, so an address
+   * suppressed since the failure, or a preference switched off in the
+   * meantime, is honoured rather than overridden by a queue.
+   *
+   * Every row is claimed before it is sent, because the API runs more than one
+   * replica and each of them runs this timer: without the claim, two pods pick
+   * up the same failed row in the same tick and the recipient gets it twice.
+   *
+   * Returns what happened, for the scheduler's log.
+   */
+  async retryFailed(
+    limit = 50,
+  ): Promise<{ retried: number; sent: number; abandoned: number }> {
+    const result = { retried: 0, sent: 0, abandoned: 0 };
+    if (!this.ses.enabled) return result;
+
+    const now = new Date();
+    const due = await this.prisma.mailLog.findMany({
+      where: { status: 'failed', retryAt: { not: null, lte: now } },
+      orderBy: { retryAt: 'asc' },
+      take: limit,
+    });
+
+    for (const row of due) {
+      try {
+        await this.retryRow(row, result, now);
+      } catch (err: unknown) {
+        // One unreadable row must not stop the sweep clearing the rest.
+        const detail = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Retry of mail log ${row.id} failed: ${detail}`);
+      }
+    }
+
+    return result;
+  }
+
+  /** One row's retry, split out so a failure is contained to that row. */
+  private async retryRow(
+    row: {
+      id: number;
+      kind: string;
+      email: string;
+      attempts: number;
+      payload: unknown;
+    },
+    result: { retried: number; sent: number; abandoned: number },
+    now: Date,
+  ): Promise<void> {
+    // Compare-and-set: only the replica whose update matches gets to send.
+    // The lease also covers a pod that dies mid-send — the row falls due again
+    // rather than being stuck as "being retried" forever.
+    const claimed = await this.prisma.mailLog.updateMany({
+      where: { id: row.id, status: 'failed', retryAt: { lte: now } },
+      data: { retryAt: new Date(now.getTime() + LEASE_MINUTES * 60_000) },
+    });
+    if (claimed.count === 0) return;
+
+    const parsed = this.parsePayload(row.payload);
+    if (!parsed) {
+      // Nothing to rebuild the message from — a row written before retries
+      // existed, or one whose payload was cleared. Settle it rather than
+      // asking again every five minutes forever.
+      await this.settle(row.id, 'abandoned', row.attempts, 'no payload');
+      result.abandoned++;
+      return;
+    }
+
+    result.retried++;
+    const attempts = row.attempts + 1;
+    const outcome = await this.attempt(parsed.recipient, parsed.options);
+
+    if (outcome.status === 'sent') {
+      await this.settle(row.id, 'sent', attempts, null, outcome.messageId);
+      result.sent++;
+      return;
+    }
+    // Suppressed or switched off since the failure: settled, not retried.
+    if (outcome.status !== 'failed') {
+      await this.settle(row.id, outcome.status, attempts);
+      result.abandoned++;
+      return;
+    }
+
+    const retryAt =
+      attempts > MAX_MAIL_RETRIES ? null : nextRetryAt(attempts, now);
+    if (!retryAt) {
+      await this.settle(row.id, 'abandoned', attempts, outcome.error);
+      result.abandoned++;
+      this.logger.error(
+        `Gave up on ${row.kind} to ${row.email} after ${attempts} attempts: ${outcome.error ?? 'unknown error'}`,
+      );
+      return;
+    }
+    await this.prisma.mailLog.update({
+      where: { id: row.id },
+      data: { attempts, retryAt, error: outcome.error ?? null },
+    });
+  }
+
+  /** Write a row's final state, dropping the content it no longer needs. */
+  private async settle(
+    id: number,
+    status: string,
+    attempts: number,
+    error?: string | null,
+    messageId?: string,
+  ): Promise<void> {
+    await this.prisma.mailLog.update({
+      where: { id },
+      data: {
+        status,
+        attempts,
+        retryAt: null,
+        payload: Prisma.DbNull,
+        ...(messageId ? { messageId } : {}),
+        ...(error !== undefined ? { error } : {}),
+      },
+    });
+  }
+
+  /** A stored payload, or null when it is not the shape we wrote. */
+  private parsePayload(
+    payload: unknown,
+  ): { recipient: Recipient; options: SendOptions } | null {
+    if (!payload || typeof payload !== 'object') return null;
+    const { recipient, options } = payload as {
+      recipient?: Recipient;
+      options?: SendOptions;
+    };
+    if (!recipient?.email || !options?.subject || !options?.template)
+      return null;
+    return { recipient, options };
   }
 }
