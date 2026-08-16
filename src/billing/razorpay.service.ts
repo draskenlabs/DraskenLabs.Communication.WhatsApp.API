@@ -75,10 +75,16 @@ export class RazorpayService {
 
     // Billing is optional configuration, like push and email: an instance
     // without Razorpay credentials runs normally and charges nobody.
+    // Overridable so an integration test can point the whole client at a
+    // local stand-in and assert on the requests we actually send. Unset — as
+    // it is in every deployment — this is Razorpay.
+    const baseURL =
+      config.get<string>('RAZORPAY_API_BASE') ?? 'https://api.razorpay.com/v1';
+
     this.client =
       keyId && keySecret
         ? axios.create({
-            baseURL: 'https://api.razorpay.com/v1',
+            baseURL,
             auth: { username: keyId, password: keySecret },
             timeout: 15000,
           })

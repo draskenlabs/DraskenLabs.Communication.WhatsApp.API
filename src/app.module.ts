@@ -102,6 +102,9 @@ import * as Joi from 'joi';
         // opening a checkout that would be refused.
         RAZORPAY_PLAN_IDS: Joi.string().optional(),
         RAZORPAY_WEBHOOK_SECRET: Joi.string().optional(),
+        // Only ever set by the integration suite, which points the client at a
+        // local stand-in for Razorpay.
+        RAZORPAY_API_BASE: Joi.string().uri().optional(),
       }),
     }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),

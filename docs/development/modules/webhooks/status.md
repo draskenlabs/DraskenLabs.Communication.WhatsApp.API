@@ -60,6 +60,12 @@
 | `WebhookEndpointsService` | `webhook-endpoints.service.spec.ts` | ✅ Covered |
 | `WebhookDispatcherService` | `webhook-dispatcher.service.spec.ts` | ✅ Covered |
 | Callback URL guard | `webhook-url.util.spec.ts` | ✅ Covered |
+| `RetentionService` | `retention.service.spec.ts` | ✅ Covered |
+| Delivery end to end | `test/integration/webhook-delivery.int-spec.ts` | ✅ Covered — real HTTP receiver: fan-out by kind, the envelope and its headers, HMAC over the raw bytes, the retry schedule, giving up, auto-disable, redirects refused, two sweeps racing, the test ping |
+| Retention against Postgres | `test/integration/retention.int-spec.ts` | ✅ Covered — the raw-SQL sweep actually deletes |
+
+The integration suite needs a database and is not part of `npm test`; see
+[`test/integration/README.md`](../../../../test/integration/README.md).
 
 ---
 
@@ -79,6 +85,6 @@
 | Item | Notes |
 |------|-------|
 | Real-time WebSocket push to the console | The console polls on load and on action |
-| Delivery-log retention / pruning | Rows accumulate; no sweep deletes settled deliveries yet |
+| Delivery-payload replay from another environment | Redelivery re-posts the stored envelope; there is no way to point it at a different URL for a staging test |
 | Per-endpoint rate limiting | A busy account fans out one POST per event per endpoint |
 | Delivery-payload viewer in the console | The log shows the response, not the request body |

@@ -494,7 +494,7 @@ export class BillingService {
   private async applyRemote(
     sub: Subscription,
     remote: RazorpaySubscription,
-  ): Promise<Subscription> {
+  ): Promise<Subscription & { plan: { code: string; name: string } | null }> {
     const status = this.toStatus(remote.status);
     const currentEnd = at(remote.current_end);
 
@@ -514,6 +514,10 @@ export class BillingService {
         // Once there is a mandate the authorisation page is dead.
         shortUrl: status === 'created' ? sub.shortUrl : null,
       },
+      // The updated row is what the caller reports back, so it has to carry
+      // the tier: without this, confirming a Growth subscription answered with
+      // no plan on it and the console lost the name until the next reload.
+      include: { plan: { select: { code: true, name: true } } },
     });
 
     await this.provisionIfNewlyPaid(sub, updated);
@@ -629,6 +633,7 @@ export class BillingService {
         cancelledAt: new Date(),
         shortUrl: null,
       },
+      include: { plan: { select: { code: true, name: true } } },
     });
     await this.access.invalidate(ssoOrgId, wabaId);
 

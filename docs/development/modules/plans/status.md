@@ -54,9 +54,17 @@
 
 | Item | Notes |
 |------|-------|
-| Enforcing the limits | The columns are published and queryable; nothing counts WABAs, numbers, members or endpoints against them yet |
 | Creating the plans at Razorpay | The mapping is configuration; somebody still has to create one plan per tier in the Razorpay account, at the published price, and list them in `RAZORPAY_PLAN_IDS` |
 | Team-member limit on acceptance | The invite path is ours and is capped; somebody added directly in the SSO is not seen by this API |
 | Changing tier on a live subscription | Upgrading is cancel-and-resubscribe today. An in-place `PATCH /subscriptions/:id` with a new plan needs a decision on proration and on re-authorising the mandate for a higher amount |
-| Billing additional numbers | The per-number price is published, not charged — that needs subscription quantity |
 | Admin editing | The catalogue changes by migration; there is no write endpoint |
+| Usage against the limit in the console | The API refuses past the limit with the plan's own number in the message; nothing shows "3 of 5 used" before somebody hits it |
+| Limits under concurrency | The checks are count-then-insert without a transaction, so two simultaneous requests can both pass at the boundary. A unique or exclusion constraint is the fix if it ever matters |
+
+## Testing
+
+Unit specs cover the decisions; `test/integration/plan-limits.int-spec.ts`
+counts real rows against the tier a subscription actually holds, and
+`test/integration/billing-payment.int-spec.ts` proves the tier reaches Razorpay
+and the add-on is raised at the published price. Both need a database — see
+[`test/integration/README.md`](../../../../test/integration/README.md).

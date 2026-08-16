@@ -430,6 +430,39 @@ describe('BillingService', () => {
       expect(state.active).toBe(true);
     });
 
+    it('still names the tier after the mandate is recorded', async () => {
+      // The update that writes Razorpay's state is what confirm() reports
+      // back; without the relation on it, a Growth customer was answered with
+      // no plan and the console lost the name until the next reload.
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ planRefId: 2, plan: { code: 'growth', name: 'Growth' } }),
+      );
+      mockRazorpay.verifyCheckoutSignature.mockReturnValue(true);
+      mockRazorpay.fetchSubscription.mockResolvedValue({
+        id: 'sub_1',
+        plan_id: 'plan_growth',
+        status: 'active',
+        current_end: Math.floor(soon().getTime() / 1000),
+      });
+      mockPrisma.subscription.update.mockResolvedValue(
+        row({ planRefId: 2, plan: { code: 'growth', name: 'Growth' } }),
+      );
+
+      const state = await service.confirm('org_1', 'waba_1', {
+        razorpayPaymentId: 'pay_1',
+        razorpaySubscriptionId: 'sub_1',
+        razorpaySignature: 'sig',
+      });
+
+      expect(state.planCode).toBe('growth');
+      expect(state.planName).toBe('Growth');
+      expect(mockPrisma.subscription.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          include: { plan: { select: { code: true, name: true } } },
+        }),
+      );
+    });
+
     it('refuses an unverified signature', async () => {
       // Otherwise a crafted request would mark a subscription paid.
       mockRazorpay.verifyCheckoutSignature.mockReturnValue(false);
