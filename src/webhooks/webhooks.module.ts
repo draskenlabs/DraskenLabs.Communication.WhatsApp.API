@@ -1,6 +1,14 @@
-import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
+import {
+  MiddlewareConsumer,
+  Module,
+  NestModule,
+  RequestMethod,
+} from '@nestjs/common';
 import { WebhooksController } from './webhooks.controller';
 import { WebhooksService } from './webhooks.service';
+import { WebhookEndpointsService } from './webhook-endpoints.service';
+import { WebhookDispatcherService } from './webhook-dispatcher.service';
+import { WebhooksScheduler } from './webhooks.scheduler';
 import { WebhookSignatureMiddleware } from './middleware/webhook-signature.middleware';
 import { InboundMessageHandler } from './handlers/inbound-message.handler';
 import { StatusUpdateHandler } from './handlers/status-update.handler';
@@ -15,6 +23,9 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
   controllers: [WebhooksController],
   providers: [
     WebhooksService,
+    WebhookEndpointsService,
+    WebhookDispatcherService,
+    WebhooksScheduler,
     WebhookSignatureMiddleware,
     AuthMiddleware,
     InboundMessageHandler,
@@ -30,11 +41,19 @@ export class WebhooksModule implements NestModule {
     consumer
       .apply(WebhookSignatureMiddleware)
       .forRoutes({ path: 'webhooks', method: RequestMethod.POST });
-    consumer
-      .apply(AuthMiddleware)
-      .forRoutes(
-        { path: 'webhooks/config', method: RequestMethod.GET },
-        { path: 'webhooks/events', method: RequestMethod.GET },
-      );
+    consumer.apply(AuthMiddleware).forRoutes(
+      { path: 'webhooks/config', method: RequestMethod.GET },
+      { path: 'webhooks/events', method: RequestMethod.GET },
+      // The customer's own endpoints. Listed one by one rather than as a
+      // wildcard: `webhooks/*` would swallow Meta's POST /webhooks, which
+      // authenticates with an HMAC and carries no JWT at all.
+      { path: 'webhooks/endpoints', method: RequestMethod.GET },
+      { path: 'webhooks/endpoints', method: RequestMethod.POST },
+      { path: 'webhooks/endpoints/:id', method: RequestMethod.PATCH },
+      { path: 'webhooks/endpoints/:id', method: RequestMethod.DELETE },
+      { path: 'webhooks/endpoints/:id/test', method: RequestMethod.POST },
+      { path: 'webhooks/endpoints/:id/deliveries', method: RequestMethod.GET },
+      { path: 'webhooks/deliveries/:id/redeliver', method: RequestMethod.POST },
+    );
   }
 }

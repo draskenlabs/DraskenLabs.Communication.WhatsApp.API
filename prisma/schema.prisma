@@ -21,12 +21,13 @@ model User {
   lastName  String?
   createdAt DateTime @default(now())
 
-  UserWhatsapp UserWhatsapp[]
-  UserApiKey   UserApiKey[]
-  Waba         Waba[]
-  Message      Message[]
-  DeviceToken  DeviceToken[]
-  Notification Notification[]
+  UserWhatsapp    UserWhatsapp[]
+  UserApiKey      UserApiKey[]
+  Waba            Waba[]
+  Message         Message[]
+  DeviceToken     DeviceToken[]
+  Notification    Notification[]
+  WebhookEndpoint WebhookEndpoint[]
 
   NotificationPreference NotificationPreference?
 }
@@ -68,6 +69,7 @@ model Waba {
   UserApiKey       UserApiKey[]
   Subscription     Subscription[]
   WabaOrganisation WabaOrganisation[]
+  WebhookEndpoint  WebhookEndpoint[]
 }
 
 /// Which organisations have connected a WhatsApp Business Account.
@@ -424,6 +426,91 @@ model WebhookEvent {
   processed Boolean  @default(false)
   error     String?
   createdAt DateTime @default(now())
+
+  WebhookDelivery WebhookDelivery[]
+}
+
+/// A customer's own HTTPS endpoint, which we post events to.
+///
+/// The other direction from `WebhookEvent`: that is what Meta tells us, this
+/// is what we forward on to the integrator's backend. Scoped to one WABA the
+/// way an API key is — an endpoint hears about one account, never everything
+/// the organisation has connected.
+model WebhookEndpoint {
+  id       Int    @id @default(autoincrement())
+  /// Who created it. Kept for the "your endpoint was switched off" email,
+  /// which needs an address and cannot get one from an organisation id.
+  userId   Int
+  ssoOrgId String
+  wabaId   String
+  url      String
+  /// A name for the reader — "Order service (staging)".
+  label    String?
+  /// Signing secret, encrypted at rest (AES-256-GCM), and optional.
+  ///
+  /// Without one we post the body unsigned and send no signature header, which
+  /// is what an endpoint behind its own network boundary or a shared-secret
+  /// path parameter wants. With one, every delivery carries an HMAC the
+  /// receiver can check, and the value is never readable again.
+  secret   String?
+  /// Event kinds subscribed to (`inbound_message`, `status_update`,
+  /// `template_status`, `account_update`). Empty means every kind.
+  events   String[] @default([])
+  status   Boolean  @default(true)
+
+  /// Consecutive give-ups. Reset by any delivery that succeeds; an endpoint
+  /// that reaches the limit is disabled rather than retried forever.
+  failureCount  Int       @default(0)
+  /// When we switched it off ourselves. Null for one switched off by a person.
+  disabledAt    DateTime?
+  lastSuccessAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user       User              @relation(fields: [userId], references: [id])
+  waba       Waba              @relation(fields: [wabaId], references: [wabaId], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([ssoOrgId])
+  @@index([wabaId, status])
+}
+
+/// One attempt-set at posting one event to one endpoint.
+///
+/// The outbox: `processPayload` writes rows and returns, and delivery happens
+/// on the sweep. Meta's POST must be answered in milliseconds, so a customer's
+/// slow endpoint cannot be allowed to hold that request open.
+model WebhookDelivery {
+  id         Int @id @default(autoincrement())
+  endpointId Int
+  /// The stored Meta event this came from. Null for a test ping, which has no
+  /// event behind it.
+  eventId    Int?
+  /// The outbound event name, e.g. `status_update` or `endpoint.test`.
+  eventType  String
+  /// Exactly what was posted, so a redelivery sends the same bytes.
+  payload    Json
+  /// pending | sent | failed | abandoned
+  status     String @default("pending")
+  /// Attempts made so far. 0 until the sweep first picks the row up.
+  attempts   Int    @default(0)
+
+  /// When the sweep may try (again). Null once the row is settled.
+  retryAt      DateTime?
+  /// HTTP status the endpoint answered with, when it answered at all.
+  responseCode Int?
+  /// First 500 characters of a non-2xx body, or the transport error.
+  error        String?
+  durationMs   Int?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  event    WebhookEvent?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@index([endpointId, createdAt])
+  /// The sweep's query: rows due for an attempt.
+  @@index([status, retryAt])
 }
 
 /// A browser (or app) registration for Firebase Cloud Messaging. One row per

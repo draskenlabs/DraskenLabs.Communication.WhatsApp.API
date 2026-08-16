@@ -1,6 +1,11 @@
 import {
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  Param,
+  ParseIntPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -19,19 +24,190 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { WebhooksService } from './webhooks.service';
+import { WebhookEndpointsService } from './webhook-endpoints.service';
 import { WebhookConfigDto } from './dto/webhook-config.dto';
 import { WebhookEventDto } from './dto/webhook-event.dto';
+import {
+  CreateWebhookEndpointDto,
+  UpdateWebhookEndpointDto,
+  WebhookDeliveryDto,
+  WebhookEndpointDto,
+  WebhookTestResultDto,
+} from './dto/webhook-endpoint.dto';
 import { PaginationMetaDto } from 'src/common/responses/swagger-response.dto';
 import { BaseResponse } from 'src/common/responses/base-response';
-import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
+import {
+  ApiStandardErrorResponses,
+  ApiWrappedCreatedResponse,
+  ApiWrappedOkResponse,
+} from 'src/common/responses/swagger.decorators';
 
 @ApiTags('Webhooks')
 @Controller('webhooks')
 export class WebhooksController {
   constructor(
     private readonly webhooksService: WebhooksService,
+    private readonly endpointsService: WebhookEndpointsService,
     private readonly config: ConfigService,
   ) {}
+
+  /* ---------------------------------------------------------------- *
+   * Outbound — the customer's own endpoints                           *
+   * ---------------------------------------------------------------- */
+
+  @Post('endpoints')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Register an endpoint to receive events',
+    description:
+      'Every event for the given WABA is posted to this URL as JSON, retried with ' +
+      'backoff until it is accepted. A signing secret is optional: with one, each ' +
+      'delivery carries an X-Drasken-Signature-256 HMAC over ' +
+      '`{timestamp}.{body}`; without one, the body is posted unsigned. The secret ' +
+      'is stored encrypted and never returned.',
+  })
+  @ApiWrappedCreatedResponse({
+    dataDto: WebhookEndpointDto,
+    description: 'Endpoint registered',
+  })
+  @ApiStandardErrorResponses({ notFound: true })
+  async createEndpoint(
+    @Req() req: Request,
+    @Body() dto: CreateWebhookEndpointDto,
+  ): Promise<WebhookEndpointDto> {
+    const { userId, orgId } = this.caller(req);
+    return this.endpointsService.create(userId, orgId, dto);
+  }
+
+  @Get('endpoints')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({ summary: 'List registered endpoints for the organisation' })
+  @ApiQuery({ name: 'wabaId', required: false, description: 'Filter to one WABA' })
+  @ApiWrappedOkResponse({
+    dataDto: WebhookEndpointDto,
+    isArray: true,
+    description: 'Registered endpoints',
+  })
+  async listEndpoints(
+    @Req() req: Request,
+    @Query('wabaId') wabaId?: string,
+  ): Promise<WebhookEndpointDto[]> {
+    const { orgId } = this.caller(req);
+    return this.endpointsService.findAll(orgId, wabaId);
+  }
+
+  @Patch('endpoints/:id')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Update an endpoint',
+    description:
+      'Change the URL, label, subscribed events or enabled state. Sending ' +
+      '`secret` rotates the signing secret; sending it as an empty string ' +
+      'removes it and goes back to unsigned deliveries.',
+  })
+  @ApiWrappedOkResponse({ dataDto: WebhookEndpointDto, description: 'Endpoint updated' })
+  @ApiStandardErrorResponses({ notFound: true })
+  async updateEndpoint(
+    @Req() req: Request,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateWebhookEndpointDto,
+  ): Promise<WebhookEndpointDto> {
+    const { orgId } = this.caller(req);
+    return this.endpointsService.update(orgId, id, dto);
+  }
+
+  @Delete('endpoints/:id')
+  @ApiBearerAuth('jwt')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Delete an endpoint',
+    description: 'Deliveries stop immediately and the delivery log goes with it.',
+  })
+  @ApiStandardErrorResponses({ notFound: true })
+  async deleteEndpoint(
+    @Req() req: Request,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
+    const { orgId } = this.caller(req);
+    await this.endpointsService.remove(orgId, id);
+  }
+
+  @Post('endpoints/:id/test')
+  @ApiBearerAuth('jwt')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Send a test event',
+    description:
+      'Posts a synthetic `endpoint.test` event and waits for the answer, so the ' +
+      'response says whether the endpoint is reachable and what it replied. ' +
+      'Signed like a real delivery when a secret is configured. Never retried.',
+  })
+  @ApiWrappedOkResponse({ dataDto: WebhookTestResultDto, description: 'Test result' })
+  @ApiStandardErrorResponses({ notFound: true })
+  async testEndpoint(
+    @Req() req: Request,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<WebhookTestResultDto> {
+    const { orgId } = this.caller(req);
+    return this.endpointsService.test(orgId, id);
+  }
+
+  @Get('endpoints/:id/deliveries')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: 'Delivery log for an endpoint (paginated)',
+    description:
+      'What was posted, what came back and what is still due, newest first.',
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiWrappedOkResponse({
+    dataDto: WebhookDeliveryDto,
+    isArray: true,
+    metaDto: PaginationMetaDto,
+    description: 'Deliveries',
+  })
+  @ApiStandardErrorResponses({ notFound: true })
+  async endpointDeliveries(
+    @Req() req: Request,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<BaseResponse<WebhookDeliveryDto[]>> {
+    const { orgId } = this.caller(req);
+    return this.endpointsService.deliveries(orgId, id, {
+      page: page !== undefined ? Number(page) : undefined,
+      limit: limit !== undefined ? Number(limit) : undefined,
+    });
+  }
+
+  @Post('deliveries/:id/redeliver')
+  @ApiBearerAuth('jwt')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Queue a delivery for another attempt',
+    description:
+      'Posts the stored payload again, unchanged and with the same delivery id, ' +
+      'on the next sweep. For the one that failed while the receiver was down.',
+  })
+  @ApiWrappedOkResponse({ dataDto: WebhookDeliveryDto, description: 'Delivery requeued' })
+  @ApiStandardErrorResponses({ notFound: true })
+  async redeliver(
+    @Req() req: Request,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<WebhookDeliveryDto> {
+    const { orgId } = this.caller(req);
+    return this.endpointsService.redeliver(orgId, id);
+  }
+
+  /** The authenticated caller, or a 401. */
+  private caller(req: Request): { userId: number; orgId: string } {
+    const user = (req as any).user;
+    const orgId = (req as any).orgId;
+    if (!user) throw new UnauthorizedException('User not found in context');
+    if (!orgId) throw new UnauthorizedException('Organisation not found in context');
+    return { userId: user.id, orgId };
+  }
 
   @Get('config')
   @ApiBearerAuth('jwt')

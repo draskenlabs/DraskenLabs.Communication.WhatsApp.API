@@ -39,6 +39,16 @@ import * as Joi from 'joi';
         META_APP_SECRET: Joi.string().required(),
         META_REDIRECT_URI: Joi.string().required(),
         WEBHOOK_VERIFY_TOKEN: Joi.string().required(),
+        // Outbound webhooks — how long we wait on a customer's endpoint before
+        // calling the attempt failed, and whether a plain-http or private
+        // address may be registered at all. The second is for local
+        // development: in production it is what stops an endpoint from being
+        // pointed at our own network.
+        WEBHOOK_DELIVERY_TIMEOUT_MS: Joi.number().min(1000).max(60000).default(10000),
+        WEBHOOK_ALLOW_INSECURE_URLS: Joi.boolean()
+          .truthy('true')
+          .falsy('false')
+          .default(false),
         ALLOW_MANUAL_CONNECT: Joi.boolean().truthy('true').falsy('false').default(false),
         // Off by default, so a deployment publishes the API docs only when it
         // says to rather than because nobody remembered to turn them off.
