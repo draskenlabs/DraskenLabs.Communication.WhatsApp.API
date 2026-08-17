@@ -4,7 +4,7 @@ import { PlanSyncService } from './plan-sync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 const mockPrisma = {
-  plan: { updateMany: jest.fn(), count: jest.fn() },
+  plan: { updateMany: jest.fn(), count: jest.fn(), findMany: jest.fn() },
   subscription: { count: jest.fn() },
   $executeRaw: jest.fn(),
 };
@@ -17,6 +17,9 @@ describe('PlanSyncService', () => {
     jest.clearAllMocks();
     mockPrisma.plan.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.plan.count.mockResolvedValue(1);
+    mockPrisma.plan.findMany.mockResolvedValue([
+      { code: 'starter', razorpayPlanId: 'plan_a' },
+    ]);
     mockPrisma.subscription.count.mockResolvedValue(0);
     mockPrisma.$executeRaw.mockResolvedValue(0);
     const module: TestingModule = await Test.createTestingModule({
@@ -128,6 +131,62 @@ describe('PlanSyncService', () => {
       mockPrisma.$executeRaw.mockRejectedValue(new Error('db down'));
 
       await expect(service.adoptExisting()).resolves.toBe(0);
+    });
+  });
+  describe('what it says at boot', () => {
+    it('says so when the mapping is missing entirely', async () => {
+      mockConfig.get.mockReturnValue(undefined);
+      const warn = jest
+        .spyOn(service['logger'], 'warn')
+        .mockImplementation(() => undefined);
+
+      await service.sync();
+
+      // Without this, an unconfigured deployment looks from the console like
+      // a broken one: every tier offering "contact sales", an upgrade button
+      // that will not enable, and nothing anywhere saying why.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('RAZORPAY_PLAN_IDS is not set'),
+      );
+      warn.mockRestore();
+    });
+
+    it('says so when the value is set but unreadable', async () => {
+      mockConfig.get.mockReturnValue('starter=plan_a;growth=plan_b');
+      const warn = jest
+        .spyOn(service['logger'], 'warn')
+        .mockImplementation(() => undefined);
+
+      await service.sync();
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('no "code:plan_id" pair could be read'),
+      );
+      warn.mockRestore();
+    });
+
+    it('reports which tiers can be bought afterwards, not just what changed', async () => {
+      mockConfig.get.mockReturnValue('starter:plan_a');
+      mockPrisma.plan.findMany.mockResolvedValue([
+        { code: 'starter', razorpayPlanId: 'plan_a' },
+        { code: 'growth', razorpayPlanId: null },
+      ]);
+      const log = jest
+        .spyOn(service['logger'], 'log')
+        .mockImplementation(() => undefined);
+
+      await service.sync();
+
+      // A boot that changed nothing because everything was already right and
+      // one that changed nothing because nothing matched read identically
+      // otherwise.
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining('1 of 2 sellable tier(s) are wired'),
+      );
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining('growth (none)'),
+      );
+      log.mockRestore();
     });
   });
 });

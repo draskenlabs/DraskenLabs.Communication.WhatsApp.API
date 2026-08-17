@@ -149,10 +149,10 @@ describe('Changing plan (integration)', () => {
       await billing.changePlan(ORG, wabaId, 'starter');
 
       const effective = await limits.forWaba(ORG, wabaId);
-      // Taking four of their five numbers away mid-month would be taking away
+      // Taking their ten accounts down to one mid-month would be taking away
       // what they bought.
       expect(effective.planCode).toBe('business');
-      expect(effective.phoneNumbersPerWaba).toBe(5);
+      expect(effective.wabas).toBe(10);
     });
 
     it('takes effect when Razorpay charges the new plan', async () => {
@@ -320,13 +320,13 @@ describe('Changing plan (integration)', () => {
       const wabaId = await legacy(PLAN_IDS.business);
       // Before: no tier, so the cheapest published plan is the ceiling — and
       // a Business customer would be refused their second account.
-      expect((await limits.forWaba(ORG, wabaId)).phoneNumbersPerWaba).toBe(1);
+      expect((await limits.forWaba(ORG, wabaId)).wabas).toBe(1);
 
       await h.app.get(PlanSyncService).adoptExisting();
 
       const after = await limits.forWaba(ORG, wabaId);
       expect(after.planCode).toBe('business');
-      expect(after.phoneNumbersPerWaba).toBe(5);
+      expect(after.wabas).toBe(10);
     });
 
     it('leaves a plan id no tier claims alone, and runs again for free', async () => {
