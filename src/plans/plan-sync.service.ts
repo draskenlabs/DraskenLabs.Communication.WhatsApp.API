@@ -35,7 +35,18 @@ export class PlanSyncService implements OnModuleInit {
   async sync(): Promise<number> {
     const raw = this.config.get<string>('RAZORPAY_PLAN_IDS');
     const mapping = PlanSyncService.parse(raw);
-    if (mapping.size === 0) return 0;
+
+    // Said out loud, every boot, because the alternative is what it looks like
+    // from the console: every tier offering "contact sales" and an upgrade
+    // button that will not enable, with nothing anywhere saying why.
+    if (mapping.size === 0) {
+      this.logger.warn(
+        raw
+          ? `RAZORPAY_PLAN_IDS is set but no "code:plan_id" pair could be read from it — no tier can be bought`
+          : 'RAZORPAY_PLAN_IDS is not set — no tier can be bought, and the price list will offer "contact sales" for every plan',
+      );
+      return 0;
+    }
 
     let updated = 0;
     for (const [code, razorpayPlanId] of mapping) {
@@ -66,6 +77,23 @@ export class PlanSyncService implements OnModuleInit {
         );
       }
     }
+
+    // The state after the fact, rather than only the changes: a boot that
+    // changed nothing because everything was already right and a boot that
+    // changed nothing because nothing matched look identical otherwise.
+    const wired = await this.prisma.plan.findMany({
+      where: { active: true, ctaKind: 'subscribe' },
+      select: { code: true, razorpayPlanId: true },
+      orderBy: { sortOrder: 'asc' },
+    });
+    const sellable = wired.filter((plan) => plan.razorpayPlanId);
+    this.logger.log(
+      `${sellable.length} of ${wired.length} sellable tier(s) are wired to a Razorpay plan: ` +
+        (wired
+          .map((p) => `${p.code}${p.razorpayPlanId ? '' : ' (none)'}`)
+          .join(', ') || 'none published'),
+    );
+
     return updated;
   }
 
