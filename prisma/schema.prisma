@@ -148,22 +148,22 @@ model UserApiKey {
 ///
 /// Amounts are in paise, like everything else that touches money here.
 model Plan {
-  id Int @id @default(autoincrement())
+  id       Int    @id @default(autoincrement())
   /// Stable identifier used in seeds, analytics and URLs: starter, growth,
   /// business, agency. The primary key is an integer for the foreign keys;
   /// this is what a human names a plan by.
-  code String @unique
-  name String
+  code     String @unique
+  name     String
   /// Who the plan is for, in one line.
   audience String
 
   /// Per WABA per month. Null where pricing is quoted rather than published.
-  price      Int?
+  price                 Int?
   /// Shown instead of an amount when `price` is null, e.g. "Custom".
-  priceLabel String?
-  currency   String  @default("INR")
+  priceLabel            String?
+  currency              String  @default("INR")
   /// What the price is per, e.g. "/WABA/month".
-  unit       String
+  unit                  String
   /// Every WABA includes one number; each additional one costs this a month.
   additionalNumberPrice Int?
 
@@ -200,7 +200,9 @@ model Plan {
   inherits      Plan?          @relation("PlanInheritance", fields: [inheritsPlanId], references: [id], onDelete: Restrict)
   inheritedBy   Plan[]         @relation("PlanInheritance")
   features      PlanFeature[]
-  subscriptions Subscription[]
+  subscriptions Subscription[] @relation("SubscriptionPlan")
+  /// Subscriptions that move onto this plan at their next renewal.
+  pendingFor    Subscription[] @relation("SubscriptionPendingPlan")
 
   @@index([active, sortOrder])
 }
@@ -247,7 +249,7 @@ model Subscription {
 
   /// The account this pays for. Null only once that account has been deleted,
   /// which leaves the row as billing history and grants nothing.
-  wabaId String?
+  wabaId   String?
   /// The organisation paying. An account can be connected by more than one, and
   /// each pays for its own use of it — so this, with `wabaId`, is the identity
   /// of a subscription.
@@ -260,10 +262,22 @@ model Subscription {
   planId                 String
   /// Which published plan this is, when it was sold from the price list.
   ///
-  /// Null for subscriptions created before plans were a table — those are on
-  /// the single configured Razorpay plan and are read through `planId` above,
-  /// which stays the record of what is actually charged.
+  /// Null only where `planId` names a Razorpay plan no published tier claims:
+  /// subscriptions taken out before the price list existed are adopted at boot
+  /// by matching that id, so an existing customer is held to the tier they are
+  /// actually paying for rather than to the cheapest one on offer.
   planRefId              Int?
+
+  /// A tier chosen but not yet in force — a downgrade, which takes effect at
+  /// the end of the month already paid for rather than cutting it short.
+  ///
+  /// Limits and charges follow `planRefId` until Razorpay says the change has
+  /// happened; this is what lets the console say "Starter from 14 September"
+  /// in the meantime.
+  pendingPlanRefId Int?
+  /// When the pending tier starts — the end of the paid month, as it stood
+  /// when the change was asked for.
+  pendingPlanAt    DateTime?
 
   status SubscriptionStatus @default(created)
 
@@ -287,12 +301,14 @@ model Subscription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  waba     Waba?                 @relation(fields: [wabaId], references: [wabaId])
-  plan     Plan?                 @relation(fields: [planRefId], references: [id], onDelete: Restrict)
-  payments SubscriptionPayment[]
+  waba        Waba?                 @relation(fields: [wabaId], references: [wabaId])
+  plan        Plan?                 @relation("SubscriptionPlan", fields: [planRefId], references: [id], onDelete: Restrict)
+  pendingPlan Plan?                 @relation("SubscriptionPendingPlan", fields: [pendingPlanRefId], references: [id], onDelete: Restrict)
+  payments    SubscriptionPayment[]
 
   @@unique([wabaId, ssoOrgId])
   @@index([planRefId])
+  @@index([pendingPlanRefId])
   @@index([ssoOrgId])
   @@index([status])
 }
@@ -527,7 +543,7 @@ model WebhookEvent {
 /// way an API key is — an endpoint hears about one account, never everything
 /// the organisation has connected.
 model WebhookEndpoint {
-  id       Int    @id @default(autoincrement())
+  id       Int      @id @default(autoincrement())
   /// Who created it. Kept for the "your endpoint was switched off" email,
   /// which needs an address and cannot get one from an organisation id.
   userId   Int
@@ -571,7 +587,7 @@ model WebhookEndpoint {
 /// on the sweep. Meta's POST must be answered in milliseconds, so a customer's
 /// slow endpoint cannot be allowed to hold that request open.
 model WebhookDelivery {
-  id         Int @id @default(autoincrement())
+  id         Int    @id @default(autoincrement())
   endpointId Int
   /// The stored Meta event this came from. Null for a test ping, which has no
   /// event behind it.
@@ -702,7 +718,7 @@ model MailSuppression {
 /// One row per email we send, so a support question ("did I get told?") has an
 /// answer, and so a retry cannot double-send a digest.
 model MailLog {
-  id        Int      @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   userId    Int?
   email     String
   /// The template key, e.g. "template.status" or "digest.failed-sends".
@@ -715,15 +731,15 @@ model MailLog {
   error     String?
   /// Delivery attempts made, including the first. A failed row is retried by
   /// the sweep until this passes the retry limit, then it is `abandoned`.
-  attempts  Int      @default(1)
+  attempts  Int       @default(1)
   /// When the sweep may try again. Null once the row is settled.
   retryAt   DateTime?
   /// What the message was made of, so a retry can rebuild it. Written only for
   /// a row awaiting retry, and cleared the moment it is settled — a support
   /// message body is the sender's content, not something to keep on file.
   payload   Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@index([userId])
   @@index([kind, createdAt])

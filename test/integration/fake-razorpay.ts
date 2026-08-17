@@ -164,6 +164,27 @@ export class FakeRazorpay {
     });
 
     this.handlers.push({
+      method: 'PATCH',
+      match: /^\/subscriptions\/[^/]+$/,
+      handler: (body, path) => {
+        const id = path.split('/')[2];
+        const existing: SubscriptionRecord = this.subscriptions.get(id) ?? {
+          id,
+          status: 'active',
+        };
+        // At cycle end Razorpay keeps charging the old plan until the renewal,
+        // so what it answers with is unchanged; immediately, the subscription
+        // is on the new plan from here.
+        const updated: SubscriptionRecord =
+          body.schedule_change_at === 'cycle_end'
+            ? existing
+            : { ...existing, plan_id: body.plan_id ?? null };
+        this.subscriptions.set(id, updated);
+        return { body: updated };
+      },
+    });
+
+    this.handlers.push({
       method: 'POST',
       match: /^\/subscriptions\/[^/]+\/cancel$/,
       handler: (body, path) => {

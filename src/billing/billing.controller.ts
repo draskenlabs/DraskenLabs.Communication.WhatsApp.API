@@ -6,6 +6,7 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   Req,
   UnauthorizedException,
@@ -21,12 +22,16 @@ import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { Request } from 'express';
 import { BillingService } from './billing.service';
 import {
+  ChangePlanDto,
   ConfirmSubscriptionDto,
   RegisterSubscriptionDto,
   SubscriptionRegisteredDto,
   SubscriptionStateDto,
 } from './dto/billing.dto';
-import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
+import {
+  ApiStandardErrorResponses,
+  ApiWrappedOkResponse,
+} from 'src/common/responses/swagger.decorators';
 
 @ApiTags('Billing')
 @Controller('billing')
@@ -108,6 +113,39 @@ export class BillingController {
     if (!orgId)
       throw new UnauthorizedException('Organisation not found in context');
     return this.billing.confirm(orgId, wabaId, dto);
+  }
+
+  @Patch('subscriptions/:wabaId/plan')
+  @ApiBearerAuth()
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Move one account's subscription onto another tier",
+    description:
+      'A tier that costs more takes effect immediately — Razorpay closes the ' +
+      'current cycle and starts one on the new plan. A tier that costs the ' +
+      'same or less takes effect at the renewal, so the month already paid ' +
+      'for keeps what it bought. Nothing is prorated either way. Refused ' +
+      'where the mandate the customer authorised will not cover the higher ' +
+      'amount: that needs a new subscription, which only they can authorise.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: SubscriptionStateDto,
+    description: 'Subscription state, with the pending tier where there is one',
+  })
+  @ApiStandardErrorResponses({
+    badRequest: true,
+    notFound: true,
+    validation: true,
+  })
+  async changePlan(
+    @Req() req: Request,
+    @Param('wabaId') wabaId: string,
+    @Body() dto: ChangePlanDto,
+  ): Promise<SubscriptionStateDto> {
+    const orgId = (req as any).orgId;
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
+    return this.billing.changePlan(orgId, wabaId, dto.planCode);
   }
 
   @Delete('subscriptions/:wabaId')

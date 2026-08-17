@@ -147,6 +147,24 @@ export class SubscriptionStateDto {
   planName: string | null;
 
   @ApiProperty({
+    nullable: true,
+    description:
+      'A tier chosen but not yet in force — a downgrade takes effect at the ' +
+      'renewal rather than cutting short the month already paid for. Null ' +
+      'when nothing is scheduled.',
+  })
+  pendingPlanCode: string | null;
+
+  @ApiProperty({ nullable: true, description: 'That tier’s name, for display' })
+  pendingPlanName: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'When the pending tier starts — the end of the paid month.',
+  })
+  pendingPlanAt: Date | null;
+
+  @ApiProperty({
     type: SubscriptionPlanDto,
     nullable: true,
     description:
@@ -182,6 +200,20 @@ export class SubscriptionStateDto {
     example: 3,
   })
   paidCount: number;
+}
+
+/** Body for `PATCH /billing/subscriptions/:wabaId/plan`. */
+export class ChangePlanDto {
+  @ApiProperty({
+    description:
+      'The tier to move to, from the published price list (`GET /plans`). ' +
+      'Costing more than the current tier takes effect immediately; costing ' +
+      'less takes effect at the end of the month already paid for.',
+    example: 'business',
+  })
+  @IsString()
+  @IsNotEmpty()
+  planCode: string;
 }
 
 /** Body for `POST /billing/subscriptions/:wabaId`. */
