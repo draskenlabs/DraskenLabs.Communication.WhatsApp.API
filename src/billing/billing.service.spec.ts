@@ -32,6 +32,7 @@ const tier = (over: Record<string, unknown> = {}) => ({
   name: 'Growth',
   ctaKind: 'subscribe',
   razorpayPlanId: 'plan_growth',
+  price: 99_900,
   ...over,
 });
 
@@ -52,6 +53,7 @@ const mockRazorpay = {
   verifyCheckoutSignature: jest.fn(),
   fetchPlan: jest.fn(),
   addSubscriptionAddon: jest.fn(),
+  changeSubscriptionPlan: jest.fn(),
 };
 
 /** The monthly plan, as Razorpay describes it. */
@@ -458,7 +460,10 @@ describe('BillingService', () => {
       expect(state.planName).toBe('Growth');
       expect(mockPrisma.subscription.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          include: { plan: { select: { code: true, name: true } } },
+          include: {
+            plan: { select: { code: true, name: true } },
+            pendingPlan: { select: { code: true, name: true } },
+          },
         }),
       );
     });
@@ -577,6 +582,169 @@ describe('BillingService', () => {
       ).resolves.toMatchObject({
         active: true,
       });
+    });
+  });
+
+  describe('changePlan', () => {
+    beforeEach(() => {
+      mockPrisma.waba.findFirst.mockResolvedValue({
+        wabaId: 'waba_1',
+        name: 'Games',
+      });
+      mockPrisma.plan.findFirst.mockResolvedValue(tier());
+      mockPrisma.subscription.update.mockResolvedValue(
+        row({ planRefId: 2, plan: { code: 'growth', name: 'Growth' } }),
+      );
+      mockRazorpay.changeSubscriptionPlan.mockResolvedValue({
+        id: 'sub_1',
+        plan_id: 'plan_growth',
+        status: 'active',
+      });
+      mockPrisma.subscriptionPayment.findMany.mockResolvedValue([]);
+      mockRazorpay.fetchPlan.mockResolvedValue(PLAN);
+    });
+
+    it('moves to a dearer tier immediately', async () => {
+      // Starter (₹499) to Growth (₹999): the customer wants the limits now,
+      // and the new price is what is next debited.
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ planRefId: 1, planId: 'plan_starter' }),
+      );
+      mockPrisma.plan.findUnique.mockResolvedValue({ price: 49_900 });
+
+      await service.changePlan('org_1', 'waba_1', 'growth');
+
+      expect(mockRazorpay.changeSubscriptionPlan).toHaveBeenCalledWith(
+        'sub_1',
+        {
+          planId: 'plan_growth',
+          atCycleEnd: false,
+        },
+      );
+      expect(mockPrisma.subscription.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            plan: { connect: { id: 2 } },
+            pendingPlan: { disconnect: true },
+          }),
+        }),
+      );
+      expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
+    });
+
+    it('holds a cheaper tier until the month already paid for runs out', async () => {
+      // Business (₹1,999) down to Growth: taking the limits away now would be
+      // taking away what they paid for.
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ planRefId: 3, planId: 'plan_business' }),
+      );
+      mockPrisma.plan.findUnique.mockResolvedValue({ price: 199_900 });
+
+      const state = await service.changePlan('org_1', 'waba_1', 'growth');
+
+      expect(mockRazorpay.changeSubscriptionPlan).toHaveBeenCalledWith(
+        'sub_1',
+        {
+          planId: 'plan_growth',
+          atCycleEnd: true,
+        },
+      );
+      const [call] = mockPrisma.subscription.update.mock.calls.slice(-1);
+      expect(call[0].data).toEqual({
+        pendingPlan: { connect: { id: 2 } },
+        pendingPlanAt: expect.any(Date),
+      });
+      // The tier it is on is untouched — only what happens next changes.
+      expect(call[0].data.plan).toBeUndefined();
+      expect(state).toBeDefined();
+    });
+
+    it('waits for the renewal when the current price cannot be read', async () => {
+      // An older subscription on a plan no tier claims, or Razorpay
+      // unreachable. Shortening a paid month on a guess is the worse mistake.
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ planRefId: null, planId: 'plan_legacy' }),
+      );
+      mockRazorpay.fetchPlan.mockResolvedValue(null);
+
+      await service.changePlan('org_1', 'waba_1', 'growth');
+
+      expect(mockRazorpay.changeSubscriptionPlan).toHaveBeenCalledWith(
+        'sub_1',
+        expect.objectContaining({ atCycleEnd: true }),
+      );
+    });
+
+    it('refuses a tier the account is already on', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ planRefId: 2 }),
+      );
+
+      await expect(
+        service.changePlan('org_1', 'waba_1', 'growth'),
+      ).rejects.toThrow(/already on Growth/);
+      expect(mockRazorpay.changeSubscriptionPlan).not.toHaveBeenCalled();
+    });
+
+    it('refuses a quoted tier without touching Razorpay', async () => {
+      mockPrisma.plan.findFirst.mockResolvedValue(
+        tier({ code: 'agency', name: 'Agency', ctaKind: 'contact' }),
+      );
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ planRefId: 1 }),
+      );
+
+      await expect(
+        service.changePlan('org_1', 'waba_1', 'agency'),
+      ).rejects.toThrow(/priced individually/);
+      expect(mockRazorpay.changeSubscriptionPlan).not.toHaveBeenCalled();
+    });
+
+    it('refuses a subscription whose mandate was never authorised', async () => {
+      // There is nothing to re-point: finishing that authorisation would
+      // charge the tier it was created on.
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ status: 'created', planRefId: 1 }),
+      );
+
+      await expect(
+        service.changePlan('org_1', 'waba_1', 'growth'),
+      ).rejects.toThrow(/has not been authorised/);
+      expect(mockRazorpay.changeSubscriptionPlan).not.toHaveBeenCalled();
+    });
+
+    it('refuses one that is already ending', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ cancelAtCycleEnd: true, planRefId: 1 }),
+      );
+
+      await expect(
+        service.changePlan('org_1', 'waba_1', 'growth'),
+      ).rejects.toThrow(/set to end/);
+    });
+
+    it('refuses when there is no subscription at all', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.changePlan('org_1', 'waba_1', 'growth'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('writes nothing when Razorpay refuses the change', async () => {
+      mockPrisma.subscription.findUnique.mockResolvedValue(
+        row({ planRefId: 1, planId: 'plan_starter' }),
+      );
+      mockPrisma.plan.findUnique.mockResolvedValue({ price: 49_900 });
+      mockPrisma.subscription.update.mockClear();
+      mockRazorpay.changeSubscriptionPlan.mockRejectedValue(
+        new BadRequestException('mandate will not cover it'),
+      );
+
+      await expect(
+        service.changePlan('org_1', 'waba_1', 'growth'),
+      ).rejects.toThrow(/mandate will not cover it/);
+      expect(mockPrisma.subscription.update).not.toHaveBeenCalled();
     });
   });
 

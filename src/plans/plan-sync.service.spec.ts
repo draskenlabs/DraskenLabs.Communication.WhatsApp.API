@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { PlanSyncService } from './plan-sync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 
-const mockPrisma = { plan: { updateMany: jest.fn(), count: jest.fn() } };
+const mockPrisma = {
+  plan: { updateMany: jest.fn(), count: jest.fn() },
+  subscription: { count: jest.fn() },
+  $executeRaw: jest.fn(),
+};
 const mockConfig = { get: jest.fn() };
 
 describe('PlanSyncService', () => {
@@ -13,6 +17,8 @@ describe('PlanSyncService', () => {
     jest.clearAllMocks();
     mockPrisma.plan.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.plan.count.mockResolvedValue(1);
+    mockPrisma.subscription.count.mockResolvedValue(0);
+    mockPrisma.$executeRaw.mockResolvedValue(0);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PlanSyncService,
@@ -86,6 +92,42 @@ describe('PlanSyncService', () => {
         .mockRejectedValueOnce(new Error('unique constraint'));
 
       await expect(service.sync()).resolves.toBe(1);
+    });
+  });
+  describe('adoptExisting', () => {
+    it('gives subscriptions with no tier the one they are charged on', async () => {
+      mockPrisma.$executeRaw.mockResolvedValue(4);
+
+      await expect(service.adoptExisting()).resolves.toBe(4);
+      // A blank is filled and a tier already set is left alone, so running
+      // this at every boot costs nothing and cannot overwrite a correction.
+      const [statement] = mockPrisma.$executeRaw.mock.calls[0] as [unknown];
+      const sql = String(statement);
+      expect(sql).toContain('"planRefId" IS NULL');
+      expect(sql).toContain('"razorpayPlanId"');
+    });
+
+    it('says how many live subscriptions no tier claims', async () => {
+      mockPrisma.subscription.count.mockResolvedValue(2);
+      const warn = jest
+        .spyOn(service['logger'], 'warn')
+        .mockImplementation(() => undefined);
+
+      await service.adoptExisting();
+
+      // Those accounts are held to the entry limits until a tier is wired to
+      // their plan id — worth saying out loud rather than leaving to be
+      // discovered through a refused request.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('2 live subscription'),
+      );
+      warn.mockRestore();
+    });
+
+    it('never fails the boot', async () => {
+      mockPrisma.$executeRaw.mockRejectedValue(new Error('db down'));
+
+      await expect(service.adoptExisting()).resolves.toBe(0);
     });
   });
 });

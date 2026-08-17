@@ -86,7 +86,10 @@ export class BillingService {
   private find(ssoOrgId: string, wabaId: string) {
     return this.prisma.subscription.findUnique({
       where: { wabaId_ssoOrgId: { wabaId, ssoOrgId } },
-      include: { plan: { select: { code: true, name: true } } },
+      include: {
+        plan: { select: { code: true, name: true } },
+        pendingPlan: { select: { code: true, name: true } },
+      },
     });
   }
 
@@ -107,6 +110,9 @@ export class BillingService {
         code: true,
         ctaKind: true,
         razorpayPlanId: true,
+        // Read here so a change of tier can tell an upgrade from a downgrade
+        // without a second query.
+        price: true,
       },
     });
     if (!plan) throw new NotFoundException(`Plan ${planCode} is not on offer`);
@@ -145,7 +151,10 @@ export class BillingService {
   private toState(
     waba: { wabaId: string; name: string | null },
     sub:
-      | (Subscription & { plan?: { code: string; name: string } | null })
+      | (Subscription & {
+          plan?: { code: string; name: string } | null;
+          pendingPlan?: { code: string; name: string } | null;
+        })
       | null,
     extras: {
       plan?: SubscriptionPlanDto | null;
@@ -175,6 +184,12 @@ export class BillingService {
       // configured plan, and `plan` below still says what that costs.
       planCode: sub?.plan?.code ?? null,
       planName: sub?.plan?.name ?? null,
+      // A tier chosen but not yet in force. Shown as "Starter from 14
+      // September" rather than applied early: the customer paid for the month
+      // they are in, and it is the tier above that they paid for.
+      pendingPlanCode: sub?.pendingPlan?.code ?? null,
+      pendingPlanName: sub?.pendingPlan?.name ?? null,
+      pendingPlanAt: sub?.pendingPlanAt ?? null,
       plan: extras.plan ?? null,
       lastPayment: payments[0] ?? null,
       payments,
@@ -227,7 +242,10 @@ export class BillingService {
       }),
       this.prisma.subscription.findMany({
         where: { ssoOrgId },
-        include: { plan: { select: { code: true, name: true } } },
+        include: {
+          plan: { select: { code: true, name: true } },
+          pendingPlan: { select: { code: true, name: true } },
+        },
       }),
     ]);
 
@@ -494,9 +512,18 @@ export class BillingService {
   private async applyRemote(
     sub: Subscription,
     remote: RazorpaySubscription,
-  ): Promise<Subscription & { plan: { code: string; name: string } | null }> {
+  ): Promise<
+    Subscription & {
+      plan: { code: string; name: string } | null;
+      pendingPlan: { code: string; name: string } | null;
+    }
+  > {
     const status = this.toStatus(remote.status);
     const currentEnd = at(remote.current_end);
+    // Razorpay is the ledger: if the plan being charged has moved — a change
+    // scheduled for the renewal that has now happened, or one made in their
+    // dashboard — the tier here follows it rather than the other way round.
+    const tier = await this.tierFor(sub, remote.plan_id);
 
     const updated = await this.prisma.subscription.update({
       where: { id: sub.id },
@@ -513,15 +540,65 @@ export class BillingService {
             : sub.cancelledAt,
         // Once there is a mandate the authorisation page is dead.
         shortUrl: status === 'created' ? sub.shortUrl : null,
+        ...tier,
       },
       // The updated row is what the caller reports back, so it has to carry
       // the tier: without this, confirming a Growth subscription answered with
       // no plan on it and the console lost the name until the next reload.
-      include: { plan: { select: { code: true, name: true } } },
+      include: {
+        plan: { select: { code: true, name: true } },
+        pendingPlan: { select: { code: true, name: true } },
+      },
     });
 
     await this.provisionIfNewlyPaid(sub, updated);
     return updated;
+  }
+
+  /**
+   * The tier columns to write, given the plan Razorpay says it is charging.
+   *
+   * Nothing changes while the plan id is the one we already recorded, which is
+   * every ordinary renewal. When it has moved, the published tier that owns
+   * that Razorpay plan becomes the current one and any pending change is
+   * settled — whether or not the change is the one we scheduled, because the
+   * customer is being charged for it either way.
+   */
+  private async tierFor(
+    sub: Subscription,
+    remotePlanId: string | undefined,
+  ): Promise<Prisma.SubscriptionUpdateInput | Record<string, never>> {
+    if (!remotePlanId || remotePlanId === sub.planId) {
+      // A pending change whose date has passed without the plan moving is
+      // left alone: Razorpay applies it at the renewal, and until then the
+      // customer is on what they are paying for.
+      return {};
+    }
+
+    const plan = await this.prisma.plan.findFirst({
+      where: { razorpayPlanId: remotePlanId },
+      select: { id: true, code: true },
+    });
+
+    if (!plan) {
+      // A plan id no published tier claims — an old single-plan deployment, or
+      // one wired up in the Razorpay dashboard by hand. Record what is charged
+      // and leave the tier alone rather than guessing at one.
+      this.logger.warn(
+        `Subscription ${sub.razorpaySubscriptionId} moved to Razorpay plan ${remotePlanId}, which no published tier claims`,
+      );
+      return { planId: remotePlanId };
+    }
+
+    this.logger.log(
+      `Subscription ${sub.razorpaySubscriptionId} is now charged on ${plan.code}`,
+    );
+    return {
+      planId: remotePlanId,
+      plan: { connect: { id: plan.id } },
+      pendingPlan: { disconnect: true },
+      pendingPlanAt: null,
+    };
   }
 
   /**
@@ -598,6 +675,159 @@ export class BillingService {
   }
 
   /**
+   * Move a running subscription onto another tier.
+   *
+   * Two rules, and they follow from what a month is: the customer bought one,
+   * so a cheaper tier cannot be imposed on them mid-month, and a dearer one is
+   * no use to them next month if they need the limits today.
+   *
+   *  - **Costs more** — takes effect now. Razorpay closes the current cycle
+   *    and starts one on the new plan, so the new limits apply immediately and
+   *    the new price is what is next debited.
+   *  - **Costs the same or less** — takes effect at the renewal. The month
+   *    already paid for keeps the tier it was bought at, and the console says
+   *    which tier starts when.
+   *
+   * Nothing is prorated in either direction, which is the same bargain the
+   * per-number add-on makes: no refunds for a month already paid, and nothing
+   * charged mid-month for something switched on today.
+   */
+  async changePlan(
+    ssoOrgId: string,
+    wabaId: string,
+    planCode: string,
+  ): Promise<SubscriptionStateDto> {
+    if (!this.razorpay.isConfigured()) {
+      throw new BadRequestException(
+        'Payments are not configured on this deployment',
+      );
+    }
+
+    const waba = await this.ownedWaba(ssoOrgId, wabaId);
+    // Refused before Razorpay is touched, as registering is: an unknown tier,
+    // a quoted one or one this deployment has not wired up must fail without
+    // changing anything.
+    const target = await this.sellablePlan(planCode);
+    if (!target) throw new BadRequestException('A plan is required');
+
+    const sub = await this.find(ssoOrgId, wabaId);
+    if (!sub) {
+      throw new NotFoundException(
+        'There is no subscription on this account to change — subscribe first',
+      );
+    }
+    if (this.isFinished(sub)) {
+      throw new BadRequestException(
+        'This subscription has ended. Subscribe again on the tier you want.',
+      );
+    }
+    if (sub.cancelAtCycleEnd) {
+      throw new BadRequestException(
+        'This subscription is set to end at the close of the paid month, so there is nothing to move onto another tier.',
+      );
+    }
+    // Nothing has been authorised yet, so there is no mandate to re-point:
+    // finishing the authorisation would charge the old tier.
+    if (sub.status === 'created' || sub.status === 'authenticated') {
+      throw new BadRequestException(
+        'This subscription has not been authorised yet. Cancel it and subscribe on the tier you want.',
+      );
+    }
+    if (sub.planRefId === target.id) {
+      throw new BadRequestException(
+        `This account is already on ${target.name}`,
+      );
+    }
+
+    // Immediate only where the price is provably higher. Where the current
+    // price cannot be read — a subscription on a plan no tier claims, or
+    // Razorpay unreachable — the change waits for the renewal, because
+    // shortening a month somebody paid for on a guess is the worse mistake.
+    const currentPrice = await this.currentPrice(sub);
+    const upgrade =
+      currentPrice !== null &&
+      target.price !== null &&
+      target.price > currentPrice;
+
+    const remote = await this.razorpay.changeSubscriptionPlan(
+      sub.razorpaySubscriptionId,
+      { planId: target.razorpayPlanId!, atCycleEnd: !upgrade },
+    );
+
+    const updated = upgrade
+      ? await this.prisma.subscription.update({
+          where: { id: sub.id },
+          data: {
+            planId: remote.plan_id ?? target.razorpayPlanId!,
+            plan: { connect: { id: target.id } },
+            pendingPlan: { disconnect: true },
+            pendingPlanAt: null,
+            // Not the status: a plan change says nothing about whether the
+            // mandate is live, and taking Razorpay's word for it here would
+            // let a stale echo demote a paying account. Status arrives through
+            // the webhooks and the reconciliation sweep, which is where it
+            // belongs.
+            currentStart: at(remote.current_start) ?? sub.currentStart,
+            // A new cycle starts here, so unlike everywhere else this may move
+            // `currentEnd` backwards — the month the customer had is over
+            // because they asked for it to be.
+            currentEnd: at(remote.current_end) ?? sub.currentEnd,
+          },
+          include: {
+            plan: { select: { code: true, name: true } },
+            pendingPlan: { select: { code: true, name: true } },
+          },
+        })
+      : await this.prisma.subscription.update({
+          where: { id: sub.id },
+          data: {
+            pendingPlan: { connect: { id: target.id } },
+            pendingPlanAt: sub.currentEnd,
+          },
+          include: {
+            plan: { select: { code: true, name: true } },
+            pendingPlan: { select: { code: true, name: true } },
+          },
+        });
+
+    // The limits are read per request from the plan a subscription holds, so
+    // an upgrade is in force as soon as this row is written; the access cache
+    // still keys on whether the account is paid for at all.
+    await this.access.invalidate(ssoOrgId, wabaId);
+
+    this.logger.log(
+      `${ssoOrgId}/${wabaId} moves to ${target.code} ` +
+        (upgrade
+          ? 'immediately'
+          : `at ${sub.currentEnd?.toISOString() ?? 'the next renewal'}`),
+    );
+
+    return this.toState(waba, updated, {
+      plan: await this.plan(updated.planId),
+      payments: await this.paymentsFor(updated.id),
+    });
+  }
+
+  /**
+   * What this subscription costs a month, in paise.
+   *
+   * The published tier's own price where there is one, and Razorpay's plan
+   * amount where there is not — an older subscription is on a plan the price
+   * list never named, and that amount is still what the customer pays.
+   */
+  private async currentPrice(sub: Subscription): Promise<number | null> {
+    if (sub.planRefId) {
+      const plan = await this.prisma.plan.findUnique({
+        where: { id: sub.planRefId },
+        select: { price: true },
+      });
+      if (plan?.price != null) return plan.price;
+    }
+    const remote = await this.plan(sub.planId);
+    return remote?.amount ?? null;
+  }
+
+  /**
    * Cancel one account's subscription. The month already paid for is not
    * refunded and not cut short — Razorpay stops at the end of the cycle, and
    * access here follows `currentEnd`. A subscription whose mandate was never
@@ -633,7 +863,10 @@ export class BillingService {
         cancelledAt: new Date(),
         shortUrl: null,
       },
-      include: { plan: { select: { code: true, name: true } } },
+      include: {
+        plan: { select: { code: true, name: true } },
+        pendingPlan: { select: { code: true, name: true } },
+      },
     });
     await this.access.invalidate(ssoOrgId, wabaId);
 

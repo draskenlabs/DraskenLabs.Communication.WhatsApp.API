@@ -1,4 +1,9 @@
-import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'crypto';
 import axios, { AxiosError, AxiosInstance } from 'axios';
@@ -344,6 +349,57 @@ export class RazorpayService {
       );
       return null;
     }
+  }
+
+  /**
+   * Move a running subscription onto another plan.
+   *
+   * `schedule_change_at` is the whole decision: `now` ends the current cycle
+   * and starts one on the new plan, `cycle_end` leaves the month already paid
+   * for alone and switches at the renewal. Nothing here prorates, because
+   * nothing else in this module does either.
+   *
+   * A mandate is authorised up to an amount, so an upgrade past that ceiling
+   * is refused by Razorpay rather than silently debited — that refusal is
+   * turned into something the customer can act on instead of a gateway error.
+   */
+  async changeSubscriptionPlan(
+    subscriptionId: string,
+    input: { planId: string; atCycleEnd: boolean },
+  ): Promise<RazorpaySubscription> {
+    try {
+      const { data } = await this.api().patch<RazorpaySubscription>(
+        `/subscriptions/${subscriptionId}`,
+        {
+          plan_id: input.planId,
+          schedule_change_at: input.atCycleEnd ? 'cycle_end' : 'now',
+          // Razorpay sends the pre-debit notice the RBI requires for the new
+          // amount; doing it ourselves would duplicate it.
+          customer_notify: 1,
+        },
+      );
+      return data;
+    } catch (err) {
+      if (this.isMandateCeiling(err)) {
+        throw new BadRequestException(
+          'This plan costs more than the payment mandate on this account allows. ' +
+            'Cancel the subscription and take out a new one on the higher plan — ' +
+            'the bank has to authorise the larger amount, and only the customer can do that.',
+        );
+      }
+      this.fail('Razorpay subscription plan change failed', err);
+    }
+  }
+
+  /**
+   * Whether Razorpay refused because the new amount is above what the customer
+   * authorised. Matched on their wording, which is the only signal they give:
+   * the error code is the same `BAD_REQUEST_ERROR` as any other refusal.
+   */
+  private isMandateCeiling(err: unknown): boolean {
+    const error = err as AxiosError<{ error?: { description?: string } }>;
+    const description = error.response?.data?.error?.description ?? '';
+    return /max.?amount|authoriz|mandate/i.test(description);
   }
 
   /**
