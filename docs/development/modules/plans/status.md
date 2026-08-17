@@ -50,6 +50,16 @@
 - Specs for the service (ordering, limit mapping, unpriced plans, the id that
   must not leak) and the controller.
 
+- **Phone numbers are priced, not rationed** (`20260817120000_numbers_priced_per_number`).
+  Every published tier had both a per-number price and a cap on numbers per
+  account, and the two could not both be true: on Starter the cap was one, so
+  the ₹199 could never be charged, and on the tiers where it could the customer
+  paid for the same capacity twice — once in a tier price that exists to allow
+  more numbers, and again per number. `maxPhoneNumbersPerWaba` is now null on
+  starter, growth and business, so a number costs what the price list says a
+  number costs on any plan. The tiers differ on what actually differs between
+  them: accounts, team members, webhook endpoints and history. The feature
+  bullets that quoted the cap went with it.
 - **Changing tier on a live subscription.**
   `PATCH /billing/subscriptions/:wabaId/plan` moves a running subscription to
   another published tier. A tier that costs more takes effect immediately

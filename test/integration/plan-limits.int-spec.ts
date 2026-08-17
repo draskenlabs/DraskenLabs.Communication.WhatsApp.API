@@ -62,7 +62,7 @@ describe('Plan limits (integration)', () => {
         planCode: 'growth',
         planName: 'Growth',
         wabas: 3,
-        phoneNumbersPerWaba: 3,
+        phoneNumbersPerWaba: null,
         teamMembers: 5,
         webhookEndpoints: 10,
         historyDays: 90,
@@ -114,7 +114,10 @@ describe('Plan limits (integration)', () => {
       const effective = await limits.forWaba(ORG, wabaId);
 
       expect(effective.planCode).toBeNull();
-      expect(effective.phoneNumbersPerWaba).toBe(1);
+      // The entry floor is the cheapest plan's, and that plan caps accounts
+      // rather than the numbers on them.
+      expect(effective.wabas).toBe(1);
+      expect(effective.phoneNumbersPerWaba).toBeNull();
     });
   });
 

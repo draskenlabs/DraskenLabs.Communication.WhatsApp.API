@@ -94,7 +94,8 @@ describe('Payment (integration)', () => {
         available: true,
         limits: {
           wabas: 1,
-          phoneNumbersPerWaba: 1,
+          // Numbers are priced, not rationed: no tier puts a ceiling on them.
+          phoneNumbersPerWaba: null,
           teamMembers: 2,
           webhookEndpoints: 2,
         },
