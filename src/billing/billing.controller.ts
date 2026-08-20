@@ -5,10 +5,12 @@ import {
   Delete,
   Get,
   HttpCode,
+  NotFoundException,
   Param,
   Patch,
   Post,
   Req,
+  StreamableFile,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
@@ -21,13 +23,16 @@ import {
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { Request } from 'express';
 import { BillingService } from './billing.service';
+import { InvoiceService } from './invoice.service';
 import {
   ChangePlanDto,
   ConfirmSubscriptionDto,
+  InvoiceDto,
   RegisterSubscriptionDto,
   SubscriptionRegisteredDto,
   SubscriptionStateDto,
 } from './dto/billing.dto';
+import { isInvoiceNumber } from './invoice.number';
 import {
   ApiStandardErrorResponses,
   ApiWrappedOkResponse,
@@ -36,7 +41,10 @@ import {
 @ApiTags('Billing')
 @Controller('billing')
 export class BillingController {
-  constructor(private readonly billing: BillingService) {}
+  constructor(
+    private readonly billing: BillingService,
+    private readonly invoices: InvoiceService,
+  ) {}
 
   @Get('subscriptions')
   @ApiBearerAuth()
@@ -169,6 +177,80 @@ export class BillingController {
     if (!orgId)
       throw new UnauthorizedException('Organisation not found in context');
     return this.billing.cancel(orgId, wabaId);
+  }
+
+  @Get('invoices')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Invoices raised for this organisation',
+    description:
+      'One per captured payment, newest first, in the deployment’s own series ' +
+      '(`INV-WAC-2627-0001` — the third part is the Indian financial year). ' +
+      'Each was emailed to the person who took the subscription out when it ' +
+      'was raised; this is where to find one again.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: InvoiceDto,
+    isArray: true,
+    description: 'Invoices, newest first',
+  })
+  async listInvoices(@Req() req: Request): Promise<InvoiceDto[]> {
+    const orgId = (req as any).orgId;
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
+    const invoices = await this.invoices.listForOrg(orgId);
+    return invoices.map((invoice) => this.invoices.toDto(invoice));
+  }
+
+  @Get('invoices/:number')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'One invoice' })
+  @ApiWrappedOkResponse({ dataDto: InvoiceDto, description: 'The invoice' })
+  @ApiStandardErrorResponses({ notFound: true })
+  async invoice(
+    @Req() req: Request,
+    @Param('number') number: string,
+  ): Promise<InvoiceDto> {
+    return this.invoices.toDto(await this.ownedInvoice(req, number));
+  }
+
+  @Get('invoices/:number/pdf')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The invoice as a PDF',
+    description:
+      'The same document that was emailed. Served inline so a browser can ' +
+      'show it, with the invoice number as the filename when it is saved.',
+  })
+  @ApiStandardErrorResponses({ notFound: true })
+  async invoicePdf(
+    @Req() req: Request,
+    @Param('number') number: string,
+  ): Promise<StreamableFile> {
+    const invoice = await this.ownedInvoice(req, number);
+    // A file rather than the response envelope every other route returns: a
+    // PDF wrapped in JSON is not a PDF. The interceptor lets a StreamableFile
+    // through untouched, which is what makes that possible.
+    return new StreamableFile(this.invoices.pdf(invoice), {
+      type: 'application/pdf',
+      disposition: `inline; filename="${this.invoices.filename(invoice)}"`,
+    });
+  }
+
+  /**
+   * One invoice, or a 404 — including when it exists and belongs to somebody
+   * else. The numbers are sequential, so "yours" and "not found" have to be
+   * the same answer or the series is enumerable.
+   */
+  private async ownedInvoice(req: Request, number: string) {
+    const orgId = (req as any).orgId;
+    if (!orgId)
+      throw new UnauthorizedException('Organisation not found in context');
+    if (!isInvoiceNumber(number)) throw new NotFoundException('No such invoice');
+
+    const invoice = await this.invoices.findForOrg(orgId, number);
+    if (!invoice) throw new NotFoundException('No such invoice');
+    return invoice;
   }
 
   /** Razorpay-facing. Signature-checked by middleware; never called by a user. */

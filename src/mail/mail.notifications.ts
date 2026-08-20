@@ -543,6 +543,73 @@ export class MailNotifications {
     });
   }
 
+  /**
+   * The invoice for a debit, with the PDF attached.
+   *
+   * The one email on this list that carries a file. A summary with a link
+   * would have been less work, but an invoice is a document somebody forwards
+   * to an accountant who has no login here — it has to arrive as something
+   * they can open, not as a reason to sign in.
+   *
+   * Returns whether it went, because the caller stamps the invoice with the
+   * fact that it did.
+   */
+  async invoiceIssued(input: {
+    email: string;
+    name: string | null;
+    number: string;
+    issuedAt: Date;
+    organisationName: string | null;
+    accountName: string | null;
+    planName: string | null;
+    /** Preformatted, e.g. "INR 499.00" — the document decides the wording. */
+    total: string;
+    periodEnd: Date | null;
+    pdf: Buffer;
+  }): Promise<boolean> {
+    return this.mail.sendRaw(input.email, {
+      kind: 'transactional',
+      template: 'billing.invoice',
+      subject: `Invoice ${input.number}`,
+      heading: `Invoice ${input.number}`,
+      intro:
+        'Here is the invoice for your subscription payment. The PDF is ' +
+        'attached, and nothing is outstanding.',
+      facts: [
+        ['Invoice number', input.number],
+        ['Invoice date', this.date(input.issuedAt)],
+        ...(input.organisationName
+          ? ([['Organisation', input.organisationName]] as [string, string][])
+          : []),
+        ...(input.accountName
+          ? ([['Account', input.accountName]] as [string, string][])
+          : []),
+        ...(input.planName
+          ? ([['Plan', input.planName]] as [string, string][])
+          : []),
+        ['Amount paid', input.total],
+        ...(input.periodEnd
+          ? ([['Paid until', this.date(input.periodEnd)]] as [string, string][])
+          : []),
+      ],
+      paragraphs: [
+        'Every payment raises its own invoice, and they are all listed in the ' +
+          'console if you need one again.',
+      ],
+      action: { label: 'View invoices', path: '/billing' },
+      footnote:
+        'You are receiving this because a payment was taken for your ' +
+        'subscription. Invoices are sent whether or not other emails are on.',
+      attachments: [
+        {
+          filename: `${input.number}.pdf`,
+          contentType: 'application/pdf',
+          content: input.pdf.toString('base64'),
+        },
+      ],
+    });
+  }
+
   /** A date the way a customer would write it, not an ISO string. */
   private date(value: Date): string {
     return value.toLocaleDateString('en-GB', {

@@ -37,10 +37,20 @@ export const PLAN_IDS = {
   business: 'plan_business',
 } as const;
 
+/** One message the API tried to send, as the stubbed transport saw it. */
+export interface SentMail {
+  to: string;
+  template: string;
+  subject: string;
+  attachments: { filename: string; contentType: string }[];
+}
+
 export interface Harness {
   app: INestApplication;
   prisma: PrismaService;
   razorpay: FakeRazorpay;
+  /** Every message sent since the last `reset`, oldest first. */
+  mail: SentMail[];
   /** Truncate everything a test writes, leaving the seeded price list. */
   reset(): Promise<void>;
   /** A console JWT for a user that exists in the database. */
@@ -57,6 +67,8 @@ const MUTABLE_TABLES = [
   'WebhookDelivery',
   'WebhookEndpoint',
   'WebhookEvent',
+  'Invoice',
+  'InvoiceCounter',
   'SubscriptionPayment',
   'SubscriptionEvent',
   'Subscription',
@@ -78,7 +90,27 @@ const MUTABLE_TABLES = [
   'User',
 ];
 
+/** As much of a send as the recorder needs to describe it. */
+interface MailOptions {
+  template: string;
+  subject: string;
+  attachments?: { filename: string; contentType: string }[];
+}
+
 export async function startHarness(): Promise<Harness> {
+  const mail: SentMail[] = [];
+  const record = (to: string, options: MailOptions): boolean => {
+    mail.push({
+      to,
+      template: options.template,
+      subject: options.subject,
+      attachments: (options.attachments ?? []).map(
+        ({ filename, contentType }) => ({ filename, contentType }),
+      ),
+    });
+    return true;
+  };
+
   const databaseUrl = process.env.DATABASE_URL_TEST;
   if (!databaseUrl) {
     throw new Error(
@@ -114,13 +146,17 @@ export async function startHarness(): Promise<Harness> {
   const { AppModule } = await import('src/app.module');
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
     // SES is not configured here, so mail is a no-op already; overriding it
-    // keeps a failed lookup from logging over the test output.
+    // keeps a failed lookup from logging over the test output — and records
+    // what was sent, because "the invoice was emailed" is a claim the invoice
+    // module makes and a test should be able to check.
     .overrideProvider(MailService)
     .useValue({
       enabled: false,
-      sendTo: () => Promise.resolve(false),
+      sendTo: (recipient: { email: string }, options: MailOptions) =>
+        Promise.resolve(record(recipient.email, options)),
       sendToAll: () => Promise.resolve(0),
-      sendRaw: () => Promise.resolve(false),
+      sendRaw: (email: string, options: MailOptions) =>
+        Promise.resolve(record(email, options)),
       recipientsByIds: () => Promise.resolve([]),
       retryFailed: () => Promise.resolve({ retried: 0, sent: 0, abandoned: 0 }),
     })
@@ -156,9 +192,11 @@ export async function startHarness(): Promise<Harness> {
     app,
     prisma,
     razorpay,
+    mail,
 
     async reset() {
       razorpay.reset();
+      mail.length = 0;
       await prisma.$executeRawUnsafe(
         `TRUNCATE TABLE ${MUTABLE_TABLES.map((t) => `"${t}"`).join(', ')} RESTART IDENTITY CASCADE`,
       );

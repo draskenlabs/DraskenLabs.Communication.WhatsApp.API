@@ -43,7 +43,7 @@ DATABASE_URL_TEST=… npx jest --config test/jest-integration.json --runInBand \
 
 | File | What it is |
 |---|---|
-| `harness.ts` | Boots the real `AppModule` with the same bootstrap as `main.ts` — raw-body parser, validation pipe, response interceptor, exception filter. Cron jobs are deleted so nothing sweeps mid-test. Exposes `reset()`, `signIn()`, and the two Razorpay signatures. |
+| `harness.ts` | Boots the real `AppModule` with the same bootstrap as `main.ts` — raw-body parser, validation pipe, response interceptor, exception filter. Cron jobs are deleted so nothing sweeps mid-test. Exposes `reset()`, `signIn()`, the two Razorpay signatures, and `mail` — what the stubbed transport was asked to send, so "the invoice was emailed" is checkable. |
 | `fake-razorpay.ts` | A stand-in for Razorpay's REST API over real HTTP, wired in through `RAZORPAY_API_BASE`. Records every request — body, path, basic-auth pair — and lets a test replace one route's answer. |
 | `receiver.ts` | A customer's webhook endpoint, over real HTTP. Records the raw bytes, so a signature can be verified the way the docs tell a customer to verify it. |
 | `global-setup.ts` | `prisma migrate deploy` once per run. This is also the first real check on every migration in the repository. |
@@ -59,6 +59,7 @@ and they run `--runInBand`: one database, one truncation between tests.
 | `webhook-delivery.int-spec.ts` | 21 | Fan-out by event kind; the envelope and its headers; HMAC over the raw body with a replay-proof timestamp; unsigned when there is no secret and when the secret will not decrypt; a 500 held for the backoff; recovery on a later attempt; giving up after the last try; disabling after ten consecutive give-ups; a disabled endpoint's backlog abandoned; redirects not followed; a transport failure with no status; two sweeps racing delivering once; the test ping |
 | `plan-change.int-spec.ts` | 15 | Moving between tiers: a dearer one applied now with its limits, a cheaper one held to the renewal and settled by the charge that follows, a plan changed in Razorpay's dashboard being followed here, the refusals, and the boot-time adoption of subscriptions that predate the price list |
 | `plan-limits.int-spec.ts` | 11 | The tier a subscription actually holds; the cheapest plan as the floor; best tier across an organisation; a cancelled and expired plan stopping; endpoint and account limits counted against real rows |
+| `invoicing.int-spec.ts` | 14 | A captured charge raising a numbered invoice; the snapshot surviving the account being renamed; consecutive debits numbering in order; three concurrent charges getting three distinct numbers from the raw-SQL counter; a webhook replayed under a fresh event id invoicing once; an authorised-but-uncaptured payment invoicing not at all; the email and its attachment; the resend sweep; the console's list, the payment's invoice number, the PDF over HTTP, and another organisation getting 404 for a number it does not own |
 | `retention.int-spec.ts` | 7 | The raw-SQL sweep: deleting past the window, keeping outstanding work whatever its age, batching, and each organisation's own history window once `PLAN_RETENTION_ENFORCED` is on |
 
 ## Adding to it

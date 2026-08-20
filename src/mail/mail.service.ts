@@ -35,6 +35,21 @@ interface Recipient {
   firstName: string | null;
 }
 
+/**
+ * A file to send with the message.
+ *
+ * The content is base64 rather than a Buffer because a failed send is stored as
+ * JSON and replayed later: a Buffer does not survive that round trip, and an
+ * invoice that arrives on the retry without its invoice attached would be
+ * worse than not retrying at all.
+ */
+export interface MailAttachment {
+  filename: string;
+  contentType: string;
+  /** base64, as it goes on the wire. */
+  content: string;
+}
+
 interface SendOptions {
   kind: MailKind;
   /** Template key recorded in MailLog, e.g. "template.status". */
@@ -46,6 +61,7 @@ interface SendOptions {
   paragraphs?: string[];
   action?: { label: string; path: string };
   footnote?: string;
+  attachments?: MailAttachment[];
 }
 
 /**
@@ -182,6 +198,15 @@ export class MailService {
       html,
       text,
       unsubscribeUrl,
+      ...(options.attachments?.length
+        ? {
+            attachments: options.attachments.map((file) => ({
+              filename: file.filename,
+              contentType: file.contentType,
+              content: Buffer.from(file.content, 'base64'),
+            })),
+          }
+        : {}),
     });
 
     return result.ok

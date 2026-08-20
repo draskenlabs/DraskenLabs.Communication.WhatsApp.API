@@ -347,8 +347,105 @@ model SubscriptionPayment {
   createdAt DateTime  @default(now())
 
   subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  invoice      Invoice?
 
   @@index([subscriptionId])
+}
+
+/// The tax invoice raised for one captured payment.
+///
+/// Razorpay is still the ledger of what was taken; this is the document the
+/// customer files. It carries our own series rather than Razorpay's id because
+/// an accountant cannot put `pay_Nq3k...` in a return, and because a statutory
+/// series has to be ours to keep, gapless and in order, for as long as tax law
+/// says — longer than a payment gateway account is guaranteed to last.
+model Invoice {
+  id Int @id @default(autoincrement())
+
+  /// The whole number, as printed: `INV-WAC-2627-0001`.
+  number String @unique
+
+  /// The Indian financial year it was raised in, the way the number spells it:
+  /// `2627` is 1 April 2026 to 31 March 2027.
+  financialYear String
+  /// Position within that financial year. Starts again at 1 each 1 April.
+  sequence      Int
+
+  /// Razorpay's payment id, and the reason a replayed `subscription.charged`
+  /// cannot raise a second invoice for the same debit. Held here as well as on
+  /// the payment row because it has to survive that row being deleted.
+  razorpayPaymentId String  @unique
+  razorpayInvoiceId String?
+
+  /// The stored debit, while there is one. Nulled rather than cascaded when a
+  /// subscription goes: an invoice outlives what it invoiced.
+  paymentId Int? @unique
+
+  /// The organisation billed, and the account the subscription paid for. Both
+  /// are ids only — everything printed is snapshotted below.
+  ssoOrgId String
+  wabaId   String?
+
+  /// Everything the document says, frozen at issue. An invoice is a record of
+  /// what was stated at the time, so a plan renamed, an organisation renamed
+  /// or an account disconnected next month cannot rewrite one already sent.
+  billedToName     String?
+  billedToEmail    String?
+  organisationName String?
+  accountName      String?
+  planName         String?
+  /// The single line item, e.g. "Growth plan — WhatsApp Business Account".
+  description      String
+  /// The period the charge bought, as printed under the line item.
+  periodStart      DateTime?
+  periodEnd        DateTime?
+
+  /// In the smallest currency unit, like every other amount here.
+  ///
+  /// `total` is what was actually taken — it is not derived, it is what the
+  /// bank moved. `subtotal` and `taxAmount` are how that total divides at the
+  /// rate configured when the invoice was raised, so a rate changed next year
+  /// cannot restate an invoice already issued. With no rate configured the
+  /// subtotal is the total and the tax is zero.
+  subtotal   Int
+  taxAmount  Int    @default(0)
+  /// Basis points, so 18% is 1800 and no percentage is held in a float.
+  taxRateBps Int    @default(0)
+  /// What the tax is called on the document: "GST", "IGST", "VAT".
+  taxLabel   String?
+  total      Int
+  currency   String @default("INR")
+
+  /// How it was paid, in the same words the payment row uses: "Visa ···· 4242",
+  /// a UPI handle, a bank. Snapshotted like everything else — the card a
+  /// customer replaces next year did not pay this invoice.
+  paymentMethod String?
+
+  issuedAt DateTime @default(now())
+  paidAt   DateTime?
+
+  /// When SES accepted the message carrying it, and where it went. Null while
+  /// it has not been sent — a mail outage must not lose the invoice itself.
+  emailedAt DateTime?
+  emailedTo String?
+
+  payment SubscriptionPayment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@unique([financialYear, sequence])
+  @@index([ssoOrgId, issuedAt])
+}
+
+/// The next number in each financial year's series.
+///
+/// One row per financial year, incremented in the same transaction that writes
+/// the invoice, because the whole point of a statutory series is that no two
+/// invoices share a number and no number is skipped. A counter derived from
+/// `MAX(sequence)` would hand the same number to two webhooks arriving in the
+/// same second.
+model InvoiceCounter {
+  financialYear String   @id
+  nextSequence  Int      @default(1)
+  updatedAt     DateTime @updatedAt
 }
 
 /// Every Razorpay webhook, kept for idempotency and for answering "what did

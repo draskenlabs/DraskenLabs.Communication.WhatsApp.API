@@ -62,6 +62,16 @@ export class SubscriptionPaymentDto {
 
   @ApiProperty({ nullable: true })
   paidAt: Date | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Our invoice for this debit, in the deployment’s own series. Null for a ' +
+      'payment that was never captured, and for debits taken before invoicing ' +
+      'existed.',
+    example: 'INV-WAC-2627-0001',
+  })
+  invoiceNumber: string | null;
 }
 
 export class SubscriptionStateDto {
@@ -275,4 +285,94 @@ export class ConfirmSubscriptionDto {
   @IsString()
   @IsNotEmpty()
   razorpaySignature: string;
+}
+
+/**
+ * One invoice, as the console lists it.
+ *
+ * Everything here is the snapshot written when the invoice was raised, not a
+ * live read: a plan renamed or an organisation renamed since must not change
+ * what a document already sent to a customer says.
+ */
+export class InvoiceDto {
+  @ApiProperty({
+    description: 'The number as printed, and the id every other route uses',
+    example: 'INV-WAC-2627-0001',
+  })
+  number: string;
+
+  @ApiProperty({
+    description: 'The Indian financial year it was raised in',
+    example: '2627',
+  })
+  financialYear: string;
+
+  @ApiProperty()
+  issuedAt: Date;
+
+  @ApiProperty({ nullable: true })
+  paidAt: Date | null;
+
+  @ApiProperty({ nullable: true })
+  organisationName: string | null;
+
+  @ApiProperty({ nullable: true, description: 'The account the charge paid for' })
+  accountName: string | null;
+
+  @ApiProperty({ nullable: true })
+  planName: string | null;
+
+  @ApiProperty({ example: 'Growth plan — Acme Retail' })
+  description: string;
+
+  @ApiProperty({ nullable: true, description: 'Start of the cycle charged for' })
+  periodStart: Date | null;
+
+  @ApiProperty({ nullable: true })
+  periodEnd: Date | null;
+
+  @ApiProperty({
+    description: 'Taxable value in the smallest currency unit',
+    example: 42288,
+  })
+  subtotal: number;
+
+  @ApiProperty({ description: 'Tax in the smallest currency unit', example: 7612 })
+  taxAmount: number;
+
+  @ApiProperty({
+    description: 'Tax rate in basis points, so 18% is 1800. Zero where no rate is configured',
+    example: 1800,
+  })
+  taxRateBps: number;
+
+  @ApiProperty({ nullable: true, example: 'GST' })
+  taxLabel: string | null;
+
+  @ApiProperty({
+    description: 'What was actually taken, in the smallest currency unit',
+    example: 49900,
+  })
+  total: number;
+
+  @ApiProperty({ example: 'INR' })
+  currency: string;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'When the invoice was emailed. Null while it has not gone out',
+  })
+  emailedAt: Date | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Where it was emailed, as recorded at the time',
+  })
+  emailedTo: string | null;
+
+  @ApiProperty({
+    description: 'Razorpay’s payment id, for tracing a query to their dashboard',
+    example: 'pay_29QQoUBi66xm2f',
+  })
+  razorpayPaymentId: string;
 }

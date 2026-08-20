@@ -7,7 +7,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { Prisma, Subscription, SubscriptionStatus } from '@prisma/client';
+import {
+  Prisma,
+  Subscription,
+  SubscriptionPayment,
+  SubscriptionStatus,
+} from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
@@ -17,6 +22,7 @@ import {
   RazorpaySubscription,
 } from './razorpay.service';
 import { SubscriptionAccessService } from './subscription-access.service';
+import { InvoiceService } from './invoice.service';
 import { registeredNumbersWhere } from 'src/waba-phone-number/waba-phone-number.service';
 import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
 import {
@@ -42,6 +48,20 @@ const STATUSES = new Set<string>([
 /** Unix seconds to a Date, tolerating the nulls Razorpay sends before a charge. */
 function at(seconds: number | null | undefined): Date | null {
   return seconds ? new Date(seconds * 1000) : null;
+}
+
+/**
+ * Flatten the joined invoice down to its number.
+ *
+ * The console wants one string per row, not a nested object it has to reach
+ * into — and a debit that has no invoice yet (a failure, or one raised before
+ * invoicing existed) reads as null rather than as a missing field.
+ */
+function withInvoiceNumber<T extends { invoice?: { number: string } | null }>(
+  payment: T,
+): Omit<T, 'invoice'> & { invoiceNumber: string | null } {
+  const { invoice, ...rest } = payment;
+  return { ...rest, invoiceNumber: invoice?.number ?? null };
 }
 
 /**
@@ -73,6 +93,7 @@ export class BillingService {
     private readonly mail: MailNotifications,
     private readonly access: SubscriptionAccessService,
     private readonly provisioning: WabaProvisioningService,
+    private readonly invoices: InvoiceService,
   ) {}
 
   /**
@@ -209,7 +230,7 @@ export class BillingService {
     subscriptionId: number | undefined,
   ): Promise<SubscriptionPaymentDto[]> {
     if (!subscriptionId) return [];
-    return this.prisma.subscriptionPayment.findMany({
+    const rows = await this.prisma.subscriptionPayment.findMany({
       where: { subscriptionId },
       orderBy: [{ paidAt: 'desc' }, { id: 'desc' }],
       take: 12,
@@ -222,8 +243,12 @@ export class BillingService {
         method: true,
         methodDetail: true,
         paidAt: true,
+        // Our number, not Razorpay's: it is what the console shows and what
+        // the download link is keyed on.
+        invoice: { select: { number: true } },
       },
     });
+    return rows.map(withInvoiceNumber);
   }
 
   /**
@@ -277,13 +302,14 @@ export class BillingService {
         method: true,
         methodDetail: true,
         paidAt: true,
+        invoice: { select: { number: true } },
       },
     });
 
     const bySub = new Map<number, SubscriptionPaymentDto[]>();
     for (const { subscriptionId, ...payment } of payments) {
       const list = bySub.get(subscriptionId) ?? [];
-      if (list.length < 12) list.push(payment);
+      if (list.length < 12) list.push(withInvoiceNumber(payment));
       bySub.set(subscriptionId, list);
     }
 
@@ -924,7 +950,11 @@ export class BillingService {
 
     const sub = await this.prisma.subscription.findUnique({
       where: { razorpaySubscriptionId: entity.id },
-      include: { waba: { select: { name: true } } },
+      include: {
+        waba: { select: { name: true } },
+        // The tier's name is what the invoice's line item says it bought.
+        plan: { select: { name: true } },
+      },
     });
 
     if (!sub) {
@@ -938,7 +968,35 @@ export class BillingService {
     const currentEnd = at(entity.current_end);
 
     await this.applyRemote(sub, entity);
-    await this.recordPayment(sub.id, payment);
+    const recorded = await this.recordPayment(sub.id, payment);
+    // Money has moved, so there is a document to raise. After the payment row,
+    // so the invoice can point at it; before the email below, so a customer
+    // never gets "your subscription is active" and its invoice out of order.
+    // Only a captured debit is invoiced: an authorised-but-uncaptured payment
+    // is money that has not moved, and a failed one is money that never will.
+    if (recorded?.status === 'captured') {
+      await this.invoices.issueFor({
+        paymentId: recorded.id,
+        razorpayPaymentId: recorded.razorpayPaymentId,
+        razorpayInvoiceId: recorded.razorpayInvoiceId,
+        subscriptionId: sub.id,
+        ssoOrgId: sub.ssoOrgId,
+        wabaId: sub.wabaId,
+        userId: sub.createdByUserId,
+        accountName: sub.waba?.name ?? sub.wabaId,
+        planName: sub.plan?.name ?? null,
+        amount: recorded.amount,
+        currency: recorded.currency,
+        paidAt: recorded.paidAt,
+        method: recorded.method,
+        methodDetail: recorded.methodDetail,
+        // The cycle this charge bought, from the event rather than from our
+        // row: the row is written from the same event, but the period is what
+        // the customer is being invoiced *for*.
+        periodStart: at(entity.current_start),
+        periodEnd: currentEnd,
+      });
+    }
     // A cycle has just been paid for; queue what the next one owes for the
     // numbers on the account beyond the one the plan includes.
     if (event === 'subscription.charged') {
@@ -1028,8 +1086,8 @@ export class BillingService {
   private async recordPayment(
     subscriptionId: number,
     payment: RazorpayPayment | undefined,
-  ): Promise<void> {
-    if (!payment?.id) return;
+  ): Promise<SubscriptionPayment | null> {
+    if (!payment?.id) return null;
 
     const data = {
       razorpayInvoiceId: payment.invoice_id ?? null,
@@ -1042,7 +1100,7 @@ export class BillingService {
     };
 
     try {
-      await this.prisma.subscriptionPayment.upsert({
+      return await this.prisma.subscriptionPayment.upsert({
         where: { razorpayPaymentId: payment.id },
         create: { subscriptionId, razorpayPaymentId: payment.id, ...data },
         update: data,
@@ -1052,6 +1110,7 @@ export class BillingService {
       // Razorpay would retry the whole delivery and re-apply the state.
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Could not record payment ${payment.id}: ${detail}`);
+      return null;
     }
   }
 
@@ -1118,6 +1177,12 @@ export class BillingService {
    */
   @Cron(CronExpression.EVERY_HOUR, { name: 'billing-reconcile' })
   async reconcile(): Promise<void> {
+    // Invoices that were raised but never sent — mail disabled at the time, or
+    // SES refusing when the charge landed. Outside the Razorpay guard on
+    // purpose: a document already raised still has to reach its customer even
+    // if billing has since been switched off.
+    await this.invoices.deliverPending();
+
     if (!this.razorpay.isConfigured()) return;
 
     const stale = await this.prisma.subscription.findMany({

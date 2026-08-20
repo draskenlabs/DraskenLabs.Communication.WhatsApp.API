@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
+import { InvoiceService } from './invoice.service';
 import { RazorpayService } from './razorpay.service';
 import { RazorpaySignatureMiddleware } from './middleware/razorpay-signature.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
@@ -14,6 +15,7 @@ import { UserModule } from 'src/user/user.module';
 import { MailModule } from 'src/mail/mail.module';
 import { SubscriptionAccessModule } from './subscription-access.module';
 import { ProvisioningModule } from 'src/provisioning/provisioning.module';
+import { OrgDirectoryModule } from 'src/org/org-directory.module';
 
 @Module({
   imports: [
@@ -21,17 +23,26 @@ import { ProvisioningModule } from 'src/provisioning/provisioning.module';
     MailModule,
     SubscriptionAccessModule,
     ProvisioningModule,
+    // Invoices name the organisation they were billed to, and the directory is
+    // the only thing that can turn an SSO id into a name.
+    OrgDirectoryModule,
   ],
   controllers: [BillingController],
   providers: [
     BillingService,
+    InvoiceService,
     RazorpaySignatureMiddleware,
     SubscriptionMiddleware,
     AuthMiddleware,
   ],
   // MessagingModule applies the paywall; it needs both to decide. Razorpay and
   // the gate come through `SubscriptionAccessModule`, which owns them.
-  exports: [BillingService, SubscriptionMiddleware, SubscriptionAccessModule],
+  exports: [
+    BillingService,
+    InvoiceService,
+    SubscriptionMiddleware,
+    SubscriptionAccessModule,
+  ],
 })
 export class BillingModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
@@ -55,6 +66,9 @@ export class BillingModule implements NestModule {
         method: RequestMethod.PATCH,
       },
       { path: 'billing/subscriptions/:wabaId', method: RequestMethod.DELETE },
+      { path: 'billing/invoices', method: RequestMethod.GET },
+      { path: 'billing/invoices/:number', method: RequestMethod.GET },
+      { path: 'billing/invoices/:number/pdf', method: RequestMethod.GET },
     );
   }
 }

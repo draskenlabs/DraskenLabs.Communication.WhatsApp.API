@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | Status | ✅ Implemented (not yet exercised against live Razorpay) |
-| Last Updated | 2026-08-02 |
+| Last Updated | 2026-08-20 |
 
 ## Implemented
 
@@ -30,6 +30,11 @@
 - `SubscriptionMiddleware` on `/messages` additionally covers the API-key
   path's reads. `402` is the refusal, naming the account so the message says
   which subscription is missing.
+- **Invoices.** A captured debit raises a numbered invoice — `INV-WAC-2627-0001`
+  — and emails it as a PDF to whoever took the subscription out. Owned by the
+  Invoicing module (`docs/development/modules/invoicing/`); billing's part is
+  calling `InvoiceService.issueFor` after the payment is recorded, and running
+  `deliverPending()` from the reconciliation sweep.
 - Billing emails: charged, payment failed (retrying vs stopped), cancelled.
   Each names the organisation it is about, not only the account — somebody in
   three of them cannot act on "your subscription renewed" otherwise.

@@ -105,6 +105,37 @@ import * as Joi from 'joi';
         // Only ever set by the integration suite, which points the client at a
         // local stand-in for Razorpay.
         RAZORPAY_API_BASE: Joi.string().uri().optional(),
+        // Invoicing. Every value is optional and every default is safe: a
+        // deployment that configures none of this still raises numbered
+        // invoices and still emails them — it simply prints no seller address
+        // and shows no tax line.
+        //
+        // The series is the `WAC` in `INV-WAC-2627-0001`, and it must not be
+        // changed once a deployment has issued invoices: the number is what a
+        // customer's accounts refer to, and two books under one name is the
+        // one thing a statutory series may not be.
+        INVOICE_SERIES: Joi.string()
+          .pattern(/^[A-Za-z0-9]{2,8}$/)
+          .optional(),
+        // Which local midnight the financial year turns at. India's runs
+        // 1 April to 31 March, and a payment captured at 03:00 IST on 1 April
+        // belongs to the new year even though it is still 31 March in UTC.
+        INVOICE_TIMEZONE: Joi.string().optional(),
+        // Tax rate in basis points — 1800 is 18% GST. Zero, or unset, prints
+        // no tax line at all, which is what a deployment not registered for
+        // GST needs. The published price is treated as inclusive either way.
+        INVOICE_TAX_RATE_BPS: Joi.number().min(0).max(10000).optional(),
+        INVOICE_TAX_LABEL: Joi.string().optional(),
+        INVOICE_PLACE_OF_SUPPLY: Joi.string().optional(),
+        // Who the invoice is from. The address is pipe-separated, because an
+        // environment variable has no newlines.
+        INVOICE_SELLER_NAME: Joi.string().optional(),
+        INVOICE_SELLER_ADDRESS: Joi.string().optional(),
+        INVOICE_SELLER_EMAIL: Joi.string().email().optional(),
+        INVOICE_SELLER_WEBSITE: Joi.string().optional(),
+        INVOICE_SELLER_GSTIN: Joi.string().optional(),
+        INVOICE_SELLER_PAN: Joi.string().optional(),
+        INVOICE_SELLER_CIN: Joi.string().optional(),
       }),
     }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),

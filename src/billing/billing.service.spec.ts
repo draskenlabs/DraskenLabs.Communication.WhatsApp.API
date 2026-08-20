@@ -8,6 +8,7 @@ import { MailNotifications } from 'src/mail/mail.notifications';
 import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 import { SubscriptionAccessService } from './subscription-access.service';
 import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
+import { InvoiceService } from './invoice.service';
 
 const mockPrisma = {
   subscription: {
@@ -67,6 +68,11 @@ const PLAN = {
 const mockMail = mailNotificationsDouble();
 
 const mockAccess = { invalidate: jest.fn() };
+
+const mockInvoices = {
+  issueFor: jest.fn().mockResolvedValue(null),
+  deliverPending: jest.fn().mockResolvedValue(0),
+};
 
 const mockProvisioning = {
   isProvisioned: jest.fn().mockResolvedValue(false),
@@ -136,6 +142,7 @@ describe('BillingService', () => {
         { provide: MailNotifications, useValue: mockMail },
         { provide: SubscriptionAccessService, useValue: mockAccess },
         { provide: WabaProvisioningService, useValue: mockProvisioning },
+        { provide: InvoiceService, useValue: mockInvoices },
       ],
     }).compile();
     service = module.get<BillingService>(BillingService);
@@ -1104,6 +1111,66 @@ describe('BillingService', () => {
       } as never);
 
       expect(mockPrisma.subscriptionPayment.upsert).not.toHaveBeenCalled();
+    });
+
+    it('raises an invoice for the debit, and mails it', async () => {
+      mockPrisma.subscriptionPayment.upsert.mockResolvedValue({
+        id: 55,
+        razorpayPaymentId: 'pay_12',
+        razorpayInvoiceId: 'inv_12',
+        amount: 49900,
+        currency: 'INR',
+        status: 'captured',
+        method: 'card',
+        methodDetail: 'Visa ···· 4242',
+        paidAt: new Date('2026-09-01T06:30:00Z'),
+      });
+
+      await service.handleWebhook(
+        'evt_invoice',
+        charged({
+          id: 'pay_12',
+          invoice_id: 'inv_12',
+          amount: 49900,
+          currency: 'INR',
+          status: 'captured',
+          method: 'card',
+        }) as never,
+      );
+
+      expect(mockInvoices.issueFor).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentId: 55,
+          razorpayPaymentId: 'pay_12',
+          ssoOrgId: 'org_1',
+          amount: 49900,
+          currency: 'INR',
+          methodDetail: 'Visa ···· 4242',
+        }),
+      );
+    });
+
+    it('invoices nothing for a debit that failed', async () => {
+      // An invoice says money changed hands. A declined card did not.
+      mockPrisma.subscriptionPayment.upsert.mockResolvedValue({
+        id: 56,
+        razorpayPaymentId: 'pay_13',
+        status: 'failed',
+        amount: 49900,
+        currency: 'INR',
+      });
+
+      await service.handleWebhook(
+        'evt_failed',
+        charged({
+          id: 'pay_13',
+          amount: 49900,
+          currency: 'INR',
+          status: 'failed',
+        }) as never,
+      );
+
+      expect(mockInvoices.issueFor).not.toHaveBeenCalled();
     });
 
     it('applies the subscription even when the payment cannot be stored', async () => {

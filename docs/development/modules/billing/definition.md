@@ -37,6 +37,7 @@ have paid for.**
 | Volume discount across accounts | ❌ No | Each account is its own subscription |
 | Proration, upgrades, plan changes | ❌ No | One plan |
 | Refunds | ❌ No | Handled manually in Razorpay |
+| Invoices for each debit | ✅ Yes | Raised and emailed by the **Invoicing** module |
 | In-app card update | ❌ No | Re-register; Razorpay has no hosted portal |
 
 ---
@@ -49,6 +50,9 @@ have paid for.**
 | POST | `/billing/subscriptions/:wabaId` | JWT | Subscribe that account. Returns the subscription id to open Checkout with, the publishable key, and the hosted page as a fallback. Throttled 5/min |
 | POST | `/billing/subscriptions/:wabaId/confirm` | JWT | Record a mandate authorised in Checkout, signature-checked |
 | DELETE | `/billing/subscriptions/:wabaId` | JWT | Cancel that account. Keeps the paid month |
+| GET | `/billing/invoices` | JWT | Invoices raised for this organisation. See the **Invoicing** module |
+| GET | `/billing/invoices/:number` | JWT | One invoice |
+| GET | `/billing/invoices/:number/pdf` | JWT | The document that was emailed |
 | POST | `/billing/webhook` | HMAC signature | Razorpay events |
 
 ---
