@@ -70,6 +70,7 @@ model Waba {
   Subscription     Subscription[]
   WabaOrganisation WabaOrganisation[]
   WebhookEndpoint  WebhookEndpoint[]
+  Conversation     Conversation[]
 }
 
 /// Which organisations have connected a WhatsApp Business Account.
@@ -448,6 +449,9 @@ model Message {
   /// Per-number breakdowns, and the WABA filter, which joins through the number.
   @@index([phoneNumberId])
   @@index([ssoOrgId, templateName])
+  /// The outbound half of an inbox thread: this organisation's sends from one
+  /// number to one recipient, in order.
+  @@index([ssoOrgId, phoneNumberId, to, createdAt])
 }
 
 model MessageTemplate {
@@ -503,6 +507,85 @@ model InboundMessage {
 
   /// Inbound volume per WABA over a date range.
   @@index([wabaId, createdAt])
+  /// One conversation's replies, newest first. The inbox reads a thread by the
+  /// number it arrived on and who sent it — there is no conversation id on the
+  /// row, because a WABA held by two organisations has two of them.
+  @@index([phoneNumberId, from, timestamp])
+}
+
+enum ConversationStatus {
+  open
+  closed
+}
+
+enum ConversationDirection {
+  inbound
+  outbound
+}
+
+/// One thread in the inbox: this organisation, this number, this customer.
+///
+/// Nothing here cannot be derived from `Message` and `InboundMessage` — and
+/// deriving it is exactly the problem. A conversation list is "the newest
+/// message per counterparty across two tables", which no index answers and
+/// which has to be recomputed on every poll. This row is that answer, written
+/// once as each message lands.
+///
+/// Keyed per organisation rather than per WABA. An account can be connected by
+/// several organisations (`WabaOrganisation`), and each one has its own unread
+/// count, its own assignment and its own idea of whether the thread is dealt
+/// with — the same reason the notification feed writes a row per organisation.
+model Conversation {
+  id            Int     @id @default(autoincrement())
+  ssoOrgId      String
+  /// The account the number belongs to. Denormalised so the WABA filter and an
+  /// API key's WABA scope do not have to join through `WabaPhoneNumber`.
+  wabaId        String
+  phoneNumberId String
+  /// The customer, digits only. Meta reports `from` without a leading `+` and
+  /// callers send `to` either way, so both are normalised to one form before
+  /// they reach this column — otherwise the same person opens two threads.
+  contactPhone  String
+  /// The WhatsApp profile name from the last reply. A customer who has never
+  /// written has none, which is why the list falls back to the number.
+  contactName   String?
+
+  lastMessageAt DateTime
+  lastDirection ConversationDirection
+  /// A one-line summary of the last message, for the list.
+  ///
+  /// Denormalised because the alternative is reading a JSON payload per row on
+  /// every page of the list, for a string that never changes once written.
+  lastPreview   String?
+
+  /// When the customer last wrote. This, and not `lastMessageAt`, is what the
+  /// 24-hour customer service window is measured from — the window is about
+  /// their last reply, and our own sends must not extend it.
+  lastInboundAt DateTime?
+
+  /// Unread replies since `lastReadAt`. A counter rather than a query, for the
+  /// same reason as the preview: the sidebar badge is on every page.
+  unreadCount Int       @default(0)
+  lastReadAt  DateTime?
+
+  status         ConversationStatus @default(open)
+  /// Who on the team is dealing with this, if the team works that way.
+  assigneeUserId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  waba Waba @relation(fields: [wabaId], references: [wabaId], onDelete: Cascade)
+
+  /// One thread per customer per number per organisation. This is what makes
+  /// the write path an upsert instead of a read-then-write race.
+  @@unique([ssoOrgId, phoneNumberId, contactPhone])
+  /// The list itself: an organisation's threads, newest activity first.
+  @@index([ssoOrgId, lastMessageAt])
+  /// The same list filtered to open or closed.
+  @@index([ssoOrgId, status, lastMessageAt])
+  /// Deleting an account, and the WABA filter.
+  @@index([wabaId])
 }
 
 /// A quality rating as Meta reported it, kept as a series.

@@ -95,6 +95,7 @@ Authorization: Bearer <sso_access_token>
 | WABA Phone Numbers | `/wabas/:id/phone-numbers` | JWT | Phone number sync |
 | API Keys | `/api-keys` | JWT | Programmatic key management |
 | Messaging | `/messages` | API Key | Send and retrieve messages |
+| Inbox | `/inbox` | JWT / API Key | Conversations, threads and replies |
 | Templates | `/templates` | JWT | Message template sync from Meta |
 | Contacts | `/contacts` | JWT | Contact and opt-out management |
 | Webhooks | `/webhooks` | HMAC / None | Meta event ingestion |
@@ -135,6 +136,7 @@ src/
   waba-phone-number/  Phone number management
   api-key/            API key CRUD + auth middleware
   messaging/          Send/receive messages
+  inbox/              Conversations, threads, replies
   templates/          Message templates
   contacts/           Contact management
   webhooks/           Meta webhook handler

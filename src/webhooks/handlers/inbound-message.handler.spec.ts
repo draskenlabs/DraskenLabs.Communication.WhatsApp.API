@@ -4,6 +4,8 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { MailService } from 'src/mail/mail.service';
 import { mailServiceDouble } from 'src/mail/mail.test-doubles';
+import { ConversationWriterService } from 'src/inbox/conversation-writer.service';
+import { conversationWriterDouble } from 'src/inbox/inbox.test-doubles';
 
 const mockPrisma = {
   inboundMessage: { upsert: jest.fn() },
@@ -15,6 +17,7 @@ const mockNotifications = {
 };
 
 const mockMail = mailServiceDouble();
+const mockConversations = conversationWriterDouble();
 
 describe('InboundMessageHandler', () => {
   let handler: InboundMessageHandler;
@@ -26,7 +29,9 @@ describe('InboundMessageHandler', () => {
         { provide: MailService, useValue: mockMail },
         InboundMessageHandler,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: NotificationsService, useValue: mockNotifications }],
+        { provide: NotificationsService, useValue: mockNotifications },
+        { provide: ConversationWriterService, useValue: mockConversations },
+      ],
     }).compile();
     handler = module.get<InboundMessageHandler>(InboundMessageHandler);
   });
@@ -98,6 +103,7 @@ describe('InboundMessageHandler notifications', () => {
         InboundMessageHandler,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications },
+        { provide: ConversationWriterService, useValue: mockConversations },
       ],
     }).compile();
     handler = module.get<InboundMessageHandler>(InboundMessageHandler);
@@ -112,7 +118,9 @@ describe('InboundMessageHandler notifications', () => {
       expect.objectContaining({
         title: 'Alice',
         body: 'Where is my order?',
-        link: '/messages',
+        // The push opens the thread it is about. It used to land on the send
+        // log, which is the one screen that does not show the reply.
+        link: '/inbox?phone=447911111111',
       }),
     );
   });
@@ -156,7 +164,8 @@ describe('InboundMessageHandler notifications', () => {
       { body: string },
     ][];
     const push = calls[0][2];
-    expect(push.body).toHaveLength(118);
+    // The same preview the conversation list stores — one summary, one length.
+    expect(push.body).toHaveLength(120);
     expect(push.body.endsWith('…')).toBe(true);
   });
 

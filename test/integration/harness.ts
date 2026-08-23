@@ -60,6 +60,7 @@ const MUTABLE_TABLES = [
   'SubscriptionPayment',
   'SubscriptionEvent',
   'Subscription',
+  'Conversation',
   'InboundMessage',
   'Message',
   'MessageTemplate',

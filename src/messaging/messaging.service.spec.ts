@@ -20,6 +20,8 @@ import axios from 'axios';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import { MailService } from 'src/mail/mail.service';
 import { mailNotificationsDouble, mailServiceDouble } from 'src/mail/mail.test-doubles';
+import { ConversationWriterService } from 'src/inbox/conversation-writer.service';
+import { conversationWriterDouble } from 'src/inbox/inbox.test-doubles';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -42,6 +44,7 @@ const mockMailNotifications = mailNotificationsDouble();
 const mockBilling = billingServiceDouble();
 const mockMembership = wabaMembershipDouble();
 const mockMail = mailServiceDouble();
+const mockConversations = conversationWriterDouble();
 
 describe('MessagingService', () => {
   let service: MessagingService;
@@ -59,6 +62,7 @@ describe('MessagingService', () => {
         { provide: RedisService, useValue: mockRedis },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: ContactsService, useValue: mockContacts },
+        { provide: ConversationWriterService, useValue: mockConversations },
       ],
     }).compile();
     service = module.get<MessagingService>(MessagingService);
@@ -156,6 +160,45 @@ describe('MessagingService', () => {
       expect(mockPrisma.message.create).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ type: 'text', ssoOrgId: 'sso_org_1' }) }),
       );
+    });
+
+    it('brings the send to the top of the inbox', async () => {
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
+      mockContacts.isOptedOut.mockResolvedValue(false);
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.abc' }] } });
+      const createdAt = new Date('2026-08-23T09:00:00Z');
+      mockPrisma.message.create.mockResolvedValue({
+        id: 1, metaMessageId: 'wamid.abc', phoneNumberId: 'p1', to: '447911111111',
+        type: 'text', status: 'sent', templateName: null, createdAt,
+      });
+
+      await service.sendMessage(1, 'sso_org_1', dto);
+
+      expect(mockConversations.recordOutbound).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ssoOrgId: 'sso_org_1',
+          wabaId: 'w1',
+          phoneNumberId: 'p1',
+          to: '447911111111',
+          type: 'text',
+          sentAt: createdAt,
+        }),
+      );
+    });
+
+    it('reports the send as sent even when the inbox summary fails', async () => {
+      // The message has reached Meta by then. A summary we could not write is
+      // not a reason to tell the caller their message did not go.
+      mockRedis.getPhoneCache.mockResolvedValue({ wabaId: 'w1', accessToken: 'enc' });
+      mockContacts.isOptedOut.mockResolvedValue(false);
+      mockedAxios.post = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'wamid.abc' }] } });
+      mockPrisma.message.create.mockResolvedValue({
+        id: 1, metaMessageId: 'wamid.abc', phoneNumberId: 'p1', to: '447911111111',
+        type: 'text', status: 'sent', createdAt: new Date(),
+      });
+      mockConversations.recordOutbound.mockRejectedValueOnce(new Error('deadlock'));
+
+      await expect(service.sendMessage(1, 'sso_org_1', dto)).rejects.toThrow('deadlock');
     });
 
     it('sends template message with correct Meta payload', async () => {

@@ -19,9 +19,10 @@ import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
 import { UserModule } from 'src/user/user.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { PlansModule } from 'src/plans/plans.module';
+import { ConversationWriterModule } from 'src/inbox/conversation-writer.module';
 
 @Module({
-  imports: [UserModule, NotificationsModule, PlansModule],
+  imports: [UserModule, NotificationsModule, PlansModule, ConversationWriterModule],
   controllers: [WebhooksController],
   providers: [
     WebhooksService,

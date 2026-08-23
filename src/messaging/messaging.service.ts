@@ -21,6 +21,7 @@ import {
 import { SendMessageDto, MessageTypeEnum, InteractiveTypeEnum } from './dto/send-message.dto';
 import { SendMessageResponseDto, MessageListItemDto } from './dto/message-response.dto';
 import { MessageAnalyticsDto } from './dto/message-analytics.dto';
+import { ConversationWriterService } from 'src/inbox/conversation-writer.service';
 import { BaseResponse } from 'src/common/responses/base-response';
 
 @Injectable()
@@ -36,6 +37,7 @@ export class MessagingService {
     private readonly mail: MailNotifications,
     private readonly billing: SubscriptionAccessService,
     private readonly membership: WabaMembershipService,
+    private readonly conversations: ConversationWriterService,
   ) {}
 
   /**
@@ -122,6 +124,20 @@ export class MessagingService {
             ? (dto.templateName ?? null)
             : null,
       },
+    });
+
+    // The thread this send belongs to. After the row exists, and never allowed
+    // to fail the send: the message has reached Meta by this point, and a
+    // summary we could not write is not a reason to report a failure.
+    await this.conversations.recordOutbound({
+      ssoOrgId,
+      wabaId: phoneCache.wabaId,
+      phoneNumberId: dto.phoneNumberId,
+      to: dto.to,
+      type: dto.type,
+      payload: metaPayload,
+      templateName: message.templateName,
+      sentAt: message.createdAt,
     });
 
     return {
