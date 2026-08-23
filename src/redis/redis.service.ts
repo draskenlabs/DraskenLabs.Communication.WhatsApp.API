@@ -83,8 +83,17 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return uuidv7();
   }
 
-  async setSsoSession(sessionId: string, data: SsoSessionData, ttlSeconds = 86400): Promise<void> {
-    await this.client.set(`ssosession:${sessionId}`, JSON.stringify(data), 'EX', ttlSeconds);
+  async setSsoSession(
+    sessionId: string,
+    data: SsoSessionData,
+    ttlSeconds = 86400,
+  ): Promise<void> {
+    await this.client.set(
+      `ssosession:${sessionId}`,
+      JSON.stringify(data),
+      'EX',
+      ttlSeconds,
+    );
   }
 
   async getSsoSession(sessionId: string): Promise<SsoSessionData | null> {
@@ -98,13 +107,18 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   // User Cache
-  async getUserCache(userId: number): Promise<{ id: number; ssoId: string } | null> {
+  async getUserCache(
+    userId: number,
+  ): Promise<{ id: number; ssoId: string } | null> {
     const raw = await this.client.get(`user:${userId}`);
     if (!raw) return null;
     return JSON.parse(raw);
   }
 
-  async setUserCache(userId: number, user: { id: number; ssoId: string }): Promise<void> {
+  async setUserCache(
+    userId: number,
+    user: { id: number; ssoId: string },
+  ): Promise<void> {
     await this.client.set(`user:${userId}`, JSON.stringify(user), 'EX', 900); // 15 min TTL
   }
 
@@ -166,13 +180,21 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     await this.client.set(
       `apiKey:${accessKey}`,
-      JSON.stringify({ userId, ssoOrgId, wabaId, secretKey: encryptedSecretKey }),
+      JSON.stringify({
+        userId,
+        ssoOrgId,
+        wabaId,
+        secretKey: encryptedSecretKey,
+      }),
     );
   }
 
-  async getApiKeyCache(
-    accessKey: string,
-  ): Promise<{ userId: number; ssoOrgId: string; wabaId: string | null; secretKey: string } | null> {
+  async getApiKeyCache(accessKey: string): Promise<{
+    userId: number;
+    ssoOrgId: string;
+    wabaId: string | null;
+    secretKey: string;
+  } | null> {
     const raw = await this.client.get(`apiKey:${accessKey}`);
     if (!raw) return null;
 
@@ -209,7 +231,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     allowed: boolean,
     ttlSeconds = 60,
   ): Promise<void> {
-    await this.client.set(`sub:${scope}`, allowed ? '1' : '0', 'EX', ttlSeconds);
+    await this.client.set(
+      `sub:${scope}`,
+      allowed ? '1' : '0',
+      'EX',
+      ttlSeconds,
+    );
   }
 
   async getSubscriptionAccess(scope: string): Promise<boolean | null> {
@@ -220,5 +247,27 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async invalidateSubscriptionAccess(scope: string): Promise<void> {
     await this.client.del(`sub:${scope}`);
+  }
+
+  // Inbound media — media:{mediaId} → the download URL Meta resolved it to.
+  //
+  // Fetching a photo in a thread costs two calls to Meta: one to turn the media
+  // id into a URL, then the download itself. The first answer is stable for as
+  // long as the URL is, so a thread being scrolled does not need to ask again
+  // for every image on screen.
+  //
+  // Always with a TTL, and a short one. Meta's URLs expire on their own, and a
+  // cached link that has outlived its signature is a broken image rather than
+  // a stale one — five minutes is comfortably inside the window they hold for.
+  async setMediaUrl(
+    mediaId: string,
+    url: string,
+    ttlSeconds = 300,
+  ): Promise<void> {
+    await this.client.set(`media:${mediaId}`, url, 'EX', ttlSeconds);
+  }
+
+  async getMediaUrl(mediaId: string): Promise<string | null> {
+    return this.client.get(`media:${mediaId}`);
   }
 }

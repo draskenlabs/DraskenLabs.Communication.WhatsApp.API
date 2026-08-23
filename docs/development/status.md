@@ -52,6 +52,7 @@ Current overall status of the DraskenLabs WhatsApp Communication API.
 | Webhooks | ✅ Complete | 100% | GET verification + POST HMAC-signed processing. Inbound, status, quality, account events. |
 | Analytics | ✅ Complete | 100% | Overview, messages, templates, contacts, phone numbers, CSV export |
 | Search | ✅ Complete | 100% | One query across contacts, messages, templates, numbers and WABAs |
+| Inbox | ✅ Complete | 100% | Conversations, threads, unread state, replies gated by the 24-hour window, inbound media |
 
 ---
 
@@ -84,6 +85,12 @@ Current overall status of the DraskenLabs WhatsApp Communication API.
 | POST | `/messages` | API Key | Send a WhatsApp message |
 | GET | `/messages` | API Key | List sent messages for org |
 | GET | `/messages/:id` | API Key | Get a single message |
+| GET | `/inbox` | JWT / API Key | List conversations |
+| GET | `/inbox/:id/messages` | JWT / API Key | Read one thread, both directions |
+| POST | `/inbox/:id/read` | JWT / API Key | Mark a conversation read |
+| POST | `/inbox/:id/messages` | JWT / API Key | Reply in a conversation |
+| PATCH | `/inbox/:id` | JWT / API Key | Close, reopen or assign a conversation |
+| GET | `/inbox/media/:messageId` | JWT / API Key | Download a received message's media |
 | POST | `/templates/sync/:wabaId` | JWT | Sync templates from Meta |
 | GET | `/templates` | JWT | List templates for org |
 | GET | `/templates/:id` | JWT | Get a template |

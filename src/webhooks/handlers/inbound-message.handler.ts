@@ -1,18 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
-
-/** A short, readable stand-in for a message that has no text of its own. */
-const TYPE_SUMMARY: Record<string, string> = {
-  image: 'Sent a photo',
-  video: 'Sent a video',
-  audio: 'Sent a voice message',
-  document: 'Sent a document',
-  sticker: 'Sent a sticker',
-  location: 'Shared a location',
-  contacts: 'Shared a contact',
-  reaction: 'Reacted to a message',
-};
+import { ConversationWriterService } from 'src/inbox/conversation-writer.service';
+import { inboundPreview } from 'src/inbox/preview';
 
 @Injectable()
 export class InboundMessageHandler {
@@ -21,6 +11,7 @@ export class InboundMessageHandler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly conversations: ConversationWriterService,
   ) {}
 
   async handle(
@@ -56,26 +47,29 @@ export class InboundMessageHandler {
       // A reply we could not store is still worth telling someone about.
     }
 
-    const preview = this.preview(type, payload);
+    const preview = inboundPreview(type, payload);
+
+    // The thread this reply belongs to, so the inbox can show it without
+    // deriving the conversation list from two message tables on every read.
+    // After the message is stored: the summary is of a message that exists.
+    await this.conversations.recordInbound({
+      wabaId,
+      phoneNumberId,
+      from,
+      senderName,
+      type,
+      payload,
+      timestamp,
+    });
 
     await this.notifications.notifyWaba(wabaId, 'inboundMessage', {
       title: senderName || `New message from ${from}`,
       body: preview,
-      link: '/messages',
+      link: `/inbox?phone=${encodeURIComponent(from)}`,
       data: { wabaId, kind: 'inboundMessage' },
     });
 
     // Push is the only per-reply alert. A reply also shows up in the next
     // daily summary, which is what reaches someone with no device registered.
-  }
-
-  /** One line of the message, or a description of what kind it was. */
-  private preview(type: string, payload: unknown): string {
-    const fields = (payload ?? {}) as { body?: unknown; caption?: unknown };
-    const text: unknown = fields.body ?? fields.caption;
-    if (typeof text === 'string' && text.trim()) {
-      return text.length > 120 ? `${text.slice(0, 117)}…` : text;
-    }
-    return TYPE_SUMMARY[type] ?? 'Sent a message';
   }
 }

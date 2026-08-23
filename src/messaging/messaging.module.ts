@@ -9,11 +9,23 @@ import { ContactsModule } from 'src/contacts/contacts.module';
 import { BillingModule } from 'src/billing/billing.module';
 import { WabaMembershipModule } from 'src/waba/waba-membership.module';
 import { SubscriptionMiddleware } from 'src/billing/middleware/subscription.middleware';
+import { ConversationWriterModule } from 'src/inbox/conversation-writer.module';
 
 @Module({
-  imports: [ApiKeyModule, UserModule, ContactsModule, BillingModule, WabaMembershipModule],
+  imports: [
+    ApiKeyModule,
+    UserModule,
+    ContactsModule,
+    BillingModule,
+    WabaMembershipModule,
+    ConversationWriterModule,
+  ],
   providers: [MessagingService, AuthMiddleware, MessagingAuthMiddleware],
   controllers: [MessagingController],
+  // The inbox sends its replies through this service, so every check a send
+  // must pass — membership, WABA scope, subscription, opt-out — is the same
+  // one, written once.
+  exports: [MessagingService],
 })
 export class MessagingModule {
   configure(consumer: MiddlewareConsumer) {
