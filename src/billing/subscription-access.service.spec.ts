@@ -3,14 +3,22 @@ import { SubscriptionAccessService } from './subscription-access.service';
 import { RazorpayService } from './razorpay.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 
-const mockPrisma = { subscription: { findUnique: jest.fn() } };
+const mockPrisma = {
+  subscription: { findUnique: jest.fn(), findFirst: jest.fn() },
+};
 const mockRedis = {
   getSubscriptionAccess: jest.fn(),
   setSubscriptionAccess: jest.fn(),
   invalidateSubscriptionAccess: jest.fn(),
 };
 const mockRazorpay = { isConfigured: jest.fn().mockReturnValue(true) };
+const mockSettings = {
+  billingOrgFor: jest.fn(),
+  cacheVersionFor: jest.fn(),
+  bumpPayerVersion: jest.fn(),
+};
 
 const HOUR = 60 * 60 * 1000;
 const soon = () => new Date(Date.now() + 10 * 24 * HOUR);
@@ -30,12 +38,20 @@ describe('SubscriptionAccessService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     mockRazorpay.isConfigured.mockReturnValue(true);
+    // Nobody is an agency client unless a test says otherwise.
+    mockSettings.billingOrgFor.mockImplementation((id: string) =>
+      Promise.resolve(id),
+    );
+    mockSettings.cacheVersionFor.mockResolvedValue(0);
+    // No organisation-level subscription unless a test provides one.
+    mockPrisma.subscription.findFirst.mockResolvedValue(null);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SubscriptionAccessService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: RedisService, useValue: mockRedis },
         { provide: RazorpayService, useValue: mockRazorpay },
+        { provide: OrganisationSettingsService, useValue: mockSettings },
       ],
     }).compile();
     service = module.get(SubscriptionAccessService);
@@ -106,7 +122,55 @@ describe('SubscriptionAccessService', () => {
         where: { wabaId_ssoOrgId: { wabaId: 'waba_1', ssoOrgId: 'org_1' } },
       });
       expect(mockRedis.setSubscriptionAccess).toHaveBeenCalledWith(
-        'org_1:waba_1',
+        'org_1:waba_1:v0',
+        true,
+      );
+    });
+
+    it('answers from the organisation-level subscription when the account has none', async () => {
+      // After the move to org-level billing this is every account: the
+      // subscription is the organisation's and covers all of them.
+      mockRedis.getSubscriptionAccess.mockResolvedValue(null);
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.subscription.findFirst.mockResolvedValue(row({ wabaId: null }));
+
+      await expect(service.hasAccess('org_1', 'waba_9')).resolves.toBe(true);
+      const { where } = mockPrisma.subscription.findFirst.mock
+        .calls[0][0] as { where: { ssoOrgId: string; wabaId: null } };
+      expect(where.ssoOrgId).toBe('org_1');
+      expect(where.wabaId).toBeNull();
+    });
+
+    it("lets a client through on its agency's subscription", async () => {
+      // The agency pays once. A client organisation holds nothing of its own,
+      // so the lookup has to happen under the payer or every client is refused.
+      mockRedis.getSubscriptionAccess.mockResolvedValue(null);
+      mockSettings.billingOrgFor.mockResolvedValue('agency_1');
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.subscription.findFirst.mockResolvedValue(
+        row({ ssoOrgId: 'agency_1', wabaId: null }),
+      );
+
+      await expect(service.hasAccess('client_1', 'waba_1')).resolves.toBe(true);
+      const { where } = mockPrisma.subscription.findFirst.mock
+        .calls[0][0] as { where: { ssoOrgId: string } };
+      expect(where.ssoOrgId).toBe('agency_1');
+    });
+
+    it("keys the cache on the payer's version, so one bump darkens every client", async () => {
+      // A failed debit on an agency has to reach every client of theirs. The
+      // version is in the key precisely so nothing has to enumerate them.
+      mockRedis.getSubscriptionAccess.mockResolvedValue(null);
+      mockSettings.cacheVersionFor.mockResolvedValue(7);
+      mockPrisma.subscription.findUnique.mockResolvedValue(row());
+
+      await service.hasAccess('client_1', 'waba_1');
+
+      expect(mockRedis.getSubscriptionAccess).toHaveBeenCalledWith(
+        'client_1:waba_1:v7',
+      );
+      expect(mockRedis.setSubscriptionAccess).toHaveBeenCalledWith(
+        'client_1:waba_1:v7',
         true,
       );
     });
@@ -131,7 +195,7 @@ describe('SubscriptionAccessService', () => {
       await expect(service.hasAccess('org_1', 'waba_1')).resolves.toBe(true);
       await expect(service.hasAccess('org_2', 'waba_1')).resolves.toBe(false);
       expect(mockRedis.setSubscriptionAccess).toHaveBeenCalledWith(
-        'org_2:waba_1',
+        'org_2:waba_1:v0',
         false,
       );
     });
@@ -168,7 +232,13 @@ describe('SubscriptionAccessService', () => {
   it('invalidates on the same key it caches under', async () => {
     await service.invalidate('org_1', 'waba_1');
     expect(mockRedis.invalidateSubscriptionAccess).toHaveBeenCalledWith(
-      'org_1:waba_1',
+      'org_1:waba_1:v0',
     );
+  });
+
+  it('invalidates a payer by bumping its version rather than walking its clients', async () => {
+    await service.invalidatePayer('agency_1');
+
+    expect(mockSettings.bumpPayerVersion).toHaveBeenCalledWith('agency_1');
   });
 });

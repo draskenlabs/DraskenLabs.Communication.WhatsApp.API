@@ -7,6 +7,7 @@ import { RedisService } from 'src/redis/redis.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 import { SubscriptionAccessService } from './subscription-access.service';
+import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
 
 const mockPrisma = {
@@ -22,7 +23,8 @@ const mockPrisma = {
   waba: { findFirst: jest.fn(), findMany: jest.fn() },
   user: { findUnique: jest.fn() },
   plan: { findFirst: jest.fn(), findUnique: jest.fn() },
-  wabaPhoneNumber: { count: jest.fn() },
+  wabaPhoneNumber: { count: jest.fn(), groupBy: jest.fn() },
+  wabaOrganisation: { findMany: jest.fn() },
 };
 
 /** A published tier, as `sellablePlan` selects it. */
@@ -66,7 +68,12 @@ const PLAN = {
 
 const mockMail = mailNotificationsDouble();
 
-const mockAccess = { invalidate: jest.fn() };
+const mockAccess = { invalidate: jest.fn(), invalidatePayer: jest.fn() };
+const mockOrgSettings = {
+  billingOrgFor: jest.fn(),
+  billingScope: jest.fn(),
+  bumpPayerVersion: jest.fn(),
+};
 
 const mockProvisioning = {
   isProvisioned: jest.fn().mockResolvedValue(false),
@@ -127,6 +134,14 @@ describe('BillingService', () => {
     mockProvisioning.isProvisioned.mockResolvedValue(false);
     mockRazorpay.fetchPlan.mockResolvedValue(PLAN);
     mockPrisma.subscriptionPayment.findMany.mockResolvedValue([]);
+    // Nobody is an agency client unless a test says so, and the billing scope
+    // of an ordinary organisation is itself.
+    mockOrgSettings.billingOrgFor.mockImplementation((id: string) =>
+      Promise.resolve(id),
+    );
+    mockOrgSettings.billingScope.mockImplementation((id: string) =>
+      Promise.resolve([id]),
+    );
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BillingService,
@@ -135,6 +150,7 @@ describe('BillingService', () => {
         { provide: RazorpayService, useValue: mockRazorpay },
         { provide: MailNotifications, useValue: mockMail },
         { provide: SubscriptionAccessService, useValue: mockAccess },
+        { provide: OrganisationSettingsService, useValue: mockOrgSettings },
         { provide: WabaProvisioningService, useValue: mockProvisioning },
       ],
     }).compile();
@@ -183,7 +199,7 @@ describe('BillingService', () => {
           }),
         }),
       );
-      expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
+      expect(mockAccess.invalidatePayer).toHaveBeenCalledWith('org_1');
     });
 
     it('sells the chosen tier: its Razorpay plan, and the row says which', async () => {
@@ -428,7 +444,7 @@ describe('BillingService', () => {
           }),
         }),
       );
-      expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
+      expect(mockAccess.invalidatePayer).toHaveBeenCalledWith('org_1');
       expect(state.active).toBe(true);
     });
 
@@ -629,7 +645,7 @@ describe('BillingService', () => {
           }),
         }),
       );
-      expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
+      expect(mockAccess.invalidatePayer).toHaveBeenCalledWith('org_1');
     });
 
     it('holds a cheaper tier until the month already paid for runs out', async () => {
@@ -782,7 +798,7 @@ describe('BillingService', () => {
         'Games',
         current.currentEnd,
       );
-      expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
+      expect(mockAccess.invalidatePayer).toHaveBeenCalledWith('org_1');
     });
 
     it('stops immediately when nothing has been paid for yet', async () => {
@@ -957,7 +973,7 @@ describe('BillingService', () => {
       mockPrisma.subscription.update.mockResolvedValue(row());
     });
 
-    describe('additional phone numbers', () => {
+    describe('overage', () => {
       const chargedNoPayment = () => ({
         event: 'subscription.charged',
         payload: {
@@ -967,20 +983,34 @@ describe('BillingService', () => {
         },
       });
 
+      /** `groupBy` shape: one row per account, with its registered count. */
+      const numbersOn = (counts: Record<string, number>) =>
+        Object.entries(counts).map(([wabaId, n]) => ({
+          wabaId,
+          _count: { _all: n },
+        }));
+
       beforeEach(() => {
         mockPrisma.subscription.findUnique.mockResolvedValue(
           row({ planRefId: 2, wabaId: 'waba_1' }),
         );
         mockPrisma.plan.findUnique.mockResolvedValue({
           additionalNumberPrice: 19900,
+          additionalWabaPrice: 29900,
+          includedWabas: 3,
+          includedPhoneNumbersPerWaba: 1,
           currency: 'INR',
           name: 'Growth',
         });
+        mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
+        mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
         mockRazorpay.addSubscriptionAddon.mockResolvedValue({ id: 'ao_1' });
       });
 
-      it('bills every number after the first, on the next invoice', async () => {
-        mockPrisma.wabaPhoneNumber.count.mockResolvedValue(3);
+      it('bills every number past what the plan includes, on the next invoice', async () => {
+        mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue(
+          numbersOn({ waba_1: 3 }),
+        );
 
         await service.handleWebhook('evt_extra', chargedNoPayment() as never);
 
@@ -990,27 +1020,143 @@ describe('BillingService', () => {
             name: 'Additional phone numbers',
             amount: 19900,
             currency: 'INR',
-            // Three registered numbers, one of them included in the plan.
+            // Three registered, one included by the plan.
             quantity: 2,
           },
         );
       });
 
+      it('takes the included count from the plan, not a constant', async () => {
+        // The bug this replaces: `registered - 1` was hardcoded, so a Growth
+        // account including three numbers was billed for two it already had.
+        mockPrisma.plan.findUnique.mockResolvedValue({
+          additionalNumberPrice: 19900,
+          additionalWabaPrice: null,
+          includedWabas: null,
+          includedPhoneNumbersPerWaba: 3,
+          currency: 'INR',
+          name: 'Legacy',
+        });
+        mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue(
+          numbersOn({ waba_1: 3 }),
+        );
+
+        await service.handleWebhook('evt_inc', chargedNoPayment() as never);
+
+        expect(mockRazorpay.addSubscriptionAddon).not.toHaveBeenCalled();
+      });
+
+      it('counts numbers per account, so one account’s spare does not cover another', async () => {
+        // Two accounts, one number each: both are included, nothing is owed.
+        // Summing to two and subtracting one allowance would have billed one.
+        mockPrisma.subscription.findUnique.mockResolvedValue(
+          row({ planRefId: 2, wabaId: null }),
+        );
+        mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+          { wabaId: 'waba_1' },
+          { wabaId: 'waba_2' },
+        ]);
+        mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue(
+          numbersOn({ waba_1: 1, waba_2: 1 }),
+        );
+
+        await service.handleWebhook('evt_per', chargedNoPayment() as never);
+
+        expect(mockRazorpay.addSubscriptionAddon).not.toHaveBeenCalled();
+      });
+
+      it('bills accounts past what the plan includes', async () => {
+        mockPrisma.subscription.findUnique.mockResolvedValue(
+          row({ planRefId: 2, wabaId: null }),
+        );
+        mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+          { wabaId: 'w1' },
+          { wabaId: 'w2' },
+          { wabaId: 'w3' },
+          { wabaId: 'w4' },
+          { wabaId: 'w5' },
+        ]);
+
+        await service.handleWebhook('evt_wabas', chargedNoPayment() as never);
+
+        expect(mockRazorpay.addSubscriptionAddon).toHaveBeenCalledWith(
+          'sub_1',
+          {
+            name: 'Additional WhatsApp Business Accounts',
+            amount: 29900,
+            currency: 'INR',
+            // Five connected, three included.
+            quantity: 2,
+          },
+        );
+      });
+
+      it('counts overage across every organisation the subscription answers for', async () => {
+        // An agency pays once and its clients inherit, so their accounts are
+        // part of what the invoice covers.
+        mockPrisma.subscription.findUnique.mockResolvedValue(
+          row({ planRefId: 2, wabaId: null, ssoOrgId: 'agency_1' }),
+        );
+        mockOrgSettings.billingScope.mockResolvedValue([
+          'agency_1',
+          'client_1',
+          'client_2',
+        ]);
+        mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
+
+        await service.handleWebhook('evt_scope', chargedNoPayment() as never);
+
+        const { where } = mockPrisma.wabaOrganisation.findMany.mock
+          .calls[0][0] as { where: { ssoOrgId: { in: string[] } } };
+        expect(where.ssoOrgId.in).toEqual(['agency_1', 'client_1', 'client_2']);
+      });
+
+      it('bills an organisation-level subscription, which names no account', async () => {
+        // The guard this replaces returned early on a null `wabaId`, so an
+        // organisation-level subscription silently stopped billing overage.
+        mockPrisma.subscription.findUnique.mockResolvedValue(
+          row({ planRefId: 2, wabaId: null }),
+        );
+        mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+          { wabaId: 'waba_1' },
+        ]);
+        mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue(
+          numbersOn({ waba_1: 4 }),
+        );
+
+        await service.handleWebhook('evt_org', chargedNoPayment() as never);
+
+        expect(mockRazorpay.addSubscriptionAddon).toHaveBeenCalledWith(
+          'sub_1',
+          expect.objectContaining({
+            name: 'Additional phone numbers',
+            quantity: 3,
+          }),
+        );
+      });
+
       it('charges nothing when the account runs the one number it includes', async () => {
-        mockPrisma.wabaPhoneNumber.count.mockResolvedValue(1);
+        mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue(
+          numbersOn({ waba_1: 1 }),
+        );
 
         await service.handleWebhook('evt_extra_1', chargedNoPayment() as never);
 
         expect(mockRazorpay.addSubscriptionAddon).not.toHaveBeenCalled();
       });
 
-      it('charges nothing on a plan that prices no extra numbers', async () => {
+      it('charges nothing on a plan that prices no extras', async () => {
         mockPrisma.plan.findUnique.mockResolvedValue({
           additionalNumberPrice: null,
+          additionalWabaPrice: null,
+          includedWabas: null,
+          includedPhoneNumbersPerWaba: 1,
           currency: 'INR',
           name: 'Agency',
         });
-        mockPrisma.wabaPhoneNumber.count.mockResolvedValue(4);
+        mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue(
+          numbersOn({ waba_1: 4 }),
+        );
 
         await service.handleWebhook('evt_extra_2', chargedNoPayment() as never);
 
@@ -1018,17 +1164,20 @@ describe('BillingService', () => {
       });
 
       it('counts only numbers live on the Cloud API', async () => {
-        mockPrisma.wabaPhoneNumber.count.mockResolvedValue(2);
+        mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue(
+          numbersOn({ waba_1: 2 }),
+        );
 
         await service.handleWebhook('evt_extra_3', chargedNoPayment() as never);
 
-        expect(mockPrisma.wabaPhoneNumber.count).toHaveBeenCalledWith({
-          where: { wabaId: 'waba_1', platformType: 'CLOUD_API' },
-        });
+        const arg = mockPrisma.wabaPhoneNumber.groupBy.mock.calls[0][0] as {
+          where: { platformType: string };
+        };
+        expect(arg.where.platformType).toBe('CLOUD_API');
       });
 
       it('records the payment even when the extra charge cannot be raised', async () => {
-        mockPrisma.wabaPhoneNumber.count.mockRejectedValue(
+        mockPrisma.wabaPhoneNumber.groupBy.mockRejectedValue(
           new Error('db down'),
         );
 
@@ -1153,7 +1302,7 @@ describe('BillingService', () => {
           }),
         }),
       );
-      expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
+      expect(mockAccess.invalidatePayer).toHaveBeenCalledWith('org_1');
       expect(mockMail.subscriptionCharged).toHaveBeenCalled();
     });
 
@@ -1382,7 +1531,7 @@ describe('BillingService', () => {
           data: expect.objectContaining({ currentEnd: new Date(end * 1000) }),
         }),
       );
-      expect(mockAccess.invalidate).toHaveBeenCalledWith('org_1', 'waba_1');
+      expect(mockAccess.invalidatePayer).toHaveBeenCalledWith('org_1');
     });
 
     it('carries on after one subscription fails to fetch', async () => {

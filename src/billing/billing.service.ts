@@ -17,7 +17,8 @@ import {
   RazorpaySubscription,
 } from './razorpay.service';
 import { SubscriptionAccessService } from './subscription-access.service';
-import { registeredNumbersWhere } from 'src/waba-phone-number/waba-phone-number.service';
+import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
+import { CLOUD_API_PLATFORM } from 'src/waba-phone-number/waba-phone-number.service';
 import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
 import {
   ConfirmSubscriptionDto,
@@ -73,6 +74,7 @@ export class BillingService {
     private readonly mail: MailNotifications,
     private readonly access: SubscriptionAccessService,
     private readonly provisioning: WabaProvisioningService,
+    private readonly orgSettings: OrganisationSettingsService,
   ) {}
 
   /**
@@ -431,7 +433,7 @@ export class BillingService {
       create: { wabaId, ...data },
       update: data,
     });
-    await this.access.invalidate(ssoOrgId, wabaId);
+    await this.access.invalidatePayer(ssoOrgId);
 
     return {
       wabaId,
@@ -494,7 +496,7 @@ export class BillingService {
     );
     const updated = await this.applyRemote(sub, remote);
 
-    await this.access.invalidate(ssoOrgId, wabaId);
+    await this.access.invalidatePayer(ssoOrgId);
     return this.toState(waba, updated, {
       plan: await this.plan(updated.planId),
       payments: await this.paymentsFor(updated.id),
@@ -793,7 +795,7 @@ export class BillingService {
     // The limits are read per request from the plan a subscription holds, so
     // an upgrade is in force as soon as this row is written; the access cache
     // still keys on whether the account is paid for at all.
-    await this.access.invalidate(ssoOrgId, wabaId);
+    await this.access.invalidatePayer(ssoOrgId);
 
     this.logger.log(
       `${ssoOrgId}/${wabaId} moves to ${target.code} ` +
@@ -868,7 +870,7 @@ export class BillingService {
         pendingPlan: { select: { code: true, name: true } },
       },
     });
-    await this.access.invalidate(ssoOrgId, wabaId);
+    await this.access.invalidatePayer(ssoOrgId);
 
     void this.mail.subscriptionCancelled(
       sub.createdByUserId,
@@ -942,12 +944,14 @@ export class BillingService {
     // A cycle has just been paid for; queue what the next one owes for the
     // numbers on the account beyond the one the plan includes.
     if (event === 'subscription.charged') {
-      await this.billExtraNumbers(sub);
+      await this.billOverage(sub);
     }
 
-    if (sub.wabaId) {
-      await this.access.invalidate(sub.ssoOrgId, sub.wabaId);
-    }
+    // Not guarded on `sub.wabaId` any more. An organisation-level subscription
+    // has none, so the guard would have skipped invalidation on exactly the
+    // subscriptions that now matter — leaving a lapsed agency's clients sending
+    // until the cache expired.
+    await this.access.invalidatePayer(sub.ssoOrgId);
     await this.notify(
       event,
       sub,
@@ -958,10 +962,10 @@ export class BillingService {
   }
 
   /**
-   * Charge for the phone numbers beyond the one the plan includes.
+   * Charge for everything beyond what the plan includes.
    *
-   * Raised as an add-on on the next invoice, once per cycle, because Razorpay
-   * has no second recurring price on a plan. Called only from the
+   * Raised as add-ons on the next invoice, once per cycle, because Razorpay has
+   * no second recurring price on a plan. Called only from the
    * `subscription.charged` path, which is deduplicated on the event id — so a
    * webhook Razorpay retries cannot bill the same cycle twice.
    *
@@ -969,48 +973,136 @@ export class BillingService {
    * on, and throwing here would fail a webhook whose real job was to record a
    * payment that has already happened.
    */
-  private async billExtraNumbers(sub: {
+  private async billOverage(sub: {
     id: number;
+    ssoOrgId: string;
     wabaId: string | null;
     razorpaySubscriptionId: string;
     planRefId: number | null;
   }): Promise<void> {
     try {
-      if (!sub.wabaId || !sub.planRefId) return;
+      if (!sub.planRefId) return;
 
       const plan = await this.prisma.plan.findUnique({
         where: { id: sub.planRefId },
-        select: { additionalNumberPrice: true, currency: true, name: true },
-      });
-      if (!plan?.additionalNumberPrice) return;
-
-      // Only numbers live on the Cloud API: an unregistered one cannot send
-      // and is not what the price list is charging for.
-      const registered = await this.prisma.wabaPhoneNumber.count({
-        where: registeredNumbersWhere(sub.wabaId),
-      });
-      // The first is included in the plan.
-      const extras = Math.max(0, registered - 1);
-      if (extras === 0) return;
-
-      const addon = await this.razorpay.addSubscriptionAddon(
-        sub.razorpaySubscriptionId,
-        {
-          name: `Additional phone number${extras === 1 ? '' : 's'}`,
-          amount: plan.additionalNumberPrice,
-          currency: plan.currency,
-          quantity: extras,
+        select: {
+          additionalNumberPrice: true,
+          additionalWabaPrice: true,
+          includedWabas: true,
+          includedPhoneNumbersPerWaba: true,
+          currency: true,
+          name: true,
         },
-      );
-      if (addon) {
-        this.logger.log(
-          `Queued ${extras} additional number(s) on ${sub.razorpaySubscriptionId} for the next invoice`,
-        );
-      }
+      });
+      if (!plan) return;
+
+      // One subscription can answer for several organisations: an agency pays
+      // and its clients inherit, so overage is counted across all of them.
+      const scope = await this.orgSettings.billingScope(sub.ssoOrgId);
+
+      // The accounts this subscription covers. A per-WABA subscription — the
+      // shape that existed before organisation-level billing — still answers
+      // for exactly the one it names.
+      const wabaIds = sub.wabaId
+        ? [sub.wabaId]
+        : (
+            await this.prisma.wabaOrganisation.findMany({
+              where: { ssoOrgId: { in: scope } },
+              select: { wabaId: true },
+            })
+          ).map((row) => row.wabaId);
+
+      await this.billExtraWabas(sub, plan, wabaIds.length);
+      await this.billExtraNumbers(sub, plan, wabaIds);
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
-      this.logger.error(
-        `Could not bill extra numbers for ${sub.id}: ${detail}`,
+      this.logger.error(`Could not bill overage for ${sub.id}: ${detail}`);
+    }
+  }
+
+  /** Accounts beyond the number the plan includes. */
+  private async billExtraWabas(
+    sub: { razorpaySubscriptionId: string },
+    plan: {
+      additionalWabaPrice: number | null;
+      includedWabas: number | null;
+      currency: string;
+    },
+    connected: number,
+  ): Promise<void> {
+    if (!plan.additionalWabaPrice) return;
+
+    // Null means the plan includes none, so every account bills. That is only
+    // ever true of a plan nobody has finished configuring, but reading it as
+    // "unlimited" would be the expensive way round to be wrong.
+    const included = plan.includedWabas ?? 0;
+    const extras = Math.max(0, connected - included);
+    if (extras === 0) return;
+
+    const addon = await this.razorpay.addSubscriptionAddon(
+      sub.razorpaySubscriptionId,
+      {
+        name: `Additional WhatsApp Business Account${extras === 1 ? '' : 's'}`,
+        amount: plan.additionalWabaPrice,
+        currency: plan.currency,
+        quantity: extras,
+      },
+    );
+    if (addon) {
+      this.logger.log(
+        `Queued ${extras} additional account(s) on ${sub.razorpaySubscriptionId} for the next invoice`,
+      );
+    }
+  }
+
+  /**
+   * Numbers beyond the count each account's plan includes.
+   *
+   * The included count comes from the plan rather than a constant. It was `1`
+   * in the code and `3` on Growth's card, so Growth customers were billed for
+   * two numbers their plan already covered.
+   */
+  private async billExtraNumbers(
+    sub: { razorpaySubscriptionId: string },
+    plan: {
+      additionalNumberPrice: number | null;
+      includedPhoneNumbersPerWaba: number | null;
+      currency: string;
+    },
+    wabaIds: string[],
+  ): Promise<void> {
+    if (!plan.additionalNumberPrice || wabaIds.length === 0) return;
+
+    const perWaba = plan.includedPhoneNumbersPerWaba ?? 0;
+
+    // Only numbers live on the Cloud API: an unregistered one cannot send
+    // and is not what the price list is charging for.
+    const registered = await this.prisma.wabaPhoneNumber.groupBy({
+      by: ['wabaId'],
+      where: { wabaId: { in: wabaIds }, platformType: CLOUD_API_PLATFORM },
+      _count: { _all: true },
+    });
+
+    // Counted per account, not across them: the allowance is "one per WABA", so
+    // an account with three spare numbers cannot cover another account's fourth.
+    const extras = registered.reduce(
+      (sum, row) => sum + Math.max(0, row._count._all - perWaba),
+      0,
+    );
+    if (extras === 0) return;
+
+    const addon = await this.razorpay.addSubscriptionAddon(
+      sub.razorpaySubscriptionId,
+      {
+        name: `Additional phone number${extras === 1 ? '' : 's'}`,
+        amount: plan.additionalNumberPrice,
+        currency: plan.currency,
+        quantity: extras,
+      },
+    );
+    if (addon) {
+      this.logger.log(
+        `Queued ${extras} additional number(s) on ${sub.razorpaySubscriptionId} for the next invoice`,
       );
     }
   }
@@ -1134,9 +1226,7 @@ export class BillingService {
           sub.razorpaySubscriptionId,
         );
         await this.applyRemote(sub, remote);
-        if (sub.wabaId) {
-          await this.access.invalidate(sub.ssoOrgId, sub.wabaId);
-        }
+        await this.access.invalidatePayer(sub.ssoOrgId);
       } catch (err) {
         // One unreachable subscription must not stop the rest of the sweep.
         this.logger.error(
