@@ -1,6 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
-  BadRequestException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -46,13 +45,13 @@ const mockMailNotifications = mailNotificationsDouble();
 const mockMembership = wabaMembershipDouble();
 const mockOrgDirectory = orgDirectoryDouble();
 
-const realPlanLimits = new PlanLimitsService({} as never);
+const realPlanLimits = new PlanLimitsService({} as never, {} as never);
 const mockPlanLimits = {
   forOrg: jest.fn().mockResolvedValue({
     planCode: 'growth',
     planName: 'Growth',
-    wabas: 3,
-    phoneNumbersPerWaba: 3,
+    includedWabas: 3,
+    includedPhoneNumbersPerWaba: 3,
     teamMembers: 5,
     webhookEndpoints: 10,
     historyDays: 90,
@@ -169,15 +168,16 @@ describe('WabaService', () => {
       );
     });
 
-    it("refuses a new account past the organisation's plan limit", async () => {
+    it('connects an account past what the plan includes, and bills for it', async () => {
+      // `includedWabas` says what the price covers, not what the organisation
+      // may have. A fourth account on Growth is allowed and charged at
+      // `additionalWabaPrice` — growing should not need a sales conversation.
       mockPrisma.wabaOrganisation.findUnique.mockResolvedValue(null);
-      // Growth includes three; a fourth is what the plan is upgraded for.
       mockPrisma.wabaOrganisation.count.mockResolvedValue(3);
+      mockPrisma.waba.upsert.mockResolvedValue({ ...data });
 
-      await expect(service.createOrUpdateWaba(data)).rejects.toThrow(
-        BadRequestException,
-      );
-      expect(mockPrisma.waba.upsert).not.toHaveBeenCalled();
+      await expect(service.createOrUpdateWaba(data)).resolves.toBeDefined();
+      expect(mockPrisma.waba.upsert).toHaveBeenCalled();
     });
 
     it('lets an account already connected here through, at any count', async () => {

@@ -15,7 +15,6 @@ import { WabaResponseDto } from './dto/waba-response.dto';
 import { MailNotifications } from 'src/mail/mail.notifications';
 import { WabaMembershipService } from './waba-membership.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
-import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import {
   isMetaAuthFailure,
   metaErrorMessage,
@@ -34,7 +33,6 @@ export class WabaService {
     private readonly mail: MailNotifications,
     private readonly membership: WabaMembershipService,
     private readonly orgDirectory: OrgDirectoryService,
-    private readonly planLimits: PlanLimitsService,
   ) {}
 
   /**
@@ -215,23 +213,10 @@ export class WabaService {
     }
 
     // How many accounts an organisation may hold is what its plan says.
-    // Checked only for one it does not already have: reconnecting an existing
-    // account, or refreshing its metadata, must not start failing because the
-    // organisation is at its limit.
-    if (!membership) {
-      const [connected, limits] = await Promise.all([
-        this.prisma.wabaOrganisation.count({
-          where: { ssoOrgId: data.ssoOrgId },
-        }),
-        this.planLimits.forOrg(data.ssoOrgId),
-      ]);
-      this.planLimits.assertWithin(
-        limits,
-        limits.wabas,
-        connected,
-        'WhatsApp Business Account',
-      );
-    }
+    // Nothing is refused here any more. `includedWabas` says what the price
+    // covers, not what the organisation may have: connecting one beyond it is
+    // allowed and bills at `additionalWabaPrice` on the next invoice. Growing
+    // is a thing a customer should be able to do at midnight without asking.
 
     const waba = await this.prisma.waba.upsert({
       where: { wabaId: data.wabaId },

@@ -168,14 +168,50 @@ model Plan {
   /// Every WABA includes one number; each additional one costs this a month.
   additionalNumberPrice Int?
 
-  /// Limits, one column each. Null means the plan puts no number on it —
-  /// unlimited on a published plan, negotiated on Agency.
-  maxWabas               Int?
-  maxPhoneNumbersPerWaba Int?
-  maxTeamMembers         Int?
-  maxWebhookEndpoints    Int?
+  /// Every WABA includes one number; each additional one costs
+  /// `additionalNumberPrice` a month. Each WABA beyond `includedWabas` costs
+  /// this. Null on a plan that does not sell them.
+  additionalWabaPrice Int?
+
+  /// What the price includes. Beyond these the add-on price applies and
+  /// nothing is refused — they are inclusion counts, not ceilings. Null means
+  /// nothing is included, so everything bills.
+  includedWabas               Int?
+  includedPhoneNumbersPerWaba Int?
+  /// Client organisations an agency plan includes. Null on every other plan,
+  /// which has no clients to count.
+  includedClients             Int?
+
+  /// Limits that refuse rather than bill. Null means no number on this plan.
+  maxTeamMembers       Int?
+  maxWebhookEndpoints  Int?
+  maxApiKeysPerWaba    Int?
+  maxContacts          Int?
+  /// Messages a single API key may send in a minute.
+  maxMessagesPerMinute Int?
   /// How long message and webhook-event history is kept, in days.
-  historyDays            Int?
+  historyDays          Int?
+
+  /// Which tier beats which, when an organisation holds more than one.
+  ///
+  /// Price cannot answer this: a quoted plan has none, and `price ?? 0` sorts
+  /// the most expensive customer we have as the cheapest.
+  rank Int @default(0)
+
+  /// The organisation this plan belongs to, or null for a published tier.
+  ///
+  /// A negotiated deal is a plan of its own — its own limits, price and
+  /// Razorpay id — and it must never appear on the public price list, so every
+  /// unauthenticated read filters on this being null.
+  ssoOrgId String?
+
+  /// The most this customer has agreed to be debited in a month.
+  ///
+  /// Sizes the payment mandate, never the invoice: a mandate authorises up to
+  /// an amount, and overage that lifts a bill past it is refused by the bank as
+  /// a failed debit rather than an error we can raise. Null on published tiers,
+  /// whose price is their own ceiling.
+  mandateCeiling Int?
 
   /// The Razorpay plan a subscription on this tier is created against. Never
   /// leaves the API: the console is told a price, not a provider's id.
@@ -206,6 +242,49 @@ model Plan {
   pendingFor    Subscription[] @relation("SubscriptionPendingPlan")
 
   @@index([active, sortOrder])
+  @@index([ssoOrgId])
+}
+
+/// What this product needs to know about an organisation.
+///
+/// Organisations live in the SSO, so this is an annotation rather than a copy:
+/// the id is the SSO's, and every column here is a fact about how *we* treat
+/// that organisation. One row per organisation we have anything to say about.
+model OrganisationSettings {
+  ssoOrgId String @id
+
+  /// The agency that pays for this organisation, or null for everyone else.
+  ///
+  /// A client belongs to at most one agency, which is why this is a column on
+  /// the client rather than a join table. An organisation with this set must
+  /// never be an agency itself: one level, no chains.
+  agencyOrgId String?
+
+  /// Whether this organisation manages clients. Set by us, never self-serve —
+  /// an agency can enter organisations it is not a member of, which is a
+  /// privilege boundary rather than a plan feature.
+  isAgency Boolean @default(false)
+
+  /// What the agency calls this client, for its own switcher and reporting.
+  clientName String?
+
+  /// Who marked this an agency, and when. The row that explains why a user
+  /// could read another organisation's messages.
+  convertedBy Int?
+  convertedAt DateTime?
+
+  /// Bumped whenever the payer changes or their subscription does.
+  ///
+  /// Access is cached per organisation *and* account, so one agency's payment
+  /// failing has to darken every client of theirs. Enumerating those keys is
+  /// fine at five clients and a problem at five hundred; the version is part of
+  /// the cache key instead, so a single increment orphans all of them at once.
+  payerVersion Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([agencyOrgId])
 }
 
 /// One bullet on a plan card, in the order it is published.

@@ -61,8 +61,8 @@ describe('Plan limits (integration)', () => {
       expect(effective).toMatchObject({
         planCode: 'growth',
         planName: 'Growth',
-        wabas: 3,
-        phoneNumbersPerWaba: null,
+        includedWabas: 3,
+        includedPhoneNumbersPerWaba: null,
         teamMembers: 5,
         webhookEndpoints: 10,
         historyDays: 90,
@@ -97,7 +97,7 @@ describe('Plan limits (integration)', () => {
       const effective = await limits.forOrg(ORG);
 
       expect(effective.planCode).toBe('business');
-      expect(effective.wabas).toBe(10);
+      expect(effective.includedWabas).toBe(10);
     });
 
     it('stops honouring a tier once its subscription is cancelled and run out', async () => {
@@ -116,8 +116,8 @@ describe('Plan limits (integration)', () => {
       expect(effective.planCode).toBeNull();
       // The entry floor is the cheapest plan's, and that plan caps accounts
       // rather than the numbers on them.
-      expect(effective.wabas).toBe(1);
-      expect(effective.phoneNumbersPerWaba).toBeNull();
+      expect(effective.includedWabas).toBe(1);
+      expect(effective.includedPhoneNumbersPerWaba).toBeNull();
     });
   });
 

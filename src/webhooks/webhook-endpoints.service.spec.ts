@@ -38,7 +38,7 @@ const mockEncryption = {
 const mockDispatcher = { sendTest: jest.fn() };
 
 /** The real assertion, so a spec cannot pass a limit the product would refuse. */
-const realLimits = new PlanLimitsService({} as never);
+const realLimits = new PlanLimitsService({} as never, {} as never);
 const mockLimits = {
   forWaba: jest.fn(),
   assertWithin: realLimits.assertWithin.bind(realLimits),
@@ -46,8 +46,8 @@ const mockLimits = {
 const limitsOf = (webhookEndpoints: number | null) => ({
   planCode: 'starter',
   planName: 'Starter',
-  wabas: 1,
-  phoneNumbersPerWaba: 1,
+  includedWabas: 1,
+  includedPhoneNumbersPerWaba: 1,
   teamMembers: 2,
   webhookEndpoints,
   historyDays: 30,

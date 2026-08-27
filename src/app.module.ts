@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { OrganisationSettingsModule } from './organisation-settings/organisation-settings.module';
 import { ConnectModule } from './connect/connect.module';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -110,6 +111,7 @@ import * as Joi from 'joi';
     }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
     ScheduleModule.forRoot(),
+    OrganisationSettingsModule,
     ConnectModule,
     RedisModule,
     CommonModule,

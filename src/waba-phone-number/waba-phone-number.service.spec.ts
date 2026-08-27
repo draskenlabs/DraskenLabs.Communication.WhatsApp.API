@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { WabaPhoneNumberService } from './waba-phone-number.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
@@ -34,13 +34,13 @@ const mockRedis = { setPhoneCache: jest.fn(), invalidatePhoneCache: jest.fn() };
 
 const mockMailNotifications = mailNotificationsDouble();
 
-const realPlanLimits = new PlanLimitsService({} as never);
+const realPlanLimits = new PlanLimitsService({} as never, {} as never);
 const mockPlanLimits = {
   forWaba: jest.fn().mockResolvedValue({
     planCode: 'starter',
     planName: 'Starter',
-    wabas: 1,
-    phoneNumbersPerWaba: 1,
+    includedWabas: 1,
+    includedPhoneNumbersPerWaba: 1,
     teamMembers: 2,
     webhookEndpoints: 2,
     historyDays: 30,
@@ -226,9 +226,10 @@ describe('WabaPhoneNumberService', () => {
       expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 'w1', 'enc_token');
     });
 
-    it("refuses a number past the account's plan limit, before calling Meta", async () => {
-      // Starter includes one number; the second is an upgrade, not a request
-      // Meta should be asked to register.
+    it('registers a number past what the plan includes, and bills for it', async () => {
+      // Every plan includes one number per account. The second is not refused —
+      // it is an add-on, raised on the next invoice. Refusing it was the reason
+      // Starter could advertise a per-number price it could never charge.
       mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({
         phoneNumberId: 'phone_2',
         wabaId: 'waba_1',
@@ -238,8 +239,8 @@ describe('WabaPhoneNumberService', () => {
 
       await expect(
         service.registerPhoneNumber(1, 'org_1', 'waba_1', 'phone_2', '123456'),
-      ).rejects.toThrow(BadRequestException);
-      expect(mockedAxios.post).not.toHaveBeenCalled();
+      ).resolves.toBeDefined();
+      expect(mockedAxios.post).toHaveBeenCalled();
     });
 
     it('re-registers a number already live without counting it again', async () => {
