@@ -35,6 +35,10 @@ export class SubscriptionAccessService {
    */
   static grants(sub: Pick<Subscription, 'status' | 'currentEnd'> | null): boolean {
     if (!sub) return false;
+    // A superseded row grants nothing whatever its dates say. It was replaced
+    // by the organisation's subscription, and letting a paid month on it keep
+    // the door open would hand out access the organisation is not paying for.
+    if (sub.status === 'superseded') return false;
     if (sub.currentEnd && sub.currentEnd.getTime() > Date.now()) return true;
     return sub.status === 'active' || sub.status === 'authenticated';
   }

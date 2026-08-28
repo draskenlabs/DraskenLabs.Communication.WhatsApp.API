@@ -67,6 +67,31 @@
 
 ---
 
+## 2026-08-28 — an agency can enter its clients
+
+`POST /auth/select-org` has a second way in. Membership, as the SSO reports it,
+still decides for everyone else; a **client** organisation is reached because
+`OrganisationSettings.agencyOrgId` names one of the session's own organisations.
+That relationship is ours, not the SSO's — nobody at the agency is a member of a
+client organisation there, and we do not delegate SSO membership to make them
+one.
+
+The token then carries `role: 'agency'` and an `agencyOrgId` claim, which
+`AuthMiddleware` puts on the request, so a handler can tell an agency is acting
+inside a client without another lookup. The claim is absent on every other
+token; sending it always would make the reading meaningless.
+
+`GET /auth/organisations` and the login response list the SSO's organisations
+first, then the clients of any of them that is an agency, each carrying
+`agencyOrgId`. Clients are added on the way out only: what the session record
+stores is membership, and that is what `selectOrg` checks against. A client is
+named by the agency's own label, falling back to whatever name we know — a
+client organisation whose people have never logged in has no name anywhere else.
+
+See `docs/development/modules/agency/definition.md`.
+
+---
+
 ## Breaking Changes from Previous Implementation
 
 | Old (Clerk) | New (Drasken SSO) |

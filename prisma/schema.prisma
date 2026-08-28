@@ -319,6 +319,10 @@ enum SubscriptionStatus {
   /// Ran to its agreed number of cycles.
   completed
   expired
+  /// Replaced by the organisation's subscription, and no longer answered for
+  /// here. Not `cancelled`: the mandate may still be live at Razorpay, and
+  /// dropping our row would not stop it debiting. A human reconciles it.
+  superseded
 }
 
 /// One subscription per WhatsApp Business Account: a flat monthly fee per
@@ -375,6 +379,17 @@ model Subscription {
   /// registered, and cleared once it is.
   shortUrl String?
 
+  /// An upgrade the customer has been asked to authorise but has not yet.
+  ///
+  /// A Razorpay mandate is authorised for a fixed amount, so moving up a tier
+  /// means a second subscription and a second authorisation. Both exist until
+  /// they approve it: the old one is what they are still paying for and still
+  /// entitled to, and it is cancelled only once the new one is live. Null for
+  /// a downgrade, which needs no new mandate.
+  pendingRazorpaySubscriptionId String? @unique
+  /// That subscription's hosted authorisation page, as Checkout's fallback.
+  pendingShortUrl               String?
+
   /// Who registered it — the person the billing emails go to.
   createdByUserId Int
 
@@ -386,6 +401,13 @@ model Subscription {
   pendingPlan Plan?                 @relation("SubscriptionPendingPlan", fields: [pendingPlanRefId], references: [id], onDelete: Restrict)
   payments    SubscriptionPayment[]
 
+  // An organisation has at most one subscription that is not tied to a single
+  // account. `@@unique([wabaId, ssoOrgId])` cannot say that — Postgres treats
+  // NULLs as distinct, so it allows two organisation-level rows and with them
+  // two mandates and two debits a month. The constraint that does say it is a
+  // partial unique index, `Subscription_org_key`, created in
+  // `20260828100000_org_billing_and_agency`. Prisma cannot express a partial
+  // index, so `migrate dev` reports it as drift; keep it.
   @@unique([wabaId, ssoOrgId])
   @@index([planRefId])
   @@index([pendingPlanRefId])

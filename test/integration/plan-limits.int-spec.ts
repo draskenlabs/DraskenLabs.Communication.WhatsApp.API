@@ -35,15 +35,17 @@ describe('Plan limits (integration)', () => {
     await h.reset();
   });
 
-  /** Subscribe an account and mark the mandate authorised, as a charge would. */
+  /**
+   * Subscribe the organisation and mark the mandate authorised, as a charge
+   * would. One subscription covers every account it has.
+   */
   async function subscribe(
     userId: number,
-    wabaId: string,
     plan: 'starter' | 'growth' | 'business',
   ): Promise<void> {
-    await billing.register(userId, ORG, wabaId, plan);
+    await billing.register(userId, ORG, plan);
     await h.prisma.subscription.updateMany({
-      where: { wabaId, ssoOrgId: ORG },
+      where: { ssoOrgId: ORG },
       data: {
         status: 'active',
         currentEnd: new Date(Date.now() + 20 * 24 * 3600 * 1000),
@@ -54,7 +56,7 @@ describe('Plan limits (integration)', () => {
   describe('what a plan allows', () => {
     it('reads the tier an account is actually subscribed on', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      await subscribe(userId, wabaId, 'growth');
+      await subscribe(userId, 'growth');
 
       const effective = await limits.forWaba(ORG, wabaId);
 
@@ -62,9 +64,12 @@ describe('Plan limits (integration)', () => {
         planCode: 'growth',
         planName: 'Growth',
         includedWabas: 3,
-        includedPhoneNumbersPerWaba: null,
+        includedPhoneNumbersPerWaba: 1,
         teamMembers: 5,
-        webhookEndpoints: 10,
+        webhookEndpoints: 5,
+        apiKeysPerWaba: 5,
+        contacts: 10000,
+        messagesPerMinute: 500,
         historyDays: 90,
       });
     });
@@ -74,11 +79,11 @@ describe('Plan limits (integration)', () => {
 
       const effective = await limits.forWaba(ORG, wabaId);
 
-      expect(effective.webhookEndpoints).toBe(2);
+      expect(effective.webhookEndpoints).toBe(1);
       expect(effective.planCode).toBeNull();
     });
 
-    it('takes the best tier across an organisation for what it owns as a whole', async () => {
+    it('answers for every account the one subscription covers', async () => {
       const first = await seedAccount(h.prisma, { wabaId: 'waba_a' });
       await h.prisma.waba.create({
         data: {
@@ -91,20 +96,21 @@ describe('Plan limits (integration)', () => {
       await h.prisma.wabaOrganisation.create({
         data: { wabaId: 'waba_b', ssoOrgId: ORG, userId: first.userId },
       });
-      await subscribe(first.userId, 'waba_a', 'starter');
-      await subscribe(first.userId, 'waba_b', 'business');
+      await subscribe(first.userId, 'business');
 
-      const effective = await limits.forOrg(ORG);
-
-      expect(effective.planCode).toBe('business');
-      expect(effective.includedWabas).toBe(10);
+      // The subscription names no account, so `forWaba` falls back to it —
+      // holding a paying customer to the entry floor on a second account was
+      // exactly the bug organisation-level billing removes.
+      expect((await limits.forOrg(ORG)).planCode).toBe('business');
+      expect((await limits.forWaba(ORG, 'waba_a')).includedWabas).toBe(10);
+      expect((await limits.forWaba(ORG, 'waba_b')).includedWabas).toBe(10);
     });
 
     it('stops honouring a tier once its subscription is cancelled and run out', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      await subscribe(userId, wabaId, 'business');
+      await subscribe(userId, 'business');
       await h.prisma.subscription.updateMany({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         data: {
           status: 'cancelled',
           currentEnd: new Date(Date.now() - 3600_000),
@@ -114,81 +120,84 @@ describe('Plan limits (integration)', () => {
       const effective = await limits.forWaba(ORG, wabaId);
 
       expect(effective.planCode).toBeNull();
-      // The entry floor is the cheapest plan's, and that plan caps accounts
-      // rather than the numbers on them.
+      // Back to the entry floor: what the cheapest published tier includes.
       expect(effective.includedWabas).toBe(1);
-      expect(effective.includedPhoneNumbersPerWaba).toBeNull();
+      expect(effective.includedPhoneNumbersPerWaba).toBe(1);
     });
   });
 
   describe('webhook endpoints', () => {
     const url = (n: number) => `https://api.example.com/hooks/${n}`;
 
-    it("allows exactly what the account's plan includes, then refuses", async () => {
+    it("allows exactly what the organisation's plan includes, then refuses", async () => {
+      // Endpoints are not sold by the unit, so this refuses rather than bills.
       const { userId, wabaId } = await seedAccount(h.prisma);
-      await subscribe(userId, wabaId, 'starter');
+      await subscribe(userId, 'starter');
 
       await endpoints.create(userId, ORG, { url: url(1), wabaId });
-      await endpoints.create(userId, ORG, { url: url(2), wabaId });
 
       await expect(
-        endpoints.create(userId, ORG, { url: url(3), wabaId }),
-      ).rejects.toThrow(/Starter plan includes 2 webhook endpoints/);
+        endpoints.create(userId, ORG, { url: url(2), wabaId }),
+      ).rejects.toThrow(/Starter plan includes 1 webhook endpoint/);
 
       expect(await h.prisma.webhookEndpoint.count({ where: { wabaId } })).toBe(
-        2,
+        1,
       );
     });
 
     it('gives a higher tier the endpoints it sells', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      await subscribe(userId, wabaId, 'growth');
+      await subscribe(userId, 'growth');
 
-      for (let n = 1; n <= 6; n++) {
+      for (let n = 1; n <= 5; n++) {
         await endpoints.create(userId, ORG, { url: url(n), wabaId });
       }
 
-      // Growth publishes ten; six is well inside it, where Starter's old
-      // hardcoded five would have refused the sixth.
+      // Growth publishes five, where Starter allows one.
       expect(await h.prisma.webhookEndpoint.count({ where: { wabaId } })).toBe(
-        6,
+        5,
       );
+      await expect(
+        endpoints.create(userId, ORG, { url: url(6), wabaId }),
+      ).rejects.toThrow(/Growth plan includes 5 webhook endpoints/);
     });
 
-    it('puts no ceiling on a tier that publishes none', async () => {
+    it('gives the top tier twice what the middle one has', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      await subscribe(userId, wabaId, 'business');
+      await subscribe(userId, 'business');
 
-      for (let n = 1; n <= 12; n++) {
+      for (let n = 1; n <= 10; n++) {
         await endpoints.create(userId, ORG, { url: url(n), wabaId });
       }
 
       expect(await h.prisma.webhookEndpoint.count({ where: { wabaId } })).toBe(
-        12,
+        10,
       );
     });
 
     it('frees a slot when one is deleted', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      await subscribe(userId, wabaId, 'starter');
+      await subscribe(userId, 'starter');
       const first = await endpoints.create(userId, ORG, {
         url: url(1),
         wabaId,
       });
-      await endpoints.create(userId, ORG, { url: url(2), wabaId });
 
       await endpoints.remove(ORG, first.id);
 
       await expect(
-        endpoints.create(userId, ORG, { url: url(3), wabaId }),
+        endpoints.create(userId, ORG, { url: url(2), wabaId }),
       ).resolves.toBeDefined();
     });
   });
 
   describe('accounts', () => {
-    it('refuses a second account on a plan that includes one', async () => {
+    it('connects a second account on a plan that includes one, and bills it', async () => {
+      // Accounts past the included ones are sold at ₹299, not refused. A limit
+      // that turns a customer away from spending more is not a limit worth
+      // having; the charge is raised on the next invoice.
       const { userId } = await seedAccount(h.prisma, { wabaId: 'waba_a' });
-      await subscribe(userId, 'waba_a', 'starter');
+      await subscribe(userId, 'starter');
 
       await expect(
         wabas.createOrUpdateWaba({
@@ -197,14 +206,14 @@ describe('Plan limits (integration)', () => {
           ssoOrgId: ORG,
           name: 'Second',
         }),
-      ).rejects.toThrow(/Starter plan includes 1 WhatsApp Business Account/);
+      ).resolves.toMatchObject({ wabaId: 'waba_b' });
 
-      expect(await h.prisma.waba.count()).toBe(1);
+      expect(await h.prisma.waba.count()).toBe(2);
     });
 
     it('lets an account already connected here be refreshed at any count', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      await subscribe(userId, wabaId, 'starter');
+      await subscribe(userId, 'starter');
 
       // Re-connecting is not adding: metadata refreshes must not start failing
       // because the organisation is at its limit.
@@ -218,32 +227,23 @@ describe('Plan limits (integration)', () => {
       ).resolves.toMatchObject({ name: 'Renamed at Meta' });
     });
 
-    it('allows up to what a higher tier includes', async () => {
+    it('connects past what a tier includes rather than refusing', async () => {
       const { userId } = await seedAccount(h.prisma, { wabaId: 'waba_a' });
-      await subscribe(userId, 'waba_a', 'growth');
+      await subscribe(userId, 'growth');
 
-      await wabas.createOrUpdateWaba({
-        wabaId: 'waba_b',
-        userId,
-        ssoOrgId: ORG,
-        name: 'B',
-      });
-      await wabas.createOrUpdateWaba({
-        wabaId: 'waba_c',
-        userId,
-        ssoOrgId: ORG,
-        name: 'C',
-      });
-
-      // Three on Growth; the fourth is what an upgrade is for.
-      await expect(
-        wabas.createOrUpdateWaba({
-          wabaId: 'waba_d',
+      for (const wabaId of ['waba_b', 'waba_c', 'waba_d']) {
+        await wabas.createOrUpdateWaba({
+          wabaId,
           userId,
           ssoOrgId: ORG,
-          name: 'D',
-        }),
-      ).rejects.toThrow(/Growth plan includes 3 WhatsApp Business Accounts/);
+          name: wabaId,
+        });
+      }
+
+      // Four on Growth, which includes three. The fourth is billed, and the
+      // console says so — it is not turned away.
+      expect(await h.prisma.waba.count()).toBe(4);
+      expect((await limits.forOrg(ORG)).additionalWabaPrice).toBe(29900);
     });
   });
 });

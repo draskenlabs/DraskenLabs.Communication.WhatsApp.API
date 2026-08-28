@@ -39,7 +39,6 @@ async function build(values: Record<string, string | undefined>) {
 const CONFIGURED = {
   RAZORPAY_KEY_ID: 'rzp_test_key',
   RAZORPAY_KEY_SECRET: SECRET,
-  RAZORPAY_PLAN_ID: 'plan_1',
   RAZORPAY_WEBHOOK_SECRET: 'whsec',
 };
 
@@ -49,14 +48,18 @@ const sign = (paymentId: string, subscriptionId: string) =>
 
 describe('RazorpayService', () => {
   describe('isConfigured', () => {
-    it('is true only with a key pair and a plan', async () => {
+    it('is true on a key pair alone', async () => {
+      // Which plan a tier is charged against is a column on that tier, not a
+      // deployment-wide setting: a price list with four tiers cannot be
+      // expressed by one environment variable, and a negotiated plan cannot
+      // be expressed by one at all.
       expect((await build(CONFIGURED)).isConfigured()).toBe(true);
     });
 
     it('is false without credentials, so nothing is sold or charged for', async () => {
       expect((await build({})).isConfigured()).toBe(false);
       expect(
-        (await build({ ...CONFIGURED, RAZORPAY_PLAN_ID: undefined })).isConfigured(),
+        (await build({ RAZORPAY_KEY_ID: 'rzp_test_key' })).isConfigured(),
       ).toBe(false);
     });
   });

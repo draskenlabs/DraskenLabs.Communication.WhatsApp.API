@@ -31,6 +31,17 @@ SELECT "ssoOrgId", COUNT(*) FROM "UserApiKey"
 WHERE "wabaId" IS NULL AND "status" GROUP BY "ssoOrgId";
 ```
 
+## 2026-08-28 — a limit on how many
+
+`maxApiKeysPerWaba` caps live keys per account at 1 / 5 / 10 by tier, checked in
+`ApiKeyService.createApiKey` through `PlanLimitsService.assertWithin`. Keys are
+not sold by the unit, so this refuses rather than bills. It also bounds the
+writes: every key lands in Redis as well as Postgres, on the path every API
+request already takes.
+
+Only keys with `status: true` count. A revoked key authenticates nothing, and
+holding its seat would make rotation impossible on a plan that includes one.
+
 ## Pending / not in scope
 
 - No per-key permissions: a key can both send and read within its account.

@@ -57,6 +57,29 @@
 
 ---
 
+## 2026-08-28 — a send rate per API key
+
+`SendRateGuard` caps sends at `maxMessagesPerMinute` — 100 / 500 / 1,000 by
+tier — in a fixed one-minute window in Redis.
+
+Keyed on the **API key**, not the caller's address. Nest's own throttler tracks
+by IP, which is wrong in both directions for server-to-server traffic: a
+customer's whole fleet behind one address shares a bucket, two customers can
+share an address, and the number cannot vary by what they pay. The API-key
+middleware has already resolved the key, its organisation and its account, so
+the identity is there to use.
+
+The console is deliberately not limited: someone clicking send is bounded by how
+fast they can click, and the number on the price list is sold as an API rate.
+
+Refusal is **429** with a `Retry-After` naming the seconds until the window
+turns — a bare 429 gets retried immediately, which makes the problem worse. A
+plan that names no rate is not limited, and a send is **allowed** when Redis is
+unreachable: refusing every send because the counter is down would turn a cache
+outage into an outage of the product.
+
+---
+
 ## Issues & Risks
 
 | Issue | Severity | Notes |

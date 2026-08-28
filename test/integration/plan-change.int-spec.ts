@@ -38,7 +38,10 @@ describe('Changing plan (integration)', () => {
     await h.reset();
   });
 
-  /** Subscribe an account and mark the mandate authorised, as a charge would. */
+  /**
+   * Subscribe the organisation and mark the mandate authorised, as a charge
+   * would. One subscription covers every account it has.
+   */
   async function subscribed(
     plan: 'starter' | 'growth' | 'business',
     options: { numbers?: number } = {},
@@ -46,15 +49,18 @@ describe('Changing plan (integration)', () => {
     const { userId, wabaId } = await seedAccount(h.prisma, {
       numbers: options.numbers ?? 1,
     });
-    const registered = await billing.register(userId, ORG, wabaId, plan);
+    const registered = await billing.register(userId, ORG, plan);
     await h.prisma.subscription.updateMany({
-      where: { wabaId, ssoOrgId: ORG },
+      where: { ssoOrgId: ORG },
       data: {
         status: 'active',
         currentStart: new Date(Date.now() - 9 * 24 * 3600 * 1000),
         currentEnd: new Date(Date.now() + 21 * 24 * 3600 * 1000),
       },
     });
+    // The registration itself is not what these tests are about, and leaving
+    // it in the recorder makes every `only()` below ambiguous.
+    h.razorpay.reset();
     return { userId, wabaId, subscriptionId: registered.subscriptionId };
   }
 
@@ -63,51 +69,184 @@ describe('Changing plan (integration)', () => {
    * ------------------------------------------------------------------ */
 
   describe('to a tier that costs more', () => {
-    it('moves now, because the limits are what was wanted today', async () => {
-      const { wabaId, subscriptionId } = await subscribed('starter');
+    it('asks the customer to authorise a new mandate', async () => {
+      // A Razorpay mandate is authorised for a fixed amount. Re-pointing the
+      // running subscription at a dearer plan is what used to fail at the
+      // bank's ceiling; a second subscription is what a customer can actually
+      // approve.
+      const { subscriptionId } = await subscribed('starter');
 
-      const state = await billing.changePlan(ORG, wabaId, 'business');
+      const state = await billing.changePlan(ORG, 'business');
 
-      const change = h.razorpay.only('PATCH', /^\/subscriptions\/[^/]+$/);
-      expect(change.path).toBe(`/subscriptions/${subscriptionId}`);
-      expect(change.body).toMatchObject({
+      expect(
+        h.razorpay.received('PATCH', /^\/subscriptions\/[^/]+$/),
+      ).toHaveLength(0);
+      const created = h.razorpay.only('POST', /^\/subscriptions$/);
+      expect(created.body).toMatchObject({
         plan_id: PLAN_IDS.business,
-        schedule_change_at: 'now',
+        total_count: 120,
+        customer_notify: 1,
+        notes: { ssoOrgId: ORG, planCode: 'business' },
+      });
+      expect(state.pendingAuthorisation?.planCode).toBe('business');
+      expect(state.pendingAuthorisation?.subscriptionId).not.toBe(
+        subscriptionId,
+      );
+    });
+
+    it('starts the new subscription where the paid month ends', async () => {
+      // Nine days in, twenty-one to run. Charging the new tier today would
+      // sell the customer the same days twice.
+      await subscribed('starter');
+
+      await billing.changePlan(ORG, 'business');
+
+      const created = h.razorpay.only('POST', /^\/subscriptions$/);
+      const startAt = created.body.start_at as number;
+      expect(startAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    });
+
+    it('charges only the difference for the days that are left', async () => {
+      await subscribed('starter');
+
+      await billing.changePlan(ORG, 'business');
+
+      const addon = h.razorpay.only('POST', /\/addons$/);
+      const amount = (addon.body.item as { amount: number }).amount;
+      // ₹1,999 less ₹499 is ₹1,500 a month; three weeks of it is less than
+      // that and more than nothing. Never a whole month, never a whole price.
+      expect(amount).toBeGreaterThan(0);
+      expect(amount).toBeLessThan(199900 - 49900);
+      expect(addon.body.quantity).toBe(1);
+    });
+
+    it('leaves the customer on the tier they are paying for until they authorise', async () => {
+      const { wabaId } = await subscribed('starter');
+      expect((await limits.forWaba(ORG, wabaId)).webhookEndpoints).toBe(1);
+
+      const state = await billing.changePlan(ORG, 'business');
+
+      // Nothing has been paid. Handing over Business's limits here would give
+      // them away to anyone who opened Checkout and closed it again.
+      expect(state.planCode).toBe('starter');
+      expect((await limits.forWaba(ORG, wabaId)).planCode).toBe('starter');
+      const stored = await h.prisma.subscription.findFirstOrThrow({
+        where: { ssoOrgId: ORG },
+        include: { plan: true, pendingPlan: true },
+      });
+      expect(stored.plan?.code).toBe('starter');
+      expect(stored.pendingPlan?.code).toBe('business');
+      expect(stored.pendingRazorpaySubscriptionId).not.toBeNull();
+    });
+
+    it('swaps the two over once the new mandate is authorised', async () => {
+      const { subscriptionId } = await subscribed('starter');
+      const state = await billing.changePlan(ORG, 'business');
+      const upgradeId = state.pendingAuthorisation!.subscriptionId;
+
+      // Reset first: it clears the stand-in's subscriptions along with its
+      // recorded requests.
+      h.razorpay.reset();
+      const now = Math.floor(Date.now() / 1000);
+      h.razorpay.subscriptions.set(upgradeId, {
+        id: upgradeId,
+        plan_id: PLAN_IDS.business,
+        status: 'active',
+        current_start: now,
+        current_end: now + 30 * 24 * 3600,
       });
 
-      expect(state.planCode).toBe('business');
-      expect(state.pendingPlanCode).toBeNull();
+      const after = await billing.confirm(ORG, {
+        razorpayPaymentId: 'pay_upgrade',
+        razorpaySubscriptionId: upgradeId,
+        razorpaySignature: h.checkoutSignature('pay_upgrade', upgradeId),
+      });
+
+      expect(after.planCode).toBe('business');
+      // The old one is cancelled only now, and at its cycle end — the month
+      // they already paid for is theirs.
+      const cancelled = h.razorpay.only(
+        'POST',
+        /\/subscriptions\/[^/]+\/cancel$/,
+      );
+      expect(cancelled.path).toBe(`/subscriptions/${subscriptionId}/cancel`);
+      expect(cancelled.body).toMatchObject({ cancel_at_cycle_end: 1 });
+
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         include: { plan: true },
       });
+      expect(stored.razorpaySubscriptionId).toBe(upgradeId);
       expect(stored.plan?.code).toBe('business');
-      expect(stored.planId).toBe(PLAN_IDS.business);
+      expect(stored.pendingRazorpaySubscriptionId).toBeNull();
       expect(stored.pendingPlanRefId).toBeNull();
     });
 
-    it('gives the account the new tier’s limits immediately', async () => {
+    it('gives the new tier’s limits only after the money is authorised', async () => {
       const { wabaId } = await subscribed('starter');
-      // Starter sells two endpoints; Business puts no number on them.
-      expect((await limits.forWaba(ORG, wabaId)).webhookEndpoints).toBe(2);
+      const state = await billing.changePlan(ORG, 'business');
+      const upgradeId = state.pendingAuthorisation!.subscriptionId;
 
-      await billing.changePlan(ORG, wabaId, 'business');
+      const now = Math.floor(Date.now() / 1000);
+      h.razorpay.subscriptions.set(upgradeId, {
+        id: upgradeId,
+        plan_id: PLAN_IDS.business,
+        status: 'active',
+        current_start: now,
+        current_end: now + 30 * 24 * 3600,
+      });
+      await billing.confirm(ORG, {
+        razorpayPaymentId: 'pay_upgrade',
+        razorpaySubscriptionId: upgradeId,
+        razorpaySignature: h.checkoutSignature('pay_upgrade', upgradeId),
+      });
 
       const after = await limits.forWaba(ORG, wabaId);
       expect(after.planCode).toBe('business');
-      expect(after.webhookEndpoints).toBeNull();
+      expect(after.webhookEndpoints).toBe(10);
+    });
+
+    it('leaves them where they were when the upgrade is abandoned', async () => {
+      // They closed Checkout. Nothing about what they hold or pay has changed.
+      const { wabaId, subscriptionId } = await subscribed('starter');
+
+      await billing.changePlan(ORG, 'business');
+
+      const stored = await h.prisma.subscription.findFirstOrThrow({
+        where: { ssoOrgId: ORG },
+      });
+      expect(stored.razorpaySubscriptionId).toBe(subscriptionId);
+      expect((await limits.forWaba(ORG, wabaId)).planCode).toBe('starter');
+      expect(
+        h.razorpay.received('POST', /\/subscriptions\/[^/]+\/cancel$/),
+      ).toHaveLength(0);
     });
 
     it('charges the new tier’s extras on the next invoice', async () => {
-      // Two numbers on Starter, then up to Growth: the add-on that follows the
-      // next charge must be priced from the tier they are on now.
-      const { wabaId, subscriptionId } = await subscribed('starter', {
-        numbers: 3,
+      // Three numbers on Starter, then up to Growth and authorised: the add-on
+      // that follows the next charge must be priced from the tier they are on
+      // now.
+      const { subscriptionId } = await subscribed('starter', { numbers: 3 });
+      const state = await billing.changePlan(ORG, 'growth');
+      const upgradeId = state.pendingAuthorisation!.subscriptionId;
+
+      const now = Math.floor(Date.now() / 1000);
+      h.razorpay.subscriptions.set(upgradeId, {
+        id: upgradeId,
+        plan_id: PLAN_IDS.growth,
+        status: 'active',
+        current_start: now,
+        current_end: now + 30 * 24 * 3600,
       });
-      await billing.changePlan(ORG, wabaId, 'growth');
+      await billing.confirm(ORG, {
+        razorpayPaymentId: 'pay_upgrade',
+        razorpaySubscriptionId: upgradeId,
+        razorpaySignature: h.checkoutSignature('pay_upgrade', upgradeId),
+      });
+      expect(subscriptionId).not.toBe(upgradeId);
       h.razorpay.reset();
 
-      const body = chargedOn(subscriptionId, PLAN_IDS.growth);
+      const body = chargedOn(upgradeId, PLAN_IDS.growth);
       await api()
         .post('/billing/webhook')
         .set('x-razorpay-event-id', 'evt_after_upgrade')
@@ -116,7 +255,7 @@ describe('Changing plan (integration)', () => {
         .expect(200);
 
       const addon = h.razorpay.only('POST', /\/addons$/);
-      // Two beyond the one Growth includes, at Growth's own per-number price.
+      // Two beyond the one Growth includes per account.
       expect(addon.body).toMatchObject({ quantity: 2 });
     });
   });
@@ -127,9 +266,9 @@ describe('Changing plan (integration)', () => {
 
   describe('to a tier that costs the same or less', () => {
     it('waits for the renewal rather than cutting the paid month short', async () => {
-      const { wabaId } = await subscribed('business');
+      await subscribed('business');
 
-      const state = await billing.changePlan(ORG, wabaId, 'starter');
+      const state = await billing.changePlan(ORG, 'starter');
 
       expect(
         h.razorpay.only('PATCH', /^\/subscriptions\/[^/]+$/).body,
@@ -137,16 +276,19 @@ describe('Changing plan (integration)', () => {
         plan_id: PLAN_IDS.starter,
         schedule_change_at: 'cycle_end',
       });
-      // Still Business until the month they paid for runs out.
+      // Still Business until the month they paid for runs out, and no new
+      // mandate: the amount is falling, so what they authorised covers it.
       expect(state.planCode).toBe('business');
       expect(state.pendingPlanCode).toBe('starter');
       expect(state.pendingPlanAt).toEqual(state.currentEnd);
+      expect(state.pendingAuthorisation).toBeNull();
+      expect(h.razorpay.received('POST', /^\/subscriptions$/)).toHaveLength(0);
     });
 
     it('keeps the limits they paid for until then', async () => {
       const { wabaId } = await subscribed('business');
 
-      await billing.changePlan(ORG, wabaId, 'starter');
+      await billing.changePlan(ORG, 'starter');
 
       const effective = await limits.forWaba(ORG, wabaId);
       // Taking their ten accounts down to one mid-month would be taking away
@@ -157,7 +299,7 @@ describe('Changing plan (integration)', () => {
 
     it('takes effect when Razorpay charges the new plan', async () => {
       const { wabaId, subscriptionId } = await subscribed('business');
-      await billing.changePlan(ORG, wabaId, 'starter');
+      await billing.changePlan(ORG, 'starter');
 
       // The renewal: Razorpay charges the plan the change scheduled.
       const body = chargedOn(subscriptionId, PLAN_IDS.starter);
@@ -169,7 +311,7 @@ describe('Changing plan (integration)', () => {
         .expect(200);
 
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         include: { plan: true },
       });
       expect(stored.plan?.code).toBe('starter');
@@ -179,7 +321,7 @@ describe('Changing plan (integration)', () => {
     });
 
     it('follows Razorpay when a plan is changed in their dashboard', async () => {
-      const { wabaId, subscriptionId } = await subscribed('starter');
+      const { subscriptionId } = await subscribed('starter');
 
       // Nobody asked us; the charge simply arrives on another plan. Razorpay
       // is the ledger, so the tier here follows it.
@@ -192,7 +334,7 @@ describe('Changing plan (integration)', () => {
         .expect(200);
 
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         include: { plan: true },
       });
       expect(stored.plan?.code).toBe('growth');
@@ -204,71 +346,59 @@ describe('Changing plan (integration)', () => {
    * ------------------------------------------------------------------ */
 
   describe('what it will not do', () => {
-    it('refuses over HTTP for another organisation’s account', async () => {
-      const { userId, wabaId } = await subscribed('starter');
+    it('refuses over HTTP for an organisation with no subscription', async () => {
+      const { userId } = await subscribed('starter');
       const token = await h.signIn(userId, 'org_somebody_else');
 
       await api()
-        .patch(`/billing/subscriptions/${wabaId}/plan`)
+        .patch('/billing/subscription/plan')
         .set('Authorization', `Bearer ${token}`)
         .send({ planCode: 'business' })
         .expect(404);
 
-      expect(
-        h.razorpay.received('PATCH', /^\/subscriptions\/[^/]+$/),
-      ).toHaveLength(0);
+      expect(h.razorpay.received('POST', /^\/subscriptions$/)).toHaveLength(0);
     });
 
     it('refuses a quoted tier before touching Razorpay', async () => {
-      const { userId, wabaId } = await subscribed('starter');
+      const { userId } = await subscribed('starter');
       const token = await h.signIn(userId, ORG);
 
       const res = await api()
-        .patch(`/billing/subscriptions/${wabaId}/plan`)
+        .patch('/billing/subscription/plan')
         .set('Authorization', `Bearer ${token}`)
         .send({ planCode: 'agency' })
         .expect(400);
 
       expect(JSON.stringify(res.body)).toMatch(/priced individually/);
+      expect(h.razorpay.received('POST', /^\/subscriptions$/)).toHaveLength(0);
       expect(
         h.razorpay.received('PATCH', /^\/subscriptions\/[^/]+$/),
       ).toHaveLength(0);
     });
 
     it('refuses a subscription that is already ending', async () => {
-      const { wabaId } = await subscribed('starter');
+      await subscribed('starter');
       await h.prisma.subscription.updateMany({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         data: { cancelAtCycleEnd: true },
       });
 
-      await expect(billing.changePlan(ORG, wabaId, 'growth')).rejects.toThrow(
+      await expect(billing.changePlan(ORG, 'growth')).rejects.toThrow(
         /set to end/,
       );
     });
 
-    it('says what to do when the mandate will not cover the higher amount', async () => {
-      const { wabaId } = await subscribed('starter');
-      h.razorpay.on('PATCH', /^\/subscriptions\/[^/]+$/, () => ({
-        status: 400,
-        body: {
-          error: {
-            description:
-              'Subscription amount is greater than the max amount authorized',
-          },
-        },
-      }));
+    it('never asks Razorpay to raise an amount past the mandate', async () => {
+      // The bank's ceiling is why an upgrade is a new subscription rather than
+      // a plan change: the PATCH that raises the amount is the one Razorpay
+      // refuses, and this path no longer sends one.
+      await subscribed('starter');
 
-      // A gateway error would be true and useless; only the customer can
-      // authorise a larger debit, and they need telling how.
-      await expect(billing.changePlan(ORG, wabaId, 'business')).rejects.toThrow(
-        /Cancel the subscription and take out a new one/,
-      );
-      const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
-        include: { plan: true },
-      });
-      expect(stored.plan?.code).toBe('starter');
+      await billing.changePlan(ORG, 'business');
+
+      expect(
+        h.razorpay.received('PATCH', /^\/subscriptions\/[^/]+$/),
+      ).toHaveLength(0);
     });
   });
 
@@ -361,7 +491,7 @@ describe('Changing plan (integration)', () => {
       await h.app.get(PlanSyncService).adoptExisting();
 
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         include: { plan: true },
       });
       expect(stored.plan?.code).toBe('growth');

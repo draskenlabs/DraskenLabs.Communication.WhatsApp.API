@@ -448,7 +448,6 @@ export class MailNotifications {
   async subscriptionCharged(
     userId: number,
     ssoOrgId: string,
-    account: string,
     paidUntil: Date,
   ): Promise<void> {
     const [recipient] = await this.mail.recipientsByIds([userId]);
@@ -460,10 +459,9 @@ export class MailNotifications {
       subject: 'Your subscription is active',
       heading: 'Your subscription is active',
       intro:
-        'The payment went through and the Messaging API is open for the API keys on this account.',
+        'The payment went through and the Messaging API is open for every API key in this organisation.',
       facts: [
         ...(await this.orgFacts({ ssoOrgId })),
-        ['Account', account],
         ['Paid until', this.date(paidUntil)],
       ],
       paragraphs: [
@@ -480,7 +478,6 @@ export class MailNotifications {
   async subscriptionPaymentFailed(
     userId: number,
     ssoOrgId: string,
-    account: string,
     final: boolean,
     paidUntil: Date | null,
   ): Promise<void> {
@@ -497,7 +494,6 @@ export class MailNotifications {
         : 'The bank declined the payment. We will try again over the next few days — nothing changes for you in the meantime.',
       facts: [
         ...(await this.orgFacts({ ssoOrgId })),
-        ['Account', account],
         ...(paidUntil
           ? ([['API access until', this.date(paidUntil)]] as [string, string][])
           : []),
@@ -515,7 +511,6 @@ export class MailNotifications {
   async subscriptionCancelled(
     userId: number,
     ssoOrgId: string,
-    account: string,
     paidUntil: Date | null,
   ): Promise<void> {
     const [recipient] = await this.mail.recipientsByIds([userId]);
@@ -531,13 +526,12 @@ export class MailNotifications {
         : 'No payments will be taken.',
       facts: [
         ...(await this.orgFacts({ ssoOrgId })),
-        ['Account', account],
         ...(paidUntil
           ? ([['API access until', this.date(paidUntil)]] as [string, string][])
           : []),
       ],
       paragraphs: [
-        'This account, its templates and its message history are untouched, and other accounts are unaffected. The console keeps working; only API-key access to this account ends.',
+        'Your accounts, their templates and their message history are untouched. The console keeps working; only API-key access ends.',
       ],
       action: { label: 'Subscribe again', path: '/billing' },
     });

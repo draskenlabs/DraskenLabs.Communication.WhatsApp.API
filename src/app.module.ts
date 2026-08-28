@@ -97,15 +97,15 @@ import * as Joi from 'joi';
         // an organisation to an agency and move who pays for a client. Unset
         // means disabled, which is what a self-hosted deployment wants.
         AGENCY_ADMIN_TOKEN: Joi.string().optional(),
-        // Razorpay — optional, like push and email. Without a key pair and a
-        // plan the API runs normally, sells nothing and charges no one for the
-        // Messaging API, which is what development and self-hosting need.
+        // Razorpay — optional, like push and email. Without a key pair the API
+        // runs normally, sells nothing and charges no one for the Messaging
+        // API, which is what development and self-hosting need.
         RAZORPAY_KEY_ID: Joi.string().optional(),
         RAZORPAY_KEY_SECRET: Joi.string().optional(),
-        RAZORPAY_PLAN_ID: Joi.string().optional(),
         // Which Razorpay plan charges for each published tier, as
-        // `code:plan_id` pairs. Without it only RAZORPAY_PLAN_ID above can be
-        // sold, and the console offers to talk about the rest rather than
+        // `code:plan_id` pairs — written onto the tiers at boot, since the id
+        // belongs to the plan row and not to the deployment. Without it no
+        // tier can be bought, and the console offers to talk rather than
         // opening a checkout that would be refused.
         RAZORPAY_PLAN_IDS: Joi.string().optional(),
         RAZORPAY_WEBHOOK_SECRET: Joi.string().optional(),

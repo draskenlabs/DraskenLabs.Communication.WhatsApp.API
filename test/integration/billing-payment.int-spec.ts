@@ -76,37 +76,49 @@ describe('Payment (integration)', () => {
         ['starter', PLAN_IDS.starter],
         ['growth', PLAN_IDS.growth],
         ['business', PLAN_IDS.business],
-        // Agency is quoted; nothing charges for it.
+        // Custom and Agency are quoted cards; nothing charges for either. The
+        // rows a signed deal writes are private and carry their own plan id.
+        ['custom', null],
         ['agency', null],
       ]);
     });
 
     it('publishes the seeded prices and limits exactly as the pricing page shows them', async () => {
       const res = await api().get('/plans').expect(200);
-      const [starter, growth, business, agency] =
+      const [starter, growth, business, custom, agency] =
         envelope<PlanView[]>(res).data;
 
       expect(starter).toMatchObject({
         price: 49900,
         currency: 'INR',
-        unit: '/WABA/month',
+        // Not "/WABA/month". One subscription covers the organisation, and a
+        // card that priced per account beside an organisation-wide inclusion
+        // count was the incoherence this replaced.
+        unit: '/month',
         additionalNumberPrice: 19900,
+        additionalWabaPrice: 29900,
         available: true,
         limits: {
+          // What the price covers, not a ceiling: an account past this is
+          // sold at ₹299 rather than refused.
           wabas: 1,
-          // Numbers are priced, not rationed: no tier puts a ceiling on them.
-          phoneNumbersPerWaba: null,
+          phoneNumbersPerWaba: 1,
           teamMembers: 2,
-          webhookEndpoints: 2,
+          webhookEndpoints: 1,
+          apiKeysPerWaba: 1,
+          contacts: 1000,
+          messagesPerMinute: 100,
         },
       });
       expect(growth.price).toBe(99900);
       expect(business.price).toBe(199900);
-      expect(agency).toMatchObject({
-        price: null,
-        priceLabel: 'Custom',
-        available: false,
-      });
+      for (const quoted of [custom, agency]) {
+        expect(quoted).toMatchObject({
+          price: null,
+          priceLabel: 'Custom',
+          available: false,
+        });
+      }
       // The provider's identifier never leaves the API.
       expect(JSON.stringify(res.body)).not.toContain('plan_growth');
     });
@@ -120,22 +132,25 @@ describe('Payment (integration)', () => {
     it('creates the subscription against the chosen tier, with our credentials', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
 
-      const registered = await billing.register(userId, ORG, wabaId, 'growth');
+      const registered = await billing.register(userId, ORG, 'growth');
 
       const created = h.razorpay.only('POST', /^\/subscriptions$/);
       expect(created.body).toMatchObject({
         plan_id: PLAN_IDS.growth,
         total_count: 120,
         customer_notify: 1,
-        notes: { ssoOrgId: ORG, wabaId, planCode: 'growth' },
+        notes: { ssoOrgId: ORG, planCode: 'growth' },
       });
       // Basic auth, from the configured key pair.
       expect(created.auth).toEqual({ keyId: KEY_ID, keySecret: KEY_SECRET });
 
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId, ssoOrgId: ORG },
+        where: { ssoOrgId: ORG },
         include: { plan: true },
       });
+      // The organisation's, not an account's: that is what `wabaId: null`
+      // means, and what the partial unique index keys on.
+      expect(stored.wabaId).toBeNull();
       expect(stored.razorpaySubscriptionId).toBe(registered.subscriptionId);
       expect(stored.planId).toBe(PLAN_IDS.growth);
       expect(stored.plan?.code).toBe('growth');
@@ -145,7 +160,7 @@ describe('Payment (integration)', () => {
       expect(await access.hasAccess(ORG, wabaId)).toBe(false);
     });
 
-    it('reuses one Razorpay customer across an organisation’s accounts', async () => {
+    it('covers every account the organisation has with the one subscription', async () => {
       const first = await seedAccount(h.prisma, { wabaId: 'waba_a' });
       await h.prisma.waba.create({
         data: {
@@ -159,26 +174,29 @@ describe('Payment (integration)', () => {
         data: { wabaId: 'waba_b', ssoOrgId: ORG, userId: first.userId },
       });
 
-      await billing.register(first.userId, ORG, 'waba_a', 'starter');
-      await billing.register(first.userId, ORG, 'waba_b', 'growth');
+      await billing.register(first.userId, ORG, 'growth');
+      await h.prisma.subscription.updateMany({
+        where: { ssoOrgId: ORG },
+        data: {
+          status: 'active',
+          currentEnd: new Date(Date.now() + 20 * 24 * 3600 * 1000),
+        },
+      });
 
-      // One customer, two subscriptions: a customer paying for two accounts
-      // has one payment history at Razorpay, not two.
+      // One customer, one subscription, both accounts open. Under per-account
+      // billing the second was locked out until it was paid for separately.
       expect(h.razorpay.received('POST', /^\/customers$/)).toHaveLength(1);
-      const subs = h.razorpay.received('POST', /^\/subscriptions$/);
-      expect(subs.map((s) => s.body.plan_id)).toEqual([
-        PLAN_IDS.starter,
-        PLAN_IDS.growth,
-      ]);
-      expect(subs[0].body.customer_id).toBe(subs[1].body.customer_id);
+      expect(h.razorpay.received('POST', /^\/subscriptions$/)).toHaveLength(1);
+      expect(await access.hasAccess(ORG, 'waba_a')).toBe(true);
+      expect(await access.hasAccess(ORG, 'waba_b')).toBe(true);
     });
 
     it('refuses a quoted tier without touching Razorpay at all', async () => {
-      const { userId, wabaId } = await seedAccount(h.prisma);
+      const { userId } = await seedAccount(h.prisma);
 
-      await expect(
-        billing.register(userId, ORG, wabaId, 'agency'),
-      ).rejects.toThrow(/priced individually/);
+      await expect(billing.register(userId, ORG, 'agency')).rejects.toThrow(
+        /priced individually/,
+      );
 
       expect(h.razorpay.requests).toHaveLength(0);
       expect(await h.prisma.subscription.count()).toBe(0);
@@ -189,41 +207,119 @@ describe('Payment (integration)', () => {
         where: { code: 'business' },
         data: { razorpayPlanId: null },
       });
-      const { userId, wabaId } = await seedAccount(h.prisma);
+      const { userId } = await seedAccount(h.prisma);
 
-      await expect(
-        billing.register(userId, ORG, wabaId, 'business'),
-      ).rejects.toThrow(/not available for checkout/);
+      await expect(billing.register(userId, ORG, 'business')).rejects.toThrow(
+        /not available for checkout/,
+      );
       expect(h.razorpay.requests).toHaveLength(0);
     });
 
     it('refuses a second subscription while one is running', async () => {
-      const { userId, wabaId } = await seedAccount(h.prisma);
-      await billing.register(userId, ORG, wabaId, 'starter');
+      const { userId } = await seedAccount(h.prisma);
+      await billing.register(userId, ORG, 'starter');
       h.razorpay.reset();
 
-      await expect(
-        billing.register(userId, ORG, wabaId, 'growth'),
-      ).rejects.toThrow(/already has a subscription/);
-      // Two mandates on one account would be two debits a month.
+      await expect(billing.register(userId, ORG, 'growth')).rejects.toThrow(
+        /already has a subscription/,
+      );
+      // Two mandates on one organisation would be two debits a month.
       expect(h.razorpay.received('POST', /^\/subscriptions$/)).toHaveLength(0);
       expect(await h.prisma.subscription.count()).toBe(1);
+    });
+
+    describe('a tier negotiated for one organisation', () => {
+      // `h.reset()` leaves the price list alone — it is seeded by migration,
+      // not per test — so a row written here has to be taken away again.
+      const CODE = 'agency-brightreach';
+
+      const writePrivatePlan = (ssoOrgId: string) =>
+        h.prisma.plan.create({
+          data: {
+            code: CODE,
+            name: 'Bright Reach',
+            audience: 'A signed deal.',
+            price: 499900,
+            currency: 'INR',
+            unit: '/month',
+            ssoOrgId,
+            rank: 50,
+            ctaKind: 'subscribe',
+            ctaLabel: 'Subscribe',
+            razorpayPlanId: 'plan_brightreach',
+            sortOrder: 99,
+          },
+        });
+
+      afterEach(async () => {
+        // Subscriptions first: `planRefId` points at it, and the price list
+        // survives `h.reset()` because migrations seed it, not the harness.
+        await h.prisma.subscriptionPayment.deleteMany();
+        await h.prisma.subscription.deleteMany();
+        await h.prisma.plan.deleteMany({ where: { code: CODE } });
+      });
+
+      it('is not sold to anybody else, however well they know the code', async () => {
+        const { userId } = await seedAccount(h.prisma);
+        await writePrivatePlan('org_bright_reach');
+
+        await expect(billing.register(userId, ORG, CODE)).rejects.toThrow(
+          /not on offer/,
+        );
+        expect(h.razorpay.requests).toHaveLength(0);
+      });
+
+      it('is sold to the organisation it was written for', async () => {
+        const { userId } = await seedAccount(h.prisma);
+        await writePrivatePlan(ORG);
+
+        const registered = await billing.register(userId, ORG, CODE);
+
+        expect(registered.planCode).toBe(CODE);
+        expect(h.razorpay.only('POST', /^\/subscriptions$/).body.plan_id).toBe(
+          'plan_brightreach',
+        );
+      });
+
+      it('stays off the public price list', async () => {
+        await writePrivatePlan(ORG);
+
+        const res = await api().get('/plans').expect(200);
+
+        expect(envelope<PlanView[]>(res).data.map((p) => p.code)).not.toContain(
+          CODE,
+        );
+      });
+
+      it('is on the price list the organisation itself asks for', async () => {
+        const { userId } = await seedAccount(h.prisma);
+        await writePrivatePlan(ORG);
+        const token = await h.signIn(userId, ORG);
+
+        const res = await api()
+          .get('/plans/mine')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+
+        expect(envelope<PlanView[]>(res).data.map((p) => p.code)).toContain(
+          CODE,
+        );
+      });
     });
   });
 
   describe('subscribing over HTTP', () => {
     it('takes the tier from the request and answers with what Checkout needs', async () => {
-      const { userId, wabaId } = await seedAccount(h.prisma);
+      const { userId } = await seedAccount(h.prisma);
       const token = await h.signIn(userId, ORG);
 
       const res = await api()
-        .post(`/billing/subscriptions/${wabaId}`)
+        .post('/billing/subscription')
         .set('Authorization', `Bearer ${token}`)
         .send({ planCode: 'business' })
         .expect(201);
 
       expect(envelope<Record<string, unknown>>(res).data).toMatchObject({
-        wabaId,
         keyId: KEY_ID,
         status: 'created',
         planCode: 'business',
@@ -234,10 +330,10 @@ describe('Payment (integration)', () => {
     });
 
     it('refuses an unauthenticated request before anything is created', async () => {
-      const { wabaId } = await seedAccount(h.prisma);
+      await seedAccount(h.prisma);
 
       await api()
-        .post(`/billing/subscriptions/${wabaId}`)
+        .post('/billing/subscription')
         .send({ planCode: 'growth' })
         .expect(401);
 
@@ -245,25 +341,26 @@ describe('Payment (integration)', () => {
       expect(await h.prisma.subscription.count()).toBe(0);
     });
 
-    it('will not sell an account belonging to another organisation', async () => {
-      const { userId, wabaId } = await seedAccount(h.prisma);
-      const token = await h.signIn(userId, 'org_somebody_else');
+    it('will not sell without a tier to sell', async () => {
+      // There is no deployment-wide default plan to fall back on any more.
+      const { userId } = await seedAccount(h.prisma);
+      const token = await h.signIn(userId, ORG);
 
       await api()
-        .post(`/billing/subscriptions/${wabaId}`)
+        .post('/billing/subscription')
         .set('Authorization', `Bearer ${token}`)
-        .send({ planCode: 'growth' })
-        .expect(404);
+        .send({})
+        .expect(400);
 
       expect(h.razorpay.requests).toHaveLength(0);
     });
 
     it('names the tier it will not sell', async () => {
-      const { userId, wabaId } = await seedAccount(h.prisma);
+      const { userId } = await seedAccount(h.prisma);
       const token = await h.signIn(userId, ORG);
 
       const res = await api()
-        .post(`/billing/subscriptions/${wabaId}`)
+        .post('/billing/subscription')
         .set('Authorization', `Bearer ${token}`)
         .send({ planCode: 'agency' })
         .expect(400);
@@ -280,10 +377,10 @@ describe('Payment (integration)', () => {
   describe('confirming what Checkout hands back', () => {
     it('refuses a forged signature and changes nothing', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      const registered = await billing.register(userId, ORG, wabaId, 'starter');
+      const registered = await billing.register(userId, ORG, 'starter');
 
       await expect(
-        billing.confirm(ORG, wabaId, {
+        billing.confirm(ORG, {
           razorpayPaymentId: 'pay_forged',
           razorpaySubscriptionId: registered.subscriptionId,
           razorpaySignature: 'deadbeef'.repeat(8),
@@ -291,7 +388,7 @@ describe('Payment (integration)', () => {
       ).rejects.toThrow();
 
       const after = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
       });
       // The browser reports its own success; without a valid signature that
       // report is worth nothing.
@@ -301,7 +398,7 @@ describe('Payment (integration)', () => {
 
     it('records a genuine mandate and opens the account', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      const registered = await billing.register(userId, ORG, wabaId, 'growth');
+      const registered = await billing.register(userId, ORG, 'growth');
 
       // Razorpay's own state is what counts, so the stand-in reports the
       // subscription active with a month paid for.
@@ -314,7 +411,7 @@ describe('Payment (integration)', () => {
         current_end: now + 30 * 24 * 3600,
       });
 
-      const state = await billing.confirm(ORG, wabaId, {
+      const state = await billing.confirm(ORG, {
         razorpayPaymentId: 'pay_real',
         razorpaySubscriptionId: registered.subscriptionId,
         razorpaySignature: h.checkoutSignature(
@@ -329,7 +426,7 @@ describe('Payment (integration)', () => {
       expect(state.plan?.amount).toBe(99900);
 
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
       });
       expect(stored.status).toBe('active');
       expect(stored.currentEnd!.getTime()).toBeGreaterThan(Date.now());
@@ -337,11 +434,11 @@ describe('Payment (integration)', () => {
     });
 
     it('refuses a signature that belongs to another subscription', async () => {
-      const { userId, wabaId } = await seedAccount(h.prisma);
-      await billing.register(userId, ORG, wabaId, 'starter');
+      const { userId } = await seedAccount(h.prisma);
+      await billing.register(userId, ORG, 'starter');
 
       await expect(
-        billing.confirm(ORG, wabaId, {
+        billing.confirm(ORG, {
           razorpayPaymentId: 'pay_x',
           razorpaySubscriptionId: 'sub_somebody_else',
           razorpaySignature: h.checkoutSignature('pay_x', 'sub_somebody_else'),
@@ -360,12 +457,7 @@ describe('Payment (integration)', () => {
       plan: 'starter' | 'growth' = 'growth',
     ) {
       const seeded = await seedAccount(h.prisma, { numbers });
-      const registered = await billing.register(
-        seeded.userId,
-        ORG,
-        seeded.wabaId,
-        plan,
-      );
+      const registered = await billing.register(seeded.userId, ORG, plan);
       h.razorpay.reset();
       return { ...seeded, subscriptionId: registered.subscriptionId };
     }
@@ -397,7 +489,7 @@ describe('Payment (integration)', () => {
       });
 
       const sub = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
       });
       expect(sub.status).toBe('active');
       expect(sub.currentEnd!.getTime()).toBeGreaterThan(Date.now());
@@ -563,7 +655,7 @@ describe('Payment (integration)', () => {
     });
 
     it('never shortens a paid month when events arrive out of order', async () => {
-      const { wabaId, subscriptionId } = await subscribed(1);
+      const { subscriptionId } = await subscribed(1);
       const now = Math.floor(Date.now() / 1000);
 
       const later = chargedEvent({
@@ -592,7 +684,7 @@ describe('Payment (integration)', () => {
       }
 
       const sub = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
       });
       // A month already paid for is not taken back by a late delivery.
       expect(sub.currentEnd!.getTime()).toBeGreaterThan(
@@ -608,15 +700,15 @@ describe('Payment (integration)', () => {
   describe('cancelling', () => {
     it('asks Razorpay to stop at the end of the paid month, and keeps access until then', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      const registered = await billing.register(userId, ORG, wabaId, 'growth');
+      const registered = await billing.register(userId, ORG, 'growth');
       const end = new Date(Date.now() + 20 * 24 * 3600 * 1000);
       await h.prisma.subscription.updateMany({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         data: { status: 'active', currentEnd: end },
       });
       h.razorpay.reset();
 
-      const state = await billing.cancel(ORG, wabaId);
+      const state = await billing.cancel(ORG);
 
       const cancelled = h.razorpay.only('POST', /\/cancel$/);
       expect(cancelled.path).toBe(
@@ -629,7 +721,7 @@ describe('Payment (integration)', () => {
       expect(await access.hasAccess(ORG, wabaId)).toBe(true);
 
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
       });
       expect(stored.cancelledAt).not.toBeNull();
       expect(stored.shortUrl).toBeNull();
@@ -637,10 +729,10 @@ describe('Payment (integration)', () => {
 
     it('stops immediately when no month has been paid for', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      await billing.register(userId, ORG, wabaId, 'starter');
+      await billing.register(userId, ORG, 'starter');
       h.razorpay.reset();
 
-      await billing.cancel(ORG, wabaId);
+      await billing.cancel(ORG);
 
       expect(h.razorpay.only('POST', /\/cancel$/).body).toEqual({
         cancel_at_cycle_end: 0,
@@ -649,10 +741,10 @@ describe('Payment (integration)', () => {
     });
 
     it('leaves our record alone when Razorpay refuses the cancellation', async () => {
-      const { userId, wabaId } = await seedAccount(h.prisma);
-      await billing.register(userId, ORG, wabaId, 'growth');
+      const { userId } = await seedAccount(h.prisma);
+      await billing.register(userId, ORG, 'growth');
       await h.prisma.subscription.updateMany({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         data: {
           status: 'active',
           currentEnd: new Date(Date.now() + 86_400_000),
@@ -663,12 +755,12 @@ describe('Payment (integration)', () => {
         body: { error: { description: 'cannot cancel' } },
       }));
 
-      await expect(billing.cancel(ORG, wabaId)).rejects.toThrow();
+      await expect(billing.cancel(ORG)).rejects.toThrow();
 
       // Marked cancelled here while still being debited there is the one
       // outcome that must be impossible.
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
       });
       expect(stored.cancelAtCycleEnd).toBe(false);
       expect(stored.cancelledAt).toBeNull();
@@ -682,9 +774,9 @@ describe('Payment (integration)', () => {
   describe('reconciliation', () => {
     it('re-reads a subscription whose paid month has run out', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma);
-      const registered = await billing.register(userId, ORG, wabaId, 'growth');
+      const registered = await billing.register(userId, ORG, 'growth');
       await h.prisma.subscription.updateMany({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         data: { status: 'active', currentEnd: new Date(Date.now() - 3600_000) },
       });
 
@@ -710,7 +802,7 @@ describe('Payment (integration)', () => {
 
       expect(h.razorpay.received('GET', /^\/subscriptions\//)).toHaveLength(1);
       const stored = await h.prisma.subscription.findFirstOrThrow({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
       });
       expect(stored.currentEnd!.getTime()).toBeGreaterThan(Date.now());
       expect(await access.hasAccess(ORG, wabaId)).toBe(true);

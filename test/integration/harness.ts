@@ -107,7 +107,6 @@ export async function startHarness(): Promise<Harness> {
     RAZORPAY_KEY_ID: KEY_ID,
     RAZORPAY_KEY_SECRET: KEY_SECRET,
     RAZORPAY_WEBHOOK_SECRET: WEBHOOK_SECRET,
-    RAZORPAY_PLAN_ID: PLAN_IDS.starter,
     RAZORPAY_PLAN_IDS: `starter:${PLAN_IDS.starter},growth:${PLAN_IDS.growth},business:${PLAN_IDS.business}`,
     RAZORPAY_API_BASE: apiBase,
   });

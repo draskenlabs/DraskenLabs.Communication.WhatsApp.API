@@ -55,10 +55,17 @@ CREATE INDEX "OrganisationSettings_agencyOrgId_idx" ON "OrganisationSettings"("a
 -- always bills, which is what makes the add-on sellable at all. Starter used to
 -- cap at one, so its published ₹199 could never be charged.
 --
+-- The unit changes with them. "/WABA/month" beside an organisation-wide
+-- account limit was the incoherence at the heart of this: the card read as
+-- "₹999 per account" while the limit on the same card counted the
+-- organisation's accounts, so a customer with three was told to buy Growth
+-- three times to get a limit of three. One subscription, one price, "/month".
+--
 -- `rank` is what `forOrg` sorts on. Quoted plans rank above every published
 -- tier because that is what a customer is paying for; price cannot express it,
 -- since a quoted plan has none.
 UPDATE "Plan" SET
+    "unit"                        = '/month',
     "includedPhoneNumbersPerWaba" = 1,
     "additionalWabaPrice"         = 29900,
     "maxApiKeysPerWaba"           = 1,
@@ -69,6 +76,7 @@ UPDATE "Plan" SET
 WHERE "code" = 'starter';
 
 UPDATE "Plan" SET
+    "unit"                        = '/month',
     "includedPhoneNumbersPerWaba" = 1,
     "additionalWabaPrice"         = 29900,
     "maxApiKeysPerWaba"           = 5,
@@ -79,6 +87,7 @@ UPDATE "Plan" SET
 WHERE "code" = 'growth';
 
 UPDATE "Plan" SET
+    "unit"                        = '/month',
     "includedPhoneNumbersPerWaba" = 1,
     "additionalWabaPrice"         = 29900,
     "maxApiKeysPerWaba"           = 10,
@@ -87,6 +96,52 @@ UPDATE "Plan" SET
     "maxContacts"                 = 50000,
     "rank"                        = 30
 WHERE "code" = 'business';
+
+-- The bullets are republished with the columns, because a card that disagrees
+-- with what is enforced is worse than a card with fewer bullets on it. The old
+-- ones said "2 webhook endpoints" where the column now says 1, and "unlimited
+-- webhook endpoints" where it says 10 — and none of them mentioned that an
+-- account past the included ones is sold rather than refused, which is the
+-- whole shape of the new price list.
+DELETE FROM "PlanFeature"
+WHERE "planId" IN (
+    SELECT "id" FROM "Plan" WHERE "code" IN ('starter', 'growth', 'business')
+);
+
+INSERT INTO "PlanFeature" ("planId", "label", "sortOrder")
+SELECT p."id", f."label", f."sortOrder"
+FROM "Plan" p
+JOIN (VALUES
+    ('starter',  '1 WhatsApp Business Account included',            1),
+    ('starter',  '1 phone number per account included',             2),
+    ('starter',  '₹299/month per extra account, ₹199 per number',   3),
+    ('starter',  '2 team members',                                  4),
+    ('starter',  '1 API key per account, 1 webhook endpoint',       5),
+    ('starter',  '100 messages a minute, 1,000 contacts',           6),
+    ('starter',  'Unlimited message templates',                     7),
+    ('starter',  '30-day message and event history',                8),
+    ('starter',  'Standard support',                                9),
+
+    ('growth',   '3 WhatsApp Business Accounts included',           1),
+    ('growth',   '1 phone number per account included',             2),
+    ('growth',   '₹299/month per extra account, ₹199 per number',   3),
+    ('growth',   '5 team members',                                  4),
+    ('growth',   '5 API keys per account, 5 webhook endpoints',     5),
+    ('growth',   '500 messages a minute, 10,000 contacts',          6),
+    ('growth',   '90-day message and event history',                7),
+    ('growth',   'Advanced analytics',                              8),
+    ('growth',   'Priority support',                                9),
+
+    ('business', '10 WhatsApp Business Accounts included',          1),
+    ('business', '1 phone number per account included',             2),
+    ('business', '₹299/month per extra account, ₹199 per number',   3),
+    ('business', '15 team members',                                 4),
+    ('business', '10 API keys per account, 10 webhook endpoints',   5),
+    ('business', '1,000 messages a minute, 50,000 contacts',        6),
+    ('business', '1-year message and event history',                7),
+    ('business', 'Advanced analytics',                              8),
+    ('business', 'Priority support',                                9)
+) AS f("code", "label", "sortOrder") ON f."code" = p."code";
 
 -- The two quoted cards. They carry no numbers on purpose: they are what a
 -- visitor sees, and every real figure lives on the private plan row written
@@ -174,3 +229,26 @@ UPDATE "Subscription" s
 SET "status" = 'superseded'
 FROM ranked r
 WHERE s."id" = r."id" AND r."seat" > 1;
+
+-- 5 --------------------------------------------- one subscription per org
+--
+-- `@@unique([wabaId, ssoOrgId])` cannot express this: Postgres treats NULLs as
+-- distinct, so it would happily allow two organisation-level rows. A partial
+-- index says the thing we actually mean — an organisation has at most one
+-- subscription that is not tied to a single account.
+CREATE UNIQUE INDEX "Subscription_org_key"
+    ON "Subscription"("ssoOrgId")
+    WHERE "wabaId" IS NULL;
+
+-- An upgrade the customer has been asked to authorise but has not yet.
+--
+-- A Razorpay mandate is authorised for a fixed amount, so moving up a tier
+-- means a new subscription and a new authorisation. Both exist until they
+-- approve it: the old one is what they are still paying and still entitled to,
+-- and is only cancelled once the new one is live.
+ALTER TABLE "Subscription"
+    ADD COLUMN "pendingRazorpaySubscriptionId" TEXT,
+    ADD COLUMN "pendingShortUrl"               TEXT;
+
+CREATE UNIQUE INDEX "Subscription_pendingRazorpaySubscriptionId_key"
+    ON "Subscription"("pendingRazorpaySubscriptionId");

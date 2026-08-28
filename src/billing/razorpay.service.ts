@@ -67,7 +67,6 @@ export class RazorpayService {
   private readonly keySecret: string | undefined;
   /** Publishable: Checkout needs it in the browser. */
   readonly keyId: string | undefined;
-  readonly planId: string | undefined;
   readonly webhookSecret: string | undefined;
 
   constructor(private readonly config: ConfigService) {
@@ -75,7 +74,6 @@ export class RazorpayService {
     const keySecret = config.get<string>('RAZORPAY_KEY_SECRET');
     this.keyId = keyId;
     this.keySecret = keySecret;
-    this.planId = config.get<string>('RAZORPAY_PLAN_ID');
     this.webhookSecret = config.get<string>('RAZORPAY_WEBHOOK_SECRET');
 
     // Billing is optional configuration, like push and email: an instance
@@ -102,9 +100,17 @@ export class RazorpayService {
     }
   }
 
-  /** Whether subscriptions can be sold at all on this deployment. */
+  /**
+   * Whether subscriptions can be sold at all on this deployment.
+   *
+   * The credentials, and nothing else. Which Razorpay plan a tier is charged
+   * against is a column on that tier now, not a deployment-wide setting — a
+   * price list with four tiers cannot be expressed by one environment
+   * variable, and a plan a customer negotiated cannot be expressed by one at
+   * all.
+   */
   isConfigured(): boolean {
-    return this.client !== null && !!this.planId;
+    return this.client !== null;
   }
 
   /**
@@ -285,24 +291,33 @@ export class RazorpayService {
    * ten years of months stands in for "until cancelled", which their API has
    * no way to express.
    *
-   * @param input.planId The tier being sold. Falls back to the deployment's
-   * configured plan, which is what a deployment with one price still uses.
+   * @param input.planId The Razorpay plan behind the tier being sold, read
+   * from that tier's row rather than from configuration — four tiers and a
+   * negotiated deal cannot be expressed by one environment variable.
    */
   async createSubscription(input: {
     customerId?: string;
     notes?: Record<string, string>;
-    planId?: string;
+    planId: string;
+    /**
+     * When the first cycle should begin, as a unix timestamp. Used by an
+     * upgrade: the month already paid for on the old tier runs out first, so
+     * the new subscription's own charging starts where that ends and nobody
+     * pays for the same days twice.
+     */
+    startAt?: number;
   }): Promise<RazorpaySubscription> {
     try {
       const { data } = await this.api().post<RazorpaySubscription>(
         '/subscriptions',
         {
-          plan_id: input.planId ?? this.planId,
+          plan_id: input.planId,
           total_count: 120,
           customer_id: input.customerId,
           // Razorpay sends the mandate and pre-debit notifications the RBI
           // requires; doing it ourselves would duplicate them.
           customer_notify: 1,
+          ...(input.startAt ? { start_at: input.startAt } : {}),
           notes: input.notes,
         },
       );
@@ -381,10 +396,14 @@ export class RazorpayService {
       return data;
     } catch (err) {
       if (this.isMandateCeiling(err)) {
+        // Only reachable on a change that raises the amount, which this path
+        // no longer makes: an upgrade creates a second subscription and sends
+        // the customer back to Checkout, because only they can authorise a
+        // larger debit. Kept as a defence, and worded as one.
         throw new BadRequestException(
-          'This plan costs more than the payment mandate on this account allows. ' +
-            'Cancel the subscription and take out a new one on the higher plan — ' +
-            'the bank has to authorise the larger amount, and only the customer can do that.',
+          'This plan costs more than the payment mandate on this account allows, ' +
+            'so it cannot be scheduled. Move up a tier instead — that asks the ' +
+            'customer to authorise the larger amount, which only they can do.',
         );
       }
       this.fail('Razorpay subscription plan change failed', err);
@@ -428,8 +447,11 @@ export class RazorpayService {
    * cost" on every page load has no business becoming a request per view.
    */
   async fetchPlan(planId?: string): Promise<RazorpayPlan | null> {
-    const id = planId ?? this.planId;
-    if (!id || !this.client) return null;
+    // No deployment-wide fallback: which plan is charged is a property of the
+    // subscription, and answering with some other tier's price would be worse
+    // than answering with nothing.
+    if (!planId || !this.client) return null;
+    const id = planId;
 
     const cached = this.plans.get(id);
     if (cached) return cached;

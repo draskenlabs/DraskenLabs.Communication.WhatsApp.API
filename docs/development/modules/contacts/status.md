@@ -61,6 +61,18 @@
 
 ---
 
+## 2026-08-28 — a limit on how many
+
+`maxContacts` caps an organisation's contacts at 1,000 / 10,000 / 50,000 by
+tier. `ContactsService.assertRoomFor(ssoOrgId, adding)` is batch-aware, so an
+import of 500 into an organisation with 900 of a 1,000 limit is refused as a
+whole rather than half-applied.
+
+Contacts are the organisation's own data, so this is a cap on storage rather
+than a paywall: reads and exports are never gated.
+
+---
+
 ## Issues & Risks
 
 | Issue | Severity | Notes |
