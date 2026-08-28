@@ -69,6 +69,23 @@ export class ClientSummaryDto {
   @ApiProperty({ description: 'Messages sent since the first of this month' })
   messagesThisMonth: number;
   @ApiProperty() addedAt: Date;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'The plan bought for this client, when it has one',
+  })
+  planCode: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  planName: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Status of the mandate covering it — `created` while the agency has ' +
+      'still to authorise the plan it is the first client on.',
+  })
+  status: string | null;
 }
 
 export class AgencyUsageDto {

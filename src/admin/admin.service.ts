@@ -291,6 +291,13 @@ export class AdminService {
       contacts,
       isAgency: settings.isAgency,
       agencyOrgId: settings.agencyOrgId,
+      // Who is charged, which is only ever somebody else for an agency's
+      // client. Named rather than left as an id: an operator reading this row
+      // is asking "who pays for this", and an opaque `org_…` does not answer it.
+      payerOrgId: subscription?.payerOrgId ?? null,
+      payerName: subscription?.payerOrgId
+        ? await this.orgDirectory.name(subscription.payerOrgId)
+        : null,
       firstSeen: dates.length
         ? new Date(Math.min(...dates.map((d) => d.getTime())))
         : null,
@@ -425,6 +432,7 @@ export class AdminService {
         cancelAtCycleEnd: true,
         createdAt: true,
         razorpaySubscriptionId: true,
+        payerOrgId: true,
         pendingPlanAt: true,
         plan: {
           select: { code: true, name: true, price: true, currency: true },
@@ -519,6 +527,10 @@ export class AdminService {
 
     return rows.map(({ razorpayPlanId, ...plan }) => ({
       ...plan,
+      // Shown so an operator repointing a tier can see what it is pointed at
+      // now. It is not a secret — it names a plan at the provider, and the
+      // console this is served to is already operator-only.
+      razorpayPlanId,
       // A tier with no Razorpay plan cannot be checked out, whatever the price
       // list says about it.
       sellable: Boolean(razorpayPlanId) && plan.active,

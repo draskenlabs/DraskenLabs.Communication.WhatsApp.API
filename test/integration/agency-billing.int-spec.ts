@@ -274,6 +274,47 @@ describe('Agency billing (integration)', () => {
     });
   });
 
+  describe("what the agency's own roster says", () => {
+    it('names the plan bought for each client, and its mandate’s state', async () => {
+      // The roster is where an agency sees what it is paying for whom. A row
+      // without its plan cannot answer the question the page is opened with.
+      const userId = await anAgency();
+      // On the roster *and* subscribed: attaching says whose client it is,
+      // subscribing says what it is paying for.
+      await agency.attachClient(ORG, 'org_kettle', 'Kettle Coffee');
+      await agency.attachClient(ORG, 'org_loom', 'Loom & Thread');
+      await take(userId, 'org_kettle', 'growth');
+      await take(userId, 'org_loom', 'starter');
+      await authorise('growth');
+
+      const { clients } = await agency.roster(ORG);
+      const kettle = clients.find((c) => c.ssoOrgId === 'org_kettle');
+      const loom = clients.find((c) => c.ssoOrgId === 'org_loom');
+
+      expect(kettle?.planCode).toBe('growth');
+      expect(kettle?.status).toBe('active');
+      // Starter's own mandate has not been authorised, and that is the client
+      // whose keys are not working yet.
+      expect(loom?.planCode).toBe('starter');
+      expect(loom?.status).toBe('created');
+    });
+
+    it('sums what is paid per plan rather than per client', async () => {
+      const userId = await anAgency();
+      await take(userId, 'org_kettle', 'growth');
+      await authorise('growth');
+      await take(userId, 'org_loom', 'growth');
+
+      const mandates = await agency.mandates(ORG);
+
+      // Two clients, one mandate — which is what the statement will carry.
+      expect(mandates).toHaveLength(1);
+      expect(mandates[0].planCode).toBe('growth');
+      expect(mandates[0].clients).toBe(2);
+      expect(mandates[0].monthly).toBe((mandates[0].pricePerClient ?? 0) * 2);
+    });
+  });
+
   describe('letting a client go', () => {
     it('keeps its cover to the end of the month already paid for', async () => {
       const userId = await anAgency();

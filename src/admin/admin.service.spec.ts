@@ -186,6 +186,76 @@ describe('AdminService', () => {
       expect(organisations[0].name).toBe('Kettle Coffee');
     });
 
+    it('names who pays for a client, rather than leaving an opaque id', async () => {
+      // "Who pays for this" is the question an operator opens a client's row
+      // with, and `org_9f2…` is not an answer to it.
+      mockPrisma.organisationSettings.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_client' },
+      ]);
+      mockPrisma.subscription.findFirst.mockResolvedValue({
+        id: 7,
+        status: 'active',
+        currentStart: new Date(),
+        currentEnd: new Date(Date.now() + 86_400_000),
+        cancelAtCycleEnd: false,
+        createdAt: new Date(),
+        razorpaySubscriptionId: null,
+        payerOrgId: 'org_agency',
+        pendingPlanAt: null,
+        plan: {
+          code: 'growth',
+          name: 'Growth',
+          price: 99_900,
+          currency: 'INR',
+        },
+        pendingPlan: null,
+      });
+      mockOrgDirectory.name.mockImplementation((id: string) =>
+        Promise.resolve(
+          id === 'org_agency' ? 'Bright Agency' : 'Kettle Coffee',
+        ),
+      );
+
+      const { organisations } = await service.organisations({});
+
+      expect(organisations[0]).toEqual(
+        expect.objectContaining({
+          payerOrgId: 'org_agency',
+          payerName: 'Bright Agency',
+          planName: 'Growth',
+        }),
+      );
+    });
+
+    it('leaves the payer empty for an organisation that pays for itself', async () => {
+      mockPrisma.organisationSettings.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_self' },
+      ]);
+      mockPrisma.subscription.findFirst.mockResolvedValue({
+        id: 8,
+        status: 'active',
+        currentStart: new Date(),
+        currentEnd: new Date(Date.now() + 86_400_000),
+        cancelAtCycleEnd: false,
+        createdAt: new Date(),
+        razorpaySubscriptionId: 'sub_1',
+        payerOrgId: null,
+        pendingPlanAt: null,
+        plan: {
+          code: 'growth',
+          name: 'Growth',
+          price: 99_900,
+          currency: 'INR',
+        },
+        pendingPlan: null,
+      });
+
+      const { organisations } = await service.organisations({});
+
+      expect(organisations[0].payerOrgId).toBeNull();
+      expect(organisations[0].payerName).toBeNull();
+    });
+
     it('404s for an organisation we have no trace of', async () => {
       await expect(service.organisation('org_nobody')).rejects.toThrow(
         NotFoundException,
@@ -469,7 +539,21 @@ describe('AdminService', () => {
       const [row] = await service.plans();
 
       expect(row.sellable).toBe(false);
-      expect(row).not.toHaveProperty('razorpayPlanId');
+      // Said plainly rather than left to be inferred: the editor offers this
+      // field, and an operator fixing an unsellable tier has to see that it is
+      // pointed at nothing.
+      expect(row.razorpayPlanId).toBeNull();
+    });
+
+    it('shows which provider plan a sellable tier is pointed at', async () => {
+      mockPrisma.plan.findMany.mockResolvedValue([
+        plan({ razorpayPlanId: 'plan_growth' }),
+      ]);
+
+      const [row] = await service.plans();
+
+      expect(row.razorpayPlanId).toBe('plan_growth');
+      expect(row.sellable).toBe(true);
     });
   });
 

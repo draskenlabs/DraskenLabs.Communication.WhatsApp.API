@@ -397,7 +397,7 @@ export class AgencyService {
         })
       : [];
 
-    const [contacts, messages] = await Promise.all([
+    const [contacts, messages, subscriptions] = await Promise.all([
       this.prisma.contact.groupBy({
         by: ['ssoOrgId'],
         where: { ssoOrgId: { in: ids } },
@@ -407,6 +407,18 @@ export class AgencyService {
         by: ['ssoOrgId'],
         where: { ssoOrgId: { in: ids }, createdAt: { gte: startOfMonth() } },
         _count: { _all: true },
+      }),
+      // What was bought for each client. One query for the roster, and the
+      // newest row per organisation wins — an organisation only ever has one
+      // that is not finished, and a released client keeps its history.
+      this.prisma.subscription.findMany({
+        where: { ssoOrgId: { in: ids }, wabaId: null },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          ssoOrgId: true,
+          status: true,
+          plan: { select: { code: true, name: true } },
+        },
       }),
     ]);
 
@@ -419,6 +431,12 @@ export class AgencyService {
     const messagesByOrg = new Map(
       messages.map((m) => [m.ssoOrgId, m._count._all] as const),
     );
+    // Ordered newest first, so the first one seen for an organisation is the
+    // one that counts.
+    const subByOrg = new Map<string, (typeof subscriptions)[number]>();
+    for (const sub of subscriptions) {
+      if (!subByOrg.has(sub.ssoOrgId)) subByOrg.set(sub.ssoOrgId, sub);
+    }
 
     return Promise.all(
       rows.map(async (row) => {
@@ -437,6 +455,9 @@ export class AgencyService {
           contacts: contactsByOrg.get(row.ssoOrgId) ?? 0,
           messagesThisMonth: messagesByOrg.get(row.ssoOrgId) ?? 0,
           addedAt: row.createdAt,
+          planCode: subByOrg.get(row.ssoOrgId)?.plan?.code ?? null,
+          planName: subByOrg.get(row.ssoOrgId)?.plan?.name ?? null,
+          status: subByOrg.get(row.ssoOrgId)?.status ?? null,
         };
       }),
     );

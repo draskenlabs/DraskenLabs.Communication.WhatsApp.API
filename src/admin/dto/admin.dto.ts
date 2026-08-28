@@ -115,6 +115,17 @@ export class AdminOrganisationRowDto {
 
   @ApiProperty({
     nullable: true,
+    description:
+      'The organisation charged for this one, when it is not itself — an ' +
+      'agency paying for a client.',
+  })
+  payerOrgId: string | null;
+
+  @ApiProperty({ nullable: true, description: 'That organisation’s name' })
+  payerName: string | null;
+
+  @ApiProperty({
+    nullable: true,
     description: 'The earliest thing we recorded for this organisation',
   })
   firstSeen: Date | null;
@@ -239,6 +250,12 @@ export class AdminPlanDto {
     description: 'The organisation this was negotiated for, or null if public',
   })
   ssoOrgId: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'The provider plan the next subscriber would be charged on',
+  })
+  razorpayPlanId: string | null;
 
   @ApiProperty({
     description: 'Whether a subscription can be sold on it',

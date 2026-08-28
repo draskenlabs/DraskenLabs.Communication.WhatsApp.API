@@ -27,6 +27,7 @@ const mockPrisma = {
   wabaPhoneNumber: { groupBy: jest.fn() },
   contact: { groupBy: jest.fn() },
   message: { groupBy: jest.fn() },
+  subscription: { findMany: jest.fn() },
 };
 
 // Rebuilt per test, not shared: `jest.clearAllMocks()` forgets calls but keeps
@@ -88,6 +89,7 @@ describe('AgencyService', () => {
     mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
     mockPrisma.contact.groupBy.mockResolvedValue([]);
     mockPrisma.message.groupBy.mockResolvedValue([]);
+    mockPrisma.subscription.findMany.mockResolvedValue([]);
     mockPlanLimits.forOrg.mockResolvedValue({
       planName: 'Agency',
       includedClients: 10,
@@ -518,6 +520,50 @@ describe('AgencyService', () => {
       );
     });
 
+    it('names the plan bought for each client, and its mandate’s status', async () => {
+      // The roster is where an agency sees what it is paying for whom. A row
+      // without its plan is a row that cannot answer the only question the
+      // page is opened with.
+      mockPrisma.organisationSettings.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_a',
+          clientName: 'Kettle',
+          createdAt: new Date('2026-01-01'),
+        },
+        {
+          ssoOrgId: 'org_b',
+          clientName: 'Loom',
+          createdAt: new Date('2026-02-01'),
+        },
+      ]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_a',
+          status: 'active',
+          plan: { code: 'growth', name: 'Growth' },
+        },
+      ]);
+
+      const { clients } = await service.roster('org_agency');
+
+      expect(clients[0]).toEqual(
+        expect.objectContaining({
+          planCode: 'growth',
+          planName: 'Growth',
+          status: 'active',
+        }),
+      );
+      // Nothing bought for it yet, said plainly rather than borrowed from the
+      // row above.
+      expect(clients[1]).toEqual(
+        expect.objectContaining({
+          planCode: null,
+          planName: null,
+          status: null,
+        }),
+      );
+    });
+
     it('reads the whole roster in a fixed number of queries', async () => {
       // The page exists for an agency with fifty clients. A query per row would
       // make it slowest exactly where it matters.
@@ -534,6 +580,7 @@ describe('AgencyService', () => {
       expect(mockPrisma.wabaOrganisation.findMany).toHaveBeenCalledTimes(1);
       expect(mockPrisma.contact.groupBy).toHaveBeenCalledTimes(1);
       expect(mockPrisma.message.groupBy).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.subscription.findMany).toHaveBeenCalledTimes(1);
     });
 
     it('skips the phone-number query when no client has an account', async () => {

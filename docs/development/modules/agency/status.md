@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| Status | ✅ API implemented; console work pending |
+| Status | ✅ Built — per-client subscriptions, API and console |
 | Last Updated | 2026-08-28 |
 
 ## Implemented
@@ -26,11 +26,59 @@
   counters — and the access cache keys on the payer's version so one failed
   debit darkens the whole roster at once.
 - A client is refused a subscription of its own.
-- Tests: 29 across the service and controller — conversion in both directions
-  and its refusals, attach/detach and theirs, the roster's counters and its
-  fixed query count, the empty roster, the name fallbacks, and the operator
-  token (wrong, missing, and not configured at all). Plus the `selectOrg` and
-  `listOrganisations` branches in the auth suite.
+- Tests: the service and controller — conversion in both directions and its
+  refusals, attach/detach and theirs, the roster's counters, the plan named on
+  each row, its fixed query count, the empty roster, the name fallbacks, and
+  the operator token (wrong, missing, and not configured at all). Plus the
+  `selectOrg` and `listOrganisations` branches in the auth suite, and
+  `test/integration/agency-billing.int-spec.ts` (14) against a real database
+  and the provider stand-in over HTTP: a client entitled by a row of its own,
+  a second client riding the same mandate, an unauthorised mandate re-asked at
+  the right size, a mandate per plan, each client held to its own plan, a
+  charge moving every client on the group, a client sending only once the
+  mandate is paid, what the client's billing page says, what the roster says,
+  and both halves of letting a client go.
+
+### Per-client subscriptions
+
+- **An agency buys a plan per client.** `AgencyBillingService.subscribeClient`
+  writes a `Subscription` for the client with `payerOrgId` set to the agency,
+  so limits and money move together: a client on Growth has Growth's limits
+  because somebody is paying Growth's price for it. This replaces the
+  arrangement where one plan's ceilings applied to every client at once and
+  nothing charged for the multiplication.
+- **One mandate per plan, not per client.** `AgencyBillingGroup` holds the
+  provider subscription and a `quantity`; taking a client on moves it by one
+  (`schedule_change_at: 'now'`). A subscription per client would be an
+  authorisation per client, and nobody sits through eight of those. The client's
+  own row carries `razorpaySubscriptionId: null` and a `billingGroupId`.
+- **An unauthorised mandate is replaced, not patched.** The provider refuses a
+  quantity change on a subscription still in `created`, so `replaceUnauthorised`
+  cancels the unpaid mandate and creates a new one at the higher quantity.
+- **`createClient`** does the three steps as one intent: allowance check, SSO
+  organisation, attach, subscribe. The id comes from the organisation just
+  created, so it cannot be a typo — which is how the old attach endpoint
+  produced clients pointing at nothing.
+- **`releaseClient`** runs before the detach, and stops at the end of the month
+  already paid for. Detaching first would leave a client paid for by nobody and
+  still being charged to somebody. The last client on a plan cancels its
+  mandate.
+- **`mandates()`** answers what the agency is actually charged, one line per
+  plan — "2 × Growth · ₹1,998" — because that is what the statement carries.
+- **The roster names each client's plan** and the state of the mandate covering
+  it, in one query for the whole roster.
+- **Payments belong to the group.** `SubscriptionPayment.subscriptionId` is now
+  nullable, with `billingGroupId` beside it: one debit covers several clients,
+  so it belongs to the group rather than to any one of them.
+- **A client's own billing page is correct by construction** — it has a real
+  subscription, so `billing.state` reports its plan, its status and
+  `payerOrgId`/`payerName`. It used to say "not subscribed" over working keys
+  and offer a Subscribe button that always 400d.
+- **Overage is not pooled across a roster.** A client's counters are scoped to
+  itself rather than to its agency's billing scope, since it is now paying for
+  its own plan.
+
+### The old model's limit
 
 - **`includedClients` is enforced on attach.** It was read in four places and
   checked in none, so an agency could hold an unlimited roster. That matters
@@ -49,13 +97,15 @@
 
 ## Pending
 
-- **Console.** The client switcher, the clients page, per-client usage, and
-  hiding `/organisation` and the billing page in an agency context.
-- **Onboarding a client organisation** is operator work today: the organisation
-  has to exist in the SSO before it can be attached. Whether an agency should be
-  able to create one from the console is open — it would mean either delegating
-  SSO organisation creation or making the agency a member of it, and both were
-  ruled out for now.
+- **Letting a client go is still operator work.** `releaseClient` exists and is
+  wired into `detachClient`, but nothing on the agency's own console calls it —
+  it stops a charge and reduces a mandate's quantity, so it is deliberately not
+  a button yet.
+- **Moving a client between plans.** Putting one *on* a plan is built; moving it
+  means leaving one mandate and joining another, and is not.
+- **`x-agency-admin-token` on `/agency/internal/*`** still works. The operator
+  console does the same three things with a named operator and an audit row
+  behind them; the shared token should be retired once nothing calls it.
 - **Slab pricing** by client count. A quoted deal is a minimum with a ceiling
   today; bands were discussed and deferred.
 - **Per-WABA member permissions**, kept in the definition for later: a team
