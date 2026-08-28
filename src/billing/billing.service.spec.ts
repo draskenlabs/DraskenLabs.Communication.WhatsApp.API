@@ -10,6 +10,7 @@ import { SubscriptionAccessService } from './subscription-access.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
+import { OrgService } from 'src/org/org.service';
 import { firstArg } from 'src/common/utils/mock-args';
 
 const mockPrisma = {
@@ -28,6 +29,9 @@ const mockPrisma = {
   plan: { findFirst: jest.fn(), findUnique: jest.fn() },
   wabaPhoneNumber: { count: jest.fn(), groupBy: jest.fn() },
   wabaOrganisation: { findMany: jest.fn() },
+  webhookEndpoint: { groupBy: jest.fn() },
+  userApiKey: { groupBy: jest.fn() },
+  contact: { count: jest.fn() },
 };
 
 /** A published tier, as `sellablePlan` selects it. */
@@ -76,7 +80,11 @@ const mockOrgSettings = {
   billingOrgFor: jest.fn(),
   billingScope: jest.fn(),
   bumpPayerVersion: jest.fn(),
+  get: jest.fn(),
+  clientsOf: jest.fn(),
 };
+
+const mockOrg = { listMembers: jest.fn(), listInvitations: jest.fn() };
 
 const mockPlanLimits = { forOrg: jest.fn() };
 
@@ -141,6 +149,9 @@ describe('BillingService', () => {
     mockPrisma.subscriptionPayment.findMany.mockResolvedValue([]);
     mockPrisma.waba.findMany.mockResolvedValue([]);
     mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
+    mockPrisma.webhookEndpoint.groupBy.mockResolvedValue([]);
+    mockPrisma.userApiKey.groupBy.mockResolvedValue([]);
+    mockPrisma.contact.count.mockResolvedValue(0);
     // The tier an organisation holds, for the console's "3 of 1 accounts"
     // line. Overridden where a test is about the numbers themselves.
     mockPlanLimits.forOrg.mockResolvedValue({
@@ -158,6 +169,12 @@ describe('BillingService', () => {
     mockOrgSettings.billingScope.mockImplementation((id: string) =>
       Promise.resolve([id]),
     );
+    mockOrgSettings.get.mockImplementation((id: string) =>
+      Promise.resolve({ ssoOrgId: id, isAgency: false, agencyOrgId: null }),
+    );
+    mockOrgSettings.clientsOf.mockResolvedValue([]);
+    mockOrg.listMembers.mockResolvedValue([]);
+    mockOrg.listInvitations.mockResolvedValue([]);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BillingService,
@@ -169,6 +186,7 @@ describe('BillingService', () => {
         { provide: OrganisationSettingsService, useValue: mockOrgSettings },
         { provide: WabaProvisioningService, useValue: mockProvisioning },
         { provide: PlanLimitsService, useValue: mockPlanLimits },
+        { provide: OrgService, useValue: mockOrg },
       ],
     }).compile();
     service = module.get<BillingService>(BillingService);
@@ -1058,8 +1076,20 @@ describe('BillingService', () => {
       const state = await service.state('org_1');
 
       expect(state.covers).toEqual([
-        { wabaId: 'waba_1', name: 'Games', phoneNumbers: 2 },
-        { wabaId: 'waba_2', name: 'Support', phoneNumbers: 0 },
+        {
+          wabaId: 'waba_1',
+          name: 'Games',
+          phoneNumbers: 2,
+          webhookEndpoints: 0,
+          apiKeys: 0,
+        },
+        {
+          wabaId: 'waba_2',
+          name: 'Support',
+          phoneNumbers: 0,
+          webhookEndpoints: 0,
+          apiKeys: 0,
+        },
       ]);
     });
 
@@ -1084,7 +1114,7 @@ describe('BillingService', () => {
 
       const state = await service.state('org_1');
 
-      expect(state.usage).toEqual({
+      expect(state.usage).toMatchObject({
         wabas: 3,
         phoneNumbers: 3,
         includedWabas: 1,
@@ -1092,6 +1122,108 @@ describe('BillingService', () => {
         additionalWabaPrice: 29_900,
         additionalNumberPrice: 19_900,
       });
+    });
+
+    it('reports every limit the plan carries, with what is used against it', async () => {
+      // The page used to show two allowances out of the eight the plan sells.
+      // A limit nobody can see is one they meet as a refusal.
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'waba_1', name: 'Games' },
+      ]);
+      mockPrisma.contact.count.mockResolvedValue(1_840);
+      mockPrisma.webhookEndpoint.groupBy.mockResolvedValue([
+        { wabaId: 'waba_1', _count: { _all: 2 } },
+      ]);
+      mockPrisma.userApiKey.groupBy.mockResolvedValue([
+        { wabaId: 'waba_1', _count: { _all: 3 } },
+      ]);
+      mockOrg.listMembers.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+      mockOrg.listInvitations.mockResolvedValue([{ id: 9 }]);
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planName: 'Growth',
+        includedWabas: 3,
+        includedPhoneNumbersPerWaba: 1,
+        includedClients: null,
+        additionalWabaPrice: 29_900,
+        additionalNumberPrice: 19_900,
+        contacts: 10_000,
+        webhookEndpoints: 5,
+        apiKeysPerWaba: 5,
+        teamMembers: 5,
+        messagesPerMinute: 500,
+        historyDays: 90,
+      });
+
+      const state = await service.state('org_1', 'Bearer token');
+
+      expect(state.usage).toMatchObject({
+        contacts: 1_840,
+        maxContacts: 10_000,
+        webhookEndpoints: 2,
+        maxWebhookEndpointsPerWaba: 5,
+        apiKeys: 3,
+        maxApiKeysPerWaba: 5,
+        // An invitation is a seat somebody is about to take, and it is counted
+        // that way when a seat is refused — so it is counted that way here.
+        teamMembers: 3,
+        maxTeamMembers: 5,
+        maxMessagesPerMinute: 500,
+        historyDays: 90,
+      });
+    });
+
+    it('counts a revoked key against nothing', async () => {
+      // The ceiling is on live keys, so a meter that counted revoked ones
+      // would show somebody full when they are not.
+      mockPrisma.waba.findMany.mockResolvedValue([
+        { wabaId: 'waba_1', name: 'Games' },
+      ]);
+
+      await service.state('org_1');
+
+      const [args] = mockPrisma.userApiKey.groupBy.mock.calls[0] as [
+        { where: { status: boolean } },
+      ];
+      expect(args.where.status).toBe(true);
+    });
+
+    it('says nothing about seats rather than guessing when the SSO will not answer', async () => {
+      // A billing page that 500s over a seat count would hide the payment
+      // state, and "0 of 5" would be a lie somebody might act on.
+      mockOrg.listMembers.mockRejectedValue(new Error('SSO unreachable'));
+
+      const state = await service.state('org_1', 'Bearer token');
+
+      expect(state.usage.teamMembers).toBeNull();
+      expect(state.active).toBeDefined();
+    });
+
+    it('does not ask the SSO for seats when there is no session to ask with', async () => {
+      // Webhooks and the write paths reach the same builder without a token.
+      await service.state('org_1');
+
+      expect(mockOrg.listMembers).not.toHaveBeenCalled();
+    });
+
+    it('counts clients only for an agency', async () => {
+      mockOrgSettings.get.mockResolvedValue({
+        ssoOrgId: 'org_1',
+        isAgency: true,
+        agencyOrgId: null,
+      });
+      mockOrgSettings.clientsOf.mockResolvedValue(['org_a', 'org_b']);
+
+      const state = await service.state('org_1');
+
+      expect(state.usage.clients).toBe(2);
+    });
+
+    it('reports no client count for an organisation that is not an agency', async () => {
+      // Null is "does not apply", which the console shows as nothing at all.
+      // Zero would put an empty meter on every ordinary customer's page.
+      const state = await service.state('org_1');
+
+      expect(state.usage.clients).toBeNull();
     });
 
     it('answers for an organisation that has never subscribed', async () => {
@@ -1174,6 +1306,9 @@ describe('BillingService', () => {
           name: 'Growth',
         });
         mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
+    mockPrisma.webhookEndpoint.groupBy.mockResolvedValue([]);
+    mockPrisma.userApiKey.groupBy.mockResolvedValue([]);
+    mockPrisma.contact.count.mockResolvedValue(0);
         mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
         mockRazorpay.addSubscriptionAddon.mockResolvedValue({ id: 'ao_1' });
       });

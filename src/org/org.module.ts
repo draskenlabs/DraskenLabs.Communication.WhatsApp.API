@@ -8,5 +8,7 @@ import { PlansModule } from 'src/plans/plans.module';
   imports: [UserModule, PlansModule],
   controllers: [OrgController],
   providers: [OrgService],
+  // Billing reads the seat count for the team-members meter.
+  exports: [OrgService],
 })
 export class OrgModule {}

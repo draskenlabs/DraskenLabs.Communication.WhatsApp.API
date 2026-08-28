@@ -56,7 +56,9 @@ export class BillingController {
     const orgId = (req as any).orgId;
     if (!orgId)
       throw new UnauthorizedException('Organisation not found in context');
-    return this.billing.state(orgId);
+    // The team-member count lives in the SSO, which needs the caller's own
+    // token. Everything else on this page comes from our database.
+    return this.billing.state(orgId, req.headers.authorization);
   }
 
   @Post('subscription')

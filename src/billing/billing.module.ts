@@ -15,6 +15,7 @@ import { MailModule } from 'src/mail/mail.module';
 import { SubscriptionAccessModule } from './subscription-access.module';
 import { ProvisioningModule } from 'src/provisioning/provisioning.module';
 import { PlansModule } from 'src/plans/plans.module';
+import { OrgModule } from 'src/org/org.module';
 
 @Module({
   imports: [
@@ -25,6 +26,8 @@ import { PlansModule } from 'src/plans/plans.module';
     // What the tier includes, for the "3 of 1 accounts" line on the billing
     // page and the price of the next one.
     PlansModule,
+    // Seats live in the SSO, so the team-members meter is read through here.
+    OrgModule,
   ],
   controllers: [BillingController],
   providers: [
