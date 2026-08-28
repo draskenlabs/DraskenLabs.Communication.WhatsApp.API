@@ -32,6 +32,21 @@
   token (wrong, missing, and not configured at all). Plus the `selectOrg` and
   `listOrganisations` branches in the auth suite.
 
+- **`includedClients` is enforced on attach.** It was read in four places and
+  checked in none, so an agency could hold an unlimited roster. That matters
+  more here than an ordinary limit would: a client inherits the agency's plan
+  but is *counted separately*, so every client on the roster is another full
+  allowance of contacts, seats, endpoints and keys on one subscription. The
+  roster length is the multiplier on the whole estate, and this is the only
+  thing bounding it.
+  Re-attaching a client already on the roster is a rename and takes no new
+  place — refusing that would leave a full agency unable to correct a label.
+- Classed as an inclusion rather than a ceiling in the schema, because the
+  intention is to sell clients by the unit. Until there is an
+  `additionalClientPrice` to charge beyond it, "included" with nothing past it
+  is a number that means nothing, so it refuses. Moving it back to the billable
+  column is the change to make when per-client pricing arrives.
+
 ## Pending
 
 - **Console.** The client switcher, the clients page, per-client usage, and
