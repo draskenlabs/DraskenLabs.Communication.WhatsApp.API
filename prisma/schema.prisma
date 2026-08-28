@@ -527,8 +527,9 @@ model AgencyBillingGroup {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  plan          Plan           @relation("BillingGroupPlan", fields: [planRefId], references: [id], onDelete: Restrict)
+  plan          Plan                  @relation("BillingGroupPlan", fields: [planRefId], references: [id], onDelete: Restrict)
   subscriptions Subscription[]
+  payments      SubscriptionPayment[]
 
   /// One group per agency and plan. A second would be a second mandate for
   /// the same thing.
@@ -543,8 +544,15 @@ model AgencyBillingGroup {
 /// round trip to their API on every page load, and the answer to "what was I
 /// charged, when, on which card" once a payment scrolls out of their dashboard.
 model SubscriptionPayment {
-  id             Int @id @default(autoincrement())
-  subscriptionId Int
+  id Int @id @default(autoincrement())
+
+  /// The subscription charged, for anything self-paid.
+  ///
+  /// Null where the debit was an agency's group: one payment covers several
+  /// clients, so it belongs to the group rather than to any one of them.
+  subscriptionId Int?
+  /// The agency's group charged, when it was one of those instead.
+  billingGroupId Int?
 
   /// Razorpay's payment id. Unique because their webhooks retry, and a
   /// replayed `subscription.charged` must not become a second row.
@@ -570,9 +578,11 @@ model SubscriptionPayment {
   paidAt    DateTime?
   createdAt DateTime  @default(now())
 
-  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  subscription Subscription?       @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  billingGroup AgencyBillingGroup? @relation(fields: [billingGroupId], references: [id], onDelete: Cascade)
 
   @@index([subscriptionId])
+  @@index([billingGroupId])
 }
 
 /// Every Razorpay webhook, kept for idempotency and for answering "what did

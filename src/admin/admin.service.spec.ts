@@ -52,7 +52,7 @@ const mockAgency = {
   detachClient: jest.fn(),
 };
 const mockAudit = { record: jest.fn() };
-const mockRazorpay = { createPlan: jest.fn() };
+const mockRazorpay = { createPlan: jest.fn(), fetchPlan: jest.fn() };
 
 const user = (over: Record<string, unknown> = {}) => ({
   id: 2,
@@ -125,6 +125,10 @@ describe('AdminService', () => {
     mockPlanLimits.forOrg.mockResolvedValue({ planCode: null, contacts: null });
     mockAudit.record.mockResolvedValue(undefined);
     mockRazorpay.createPlan.mockResolvedValue({ id: 'plan_created' });
+    mockRazorpay.fetchPlan.mockResolvedValue({
+      id: 'plan_other',
+      item: { amount: 99_900, currency: 'INR' },
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -352,9 +356,14 @@ describe('AdminService', () => {
 
       await service.updatePlan(ACTOR, 'growth', {
         price: 149_900,
-        razorpayPlanId: 'plan_hacked',
+        currency: 'USD',
       } as never);
 
+      // The provider plan is immutable and a subscription is charged against
+      // the one it was created on, so an amount here would change what the
+      // price list says without changing what anybody is billed. Repointing
+      // the tier at a different provider plan is the supported move, and it
+      // is checked separately.
       expect(mockPrisma.plan.update).not.toHaveBeenCalled();
     });
 
@@ -372,6 +381,76 @@ describe('AdminService', () => {
         where: { recommended: true, NOT: { code: 'growth' } },
         data: { recommended: false },
       });
+    });
+
+    it('points a tier at another provider plan once it agrees on the amount', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(plan());
+      mockPrisma.plan.findMany.mockResolvedValue([plan()]);
+      mockPrisma.plan.update.mockResolvedValue(plan());
+
+      await service.updatePlan(ACTOR, 'growth', {
+        razorpayPlanId: 'plan_other',
+      });
+
+      expect(mockRazorpay.fetchPlan).toHaveBeenCalledWith('plan_other');
+      expect(mockPrisma.plan.update).toHaveBeenCalledWith({
+        where: { code: 'growth' },
+        data: { razorpayPlanId: 'plan_other' },
+      });
+    });
+
+    it('refuses a provider plan charging something else entirely', async () => {
+      // One typo, and the first anybody knows is a customer's bank statement.
+      mockPrisma.plan.findUnique.mockResolvedValue(plan());
+      mockPrisma.plan.findMany.mockResolvedValue([plan()]);
+      mockRazorpay.fetchPlan.mockResolvedValue({
+        id: 'plan_expensive',
+        item: { amount: 999_900, currency: 'INR' },
+      });
+
+      await expect(
+        service.updatePlan(ACTOR, 'growth', {
+          razorpayPlanId: 'plan_expensive',
+        }),
+      ).rejects.toThrow(/charges 999900 and Growth is priced at 99900/);
+      expect(mockPrisma.plan.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a provider plan that does not resolve', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(plan());
+      mockPrisma.plan.findMany.mockResolvedValue([plan()]);
+      mockRazorpay.fetchPlan.mockResolvedValue(null);
+
+      await expect(
+        service.updatePlan(ACTOR, 'growth', { razorpayPlanId: 'plan_typo' }),
+      ).rejects.toThrow(/Nothing has been changed/);
+      expect(mockPrisma.plan.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a provider plan in another currency', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(plan());
+      mockPrisma.plan.findMany.mockResolvedValue([plan()]);
+      mockRazorpay.fetchPlan.mockResolvedValue({
+        id: 'plan_usd',
+        item: { amount: 99_900, currency: 'USD' },
+      });
+
+      await expect(
+        service.updatePlan(ACTOR, 'growth', { razorpayPlanId: 'plan_usd' }),
+      ).rejects.toThrow(/is in USD and Growth is in INR/);
+    });
+
+    it('asks the provider nothing when the id has not changed', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: 'plan_growth' }),
+      );
+      mockPrisma.plan.findMany.mockResolvedValue([plan()]);
+
+      await service.updatePlan(ACTOR, 'growth', {
+        razorpayPlanId: 'plan_growth',
+      });
+
+      expect(mockRazorpay.fetchPlan).not.toHaveBeenCalled();
     });
 
     it('404s for a plan that does not exist', async () => {

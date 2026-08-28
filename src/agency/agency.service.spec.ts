@@ -11,6 +11,9 @@ import { organisationSettingsDouble } from 'src/organisation-settings/organisati
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { orgDirectoryDouble } from 'src/org/org.test-doubles';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
+import { SsoService } from 'src/auth/sso.service';
+import { RedisService } from 'src/redis/redis.service';
+import { AgencyBillingService } from 'src/billing/agency-billing.service';
 import { firstArg } from 'src/common/utils/mock-args';
 
 const mockPrisma = {
@@ -34,6 +37,13 @@ let mockOrgDirectory: ReturnType<typeof orgDirectoryDouble>;
 // The real `assertWithin`, bound to a bare instance. It is a pure function of
 // its arguments, and a stub would only prove that a stub throws.
 const realLimits = new PlanLimitsService(null as never, null as never);
+const mockSso = { createOrganization: jest.fn() };
+const mockRedis = { getSsoSession: jest.fn() };
+const mockAgencyBilling = {
+  subscribeClient: jest.fn(),
+  releaseClient: jest.fn(),
+};
+
 const mockPlanLimits = {
   forOrg: jest.fn(),
   assertWithin: realLimits.assertWithin.bind(
@@ -60,6 +70,20 @@ describe('AgencyService', () => {
     mockOrgDirectory = orgDirectoryDouble();
     mockPrisma.organisationSettings.findMany.mockResolvedValue([]);
     mockPrisma.organisationSettings.count.mockResolvedValue(0);
+    mockSso.createOrganization.mockResolvedValue({
+      id: 'org_created',
+      name: 'Kettle Coffee',
+    });
+    mockRedis.getSsoSession.mockResolvedValue({ ssoAccessToken: 'sso-token' });
+    mockAgencyBilling.subscribeClient.mockResolvedValue({
+      ssoOrgId: 'org_created',
+      planCode: 'growth',
+      planName: 'Growth',
+      status: 'created',
+      currentEnd: null,
+      authorisation: { subscriptionId: 'sub_new', shortUrl: 'https://pay' },
+    });
+    mockAgencyBilling.releaseClient.mockResolvedValue(undefined);
     mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
     mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
     mockPrisma.contact.groupBy.mockResolvedValue([]);
@@ -77,6 +101,9 @@ describe('AgencyService', () => {
         { provide: OrganisationSettingsService, useValue: mockSettings },
         { provide: OrgDirectoryService, useValue: mockOrgDirectory },
         { provide: PlanLimitsService, useValue: mockPlanLimits },
+        { provide: SsoService, useValue: mockSso },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: AgencyBillingService, useValue: mockAgencyBilling },
       ],
     }).compile();
     service = module.get(AgencyService);
@@ -139,6 +166,78 @@ describe('AgencyService', () => {
       }>(mockPrisma.organisationSettings.upsert);
       expect(update.isAgency).toBe(false);
       expect(update.convertedAt).toBeNull();
+    });
+  });
+
+  describe('createClient', () => {
+    beforeEach(() => {
+      mockSettings.get.mockResolvedValue(
+        settings({ ssoOrgId: 'org_agency', isAgency: true }),
+      );
+    });
+
+    const input = {
+      name: 'Kettle Coffee',
+      planCode: 'growth',
+      userId: 7,
+      sessionId: 'sess_1',
+    };
+
+    it('creates the organisation, attaches it and pays for it', async () => {
+      const result = await service.createClient('org_agency', input);
+
+      expect(mockSso.createOrganization).toHaveBeenCalledWith(
+        'sso-token',
+        'Kettle Coffee',
+      );
+      expect(mockAgencyBilling.subscribeClient).toHaveBeenCalledWith({
+        agencyOrgId: 'org_agency',
+        ssoOrgId: 'org_created',
+        planCode: 'growth',
+        userId: 7,
+      });
+      expect(result.ssoOrgId).toBe('org_created');
+      expect(result.authorisation?.subscriptionId).toBe('sub_new');
+    });
+
+    it('checks the allowance before creating anything', async () => {
+      // A refusal must leave no organisation in the SSO that nothing here
+      // knows about — so the count happens first, not after.
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planName: 'Agency',
+        includedClients: 2,
+      });
+      mockPrisma.organisationSettings.count.mockResolvedValue(2);
+
+      await expect(service.createClient('org_agency', input)).rejects.toThrow(
+        /includes 2 clients/,
+      );
+      expect(mockSso.createOrganization).not.toHaveBeenCalled();
+    });
+
+    it('refuses for an organisation that is not an agency', async () => {
+      mockSettings.get.mockResolvedValue(settings({ isAgency: false }));
+
+      await expect(service.createClient('org_1', input)).rejects.toThrow();
+      expect(mockSso.createOrganization).not.toHaveBeenCalled();
+    });
+
+    it('says so when the session can no longer reach the SSO', async () => {
+      mockRedis.getSsoSession.mockResolvedValue(null);
+
+      await expect(service.createClient('org_agency', input)).rejects.toThrow(
+        /session has expired/,
+      );
+      expect(mockSso.createOrganization).not.toHaveBeenCalled();
+    });
+
+    it('names the client with what the agency called it', async () => {
+      await service.createClient('org_agency', input);
+
+      const { create } = firstArg<{ create: { clientName: string } }>(
+        mockPrisma.organisationSettings.upsert,
+      );
+      expect(create.clientName).toBe('Kettle Coffee');
     });
   });
 
@@ -291,6 +390,38 @@ describe('AgencyService', () => {
   });
 
   describe('detachClient', () => {
+    it('stops the money before letting the client go', async () => {
+      // The other order leaves a client paid for by nobody and still being
+      // charged to somebody.
+      mockSettings.get.mockResolvedValueOnce(
+        settings({ agencyOrgId: 'org_agency' }),
+      );
+
+      await service.detachClient('org_agency', 'org_client');
+
+      expect(mockAgencyBilling.releaseClient).toHaveBeenCalledWith(
+        'org_agency',
+        'org_client',
+      );
+      expect(mockPrisma.organisationSettings.update).toHaveBeenCalled();
+    });
+
+    it('still detaches a client that was never paid for per-client', async () => {
+      // One attached before this existed has nothing to release, and that is
+      // not a failure.
+      mockSettings.get.mockResolvedValueOnce(
+        settings({ agencyOrgId: 'org_agency' }),
+      );
+      mockAgencyBilling.releaseClient.mockRejectedValue(
+        new Error('does not pay for a subscription'),
+      );
+
+      await expect(
+        service.detachClient('org_agency', 'org_client'),
+      ).resolves.toBeUndefined();
+      expect(mockPrisma.organisationSettings.update).toHaveBeenCalled();
+    });
+
     it('clears the agency and re-keys the client’s access', async () => {
       mockSettings.get.mockResolvedValueOnce(
         settings({ agencyOrgId: 'org_agency' }),

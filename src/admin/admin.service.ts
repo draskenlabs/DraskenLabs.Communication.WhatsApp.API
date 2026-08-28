@@ -80,6 +80,7 @@ const EDITABLE = [
   'active',
   'ctaKind',
   'ctaLabel',
+  'razorpayPlanId',
 ] as const;
 
 const PAGE_SIZE = 25;
@@ -641,6 +642,16 @@ export class AdminService {
     });
     if (!current) throw new NotFoundException(`No plan ${code}`);
 
+    // Checked before anything is written. A tier pointed at the wrong provider
+    // plan charges the wrong amount, and the first anybody would know is a
+    // customer's bank statement.
+    if (
+      dto.razorpayPlanId !== undefined &&
+      dto.razorpayPlanId !== current.razorpayPlanId
+    ) {
+      await this.assertProviderPlanMatches(dto.razorpayPlanId, current);
+    }
+
     const patch: Record<string, unknown> = {};
     const before: Record<string, unknown> = {};
     const after: Record<string, unknown> = {};
@@ -680,6 +691,40 @@ export class AdminService {
     });
 
     return (await this.plans()).find((p) => p.code === code)!;
+  }
+
+  /**
+   * That a provider plan exists and agrees with what this tier says it costs.
+   *
+   * Both halves matter. An id that does not resolve leaves a tier the console
+   * shows as sellable and every checkout refuses; one that resolves to a
+   * different amount is worse, because nothing looks wrong until somebody is
+   * charged it.
+   */
+  private async assertProviderPlanMatches(
+    razorpayPlanId: string,
+    plan: { name: string; price: number | null; currency: string },
+  ): Promise<void> {
+    const remote = await this.razorpay.fetchPlan(razorpayPlanId);
+    if (!remote) {
+      throw new BadRequestException(
+        `No plan ${razorpayPlanId} at the payment provider, or it could not be read. Nothing has been changed.`,
+      );
+    }
+
+    if (plan.price !== null && remote.item.amount !== plan.price) {
+      throw new BadRequestException(
+        `${razorpayPlanId} charges ${remote.item.amount} and ${plan.name} is priced at ${plan.price}. ` +
+          'Point it at a plan for the same amount, or reprice the tier by creating a new one.',
+      );
+    }
+
+    const currency = remote.item.currency?.toUpperCase();
+    if (currency && currency !== plan.currency.toUpperCase()) {
+      throw new BadRequestException(
+        `${razorpayPlanId} is in ${currency} and ${plan.name} is in ${plan.currency}.`,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------

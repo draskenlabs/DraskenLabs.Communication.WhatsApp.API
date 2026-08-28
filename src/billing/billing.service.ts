@@ -32,6 +32,7 @@ import {
 } from './dto/billing.dto';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { OrgService } from 'src/org/org.service';
+import { AgencyBillingService } from './agency-billing.service';
 
 /** Razorpay's status strings, which are also ours. Anything else is ignored. */
 const STATUSES = new Set<string>([
@@ -106,6 +107,9 @@ export class BillingService {
     // Seats are the SSO's to count, not ours. Read here so the billing page
     // can show the allowance it sells against what is actually taken.
     private readonly org: OrgService,
+    // An agency's mandate covers several clients at once; its webhooks reach
+    // no single subscription and are applied through here.
+    private readonly agencyBilling: AgencyBillingService,
   ) {}
 
   /**
@@ -1291,6 +1295,17 @@ export class BillingService {
     });
 
     if (!sub) {
+      // An agency's mandate covers several clients and belongs to no single
+      // subscription, so it is looked for separately. Without this a client's
+      // period never moves and its access lapses a month after it was taken
+      // on — the quietest way this could break.
+      const handled = await this.agencyBilling.applyToGroup(
+        entity.id,
+        entity,
+        this.paymentRow(payment),
+      );
+      if (handled) return;
+
       // A subscription created against another environment sharing the same
       // Razorpay account. Recorded above, then left alone.
       this.logger.warn(`Webhook for unknown subscription ${entity.id}`);
@@ -1486,6 +1501,21 @@ export class BillingService {
    * Keyed on their payment id, so a retried webhook updates the row it already
    * wrote rather than billing history growing a duplicate every retry.
    */
+  /** A payment as both the self-paid and the group path record it. */
+  private paymentRow(payment: RazorpayPayment | undefined) {
+    if (!payment?.id) return undefined;
+    return {
+      razorpayPaymentId: payment.id,
+      razorpayInvoiceId: payment.invoice_id ?? null,
+      amount: payment.amount ?? 0,
+      currency: payment.currency ?? 'INR',
+      status: payment.status ?? 'captured',
+      method: payment.method ?? null,
+      methodDetail: describeMethod(payment),
+      paidAt: at(payment.created_at),
+    };
+  }
+
   private async recordPayment(
     subscriptionId: number,
     payment: RazorpayPayment | undefined,

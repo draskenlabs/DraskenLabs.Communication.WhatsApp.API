@@ -61,6 +61,10 @@ const MUTABLE_TABLES = [
   'SubscriptionPayment',
   'SubscriptionEvent',
   'Subscription',
+  // An agency's mandates. Left out and they survive a reset while the
+  // provider stand-in reuses its ids, so the next test collides with a group
+  // it never created.
+  'AgencyBillingGroup',
   'Conversation',
   'InboundMessage',
   'Message',

@@ -155,6 +155,9 @@ export class FakeRazorpay {
           status: 'created',
           short_url: 'https://rzp.io/i/test',
           notes: body.notes,
+          // What an agency's mandate is charged for: one per plan, with the
+          // quantity moving as clients come and go.
+          quantity: body.quantity ?? 1,
           current_start: null,
           current_end: null,
         };
@@ -175,10 +178,17 @@ export class FakeRazorpay {
         // At cycle end Razorpay keeps charging the old plan until the renewal,
         // so what it answers with is unchanged; immediately, the subscription
         // is on the new plan from here.
+        // A quantity change at cycle end is a pending update: what the
+        // provider answers with is still the current state, and the suite has
+        // to be able to see what was asked for either way.
+        const asked = {
+          ...(body.plan_id !== undefined ? { plan_id: body.plan_id } : {}),
+          ...(body.quantity !== undefined ? { quantity: body.quantity } : {}),
+        };
         const updated: SubscriptionRecord =
           body.schedule_change_at === 'cycle_end'
-            ? existing
-            : { ...existing, plan_id: body.plan_id ?? null };
+            ? { ...existing, pending_update: asked }
+            : { ...existing, ...asked };
         this.subscriptions.set(id, updated);
         return { body: updated };
       },
@@ -225,6 +235,19 @@ export class FakeRazorpay {
           ? { body: existing }
           : { status: 404, body: { error: { description: 'not found' } } };
       },
+    });
+
+    this.handlers.push({
+      method: 'POST',
+      match: /^\/plans$/,
+      handler: (body) => ({
+        body: {
+          id: `plan_${this.nextId++}`,
+          period: body.period,
+          interval: body.interval,
+          item: body.item,
+        },
+      }),
     });
 
     this.handlers.push({

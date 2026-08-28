@@ -24,8 +24,10 @@ import { AgencyService } from './agency.service';
 import {
   AgencyRosterDto,
   AttachClientDto,
+  ClientSubscribedDto,
   ClientSummaryDto,
   ConvertAgencyDto,
+  CreateClientDto,
   RenameClientDto,
 } from './dto/agency.dto';
 import {
@@ -54,6 +56,39 @@ export class AgencyController {
   @ApiStandardErrorResponses({ forbidden: true })
   async clients(@Req() req: Request): Promise<AgencyRosterDto> {
     return this.agency.roster(this.orgOf(req));
+  }
+
+  /**
+   * Take on a client: create its organisation, attach it, and pay for it.
+   *
+   * One call because the three are one intent. Splitting them is what produced
+   * phantom clients — an organisation id typed by hand into an attach endpoint
+   * that never checked it existed.
+   */
+  @Post('clients')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create a client and subscribe it to a plan' })
+  @ApiWrappedOkResponse({
+    dataDto: ClientSubscribedDto,
+    description: 'The client, and the mandate covering it',
+  })
+  async createClient(
+    @Req() req: Request,
+    @Body() dto: CreateClientDto,
+  ): Promise<ClientSubscribedDto> {
+    const request = req as Request & {
+      user?: { id: number };
+      sessionId?: string;
+    };
+    if (!request.user?.id || !request.sessionId) {
+      throw new UnauthorizedException('Session not found in context');
+    }
+    return this.agency.createClient(this.orgOf(req), {
+      name: dto.name,
+      planCode: dto.planCode,
+      userId: request.user.id,
+      sessionId: request.sessionId,
+    });
   }
 
   @Patch('clients/:ssoOrgId')

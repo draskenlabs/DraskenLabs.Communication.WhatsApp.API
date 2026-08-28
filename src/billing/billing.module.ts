@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
+import { AgencyBillingService } from './agency-billing.service';
 import { RazorpayService } from './razorpay.service';
 import { RazorpaySignatureMiddleware } from './middleware/razorpay-signature.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
@@ -32,13 +33,19 @@ import { OrgModule } from 'src/org/org.module';
   controllers: [BillingController],
   providers: [
     BillingService,
+    AgencyBillingService,
     RazorpaySignatureMiddleware,
     SubscriptionMiddleware,
     AuthMiddleware,
   ],
   // MessagingModule applies the paywall; it needs both to decide. Razorpay and
   // the gate come through `SubscriptionAccessModule`, which owns them.
-  exports: [BillingService, SubscriptionMiddleware, SubscriptionAccessModule],
+  exports: [
+    BillingService,
+    AgencyBillingService,
+    SubscriptionMiddleware,
+    SubscriptionAccessModule,
+  ],
 })
 export class BillingModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

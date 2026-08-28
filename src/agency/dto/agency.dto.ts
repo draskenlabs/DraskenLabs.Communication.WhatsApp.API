@@ -99,3 +99,39 @@ export class AgencyRosterDto {
   @ApiProperty({ type: AgencyUsageDto })
   totals: AgencyUsageDto;
 }
+
+/** An agency taking on a client it creates itself. */
+export class CreateClientDto {
+  @ApiProperty({ description: 'What the client organisation is called' })
+  @IsString()
+  @MaxLength(120)
+  name: string;
+
+  @ApiProperty({
+    description:
+      'The plan to put it on. A published tier, or one written privately ' +
+      'for this agency.',
+  })
+  @IsString()
+  @MaxLength(60)
+  planCode: string;
+}
+
+/** What an agency is told after taking a client on. */
+export class ClientSubscribedDto {
+  @ApiProperty() ssoOrgId: string;
+  @ApiProperty() name: string;
+  @ApiProperty() planCode: string;
+  @ApiProperty() planName: string;
+  @ApiProperty() status: string;
+  @ApiProperty({ nullable: true }) currentEnd: Date | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Set when this was the first client on the plan, so the mandate ' +
+      'covering it still has to be authorised. Null when an existing mandate ' +
+      'simply grew by one.',
+  })
+  authorisation: { subscriptionId: string; shortUrl: string | null } | null;
+}

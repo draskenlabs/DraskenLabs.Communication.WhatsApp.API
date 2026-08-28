@@ -329,6 +329,23 @@ export class UpdatePlanDto {
   @IsString()
   @MaxLength(60)
   ctaLabel?: string;
+
+  /**
+   * Point the tier at a different provider plan.
+   *
+   * The one field here that moves money, so it is checked rather than trusted:
+   * the plan has to exist at the provider and its amount has to match this
+   * tier's price. Pointing a ₹499 tier at a ₹9,999 plan is one typo, and the
+   * first anybody would know is a customer's bank statement.
+   *
+   * Existing subscribers are unaffected — each records the plan it was created
+   * against — so this only ever changes what the *next* customer is charged.
+   */
+  @ApiPropertyOptional({ description: 'Provider plan id, e.g. plan_XXXXXXXX' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  razorpayPlanId?: string;
 }
 
 /**

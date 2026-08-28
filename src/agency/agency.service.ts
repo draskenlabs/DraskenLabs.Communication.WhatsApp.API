@@ -2,13 +2,21 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
-import { AgencyRosterDto, ClientSummaryDto } from './dto/agency.dto';
+import { SsoService } from 'src/auth/sso.service';
+import { RedisService } from 'src/redis/redis.service';
+import { AgencyBillingService } from 'src/billing/agency-billing.service';
+import {
+  AgencyRosterDto,
+  ClientSubscribedDto,
+  ClientSummaryDto,
+} from './dto/agency.dto';
 
 /** The first of the current month, which is what "this month" is counted from. */
 function startOfMonth(): Date {
@@ -31,11 +39,17 @@ function startOfMonth(): Date {
  */
 @Injectable()
 export class AgencyService {
+  private readonly logger = new Logger(AgencyService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: OrganisationSettingsService,
     private readonly orgDirectory: OrgDirectoryService,
     private readonly planLimits: PlanLimitsService,
+    // Organisations live in the SSO; taking a client on creates one there.
+    private readonly sso: SsoService,
+    private readonly redis: RedisService,
+    private readonly agencyBilling: AgencyBillingService,
   ) {}
 
   /** Mark an organisation an agency, or demote one back. */
@@ -165,6 +179,82 @@ export class AgencyService {
   }
 
   /**
+   * Take on a client the agency creates itself, and pay for it.
+   *
+   * One call because the three steps are one intent, and splitting them is how
+   * the old arrangement produced phantom clients: an organisation id typed by
+   * hand into an attach endpoint that never checked it existed. Here the id
+   * comes from the organisation this just created, so it cannot be wrong.
+   *
+   * The client never signs in. The agency owns the organisation, operates it,
+   * and is billed for it — which is the whole reseller shape.
+   */
+  async createClient(
+    agencyOrgId: string,
+    input: {
+      name: string;
+      planCode: string;
+      userId: number;
+      sessionId: string;
+    },
+  ): Promise<ClientSubscribedDto> {
+    await this.assertAgency(agencyOrgId);
+
+    // Checked before anything is created, so a refusal leaves no orphan
+    // organisation in the SSO that nothing here knows about.
+    const [limits, held] = await Promise.all([
+      this.planLimits.forOrg(agencyOrgId),
+      this.prisma.organisationSettings.count({ where: { agencyOrgId } }),
+    ]);
+    this.planLimits.assertWithin(
+      limits,
+      limits.includedClients,
+      held,
+      'client',
+    );
+
+    // Created with the agency's own SSO token, so the agency owns it and can
+    // operate it. The client never signs in.
+    const session = await this.redis.getSsoSession(input.sessionId);
+    if (!session?.ssoAccessToken) {
+      throw new BadRequestException(
+        'Your session has expired. Sign in again before taking on a client.',
+      );
+    }
+    const org = await this.sso.createOrganization(
+      session.ssoAccessToken,
+      input.name,
+    );
+
+    await this.prisma.organisationSettings.upsert({
+      where: { ssoOrgId: org.id },
+      update: {
+        agencyOrgId,
+        clientName: input.name,
+        payerVersion: { increment: 1 },
+      },
+      create: { ssoOrgId: org.id, agencyOrgId, clientName: input.name },
+    });
+
+    const subscription = await this.agencyBilling.subscribeClient({
+      agencyOrgId,
+      ssoOrgId: org.id,
+      planCode: input.planCode,
+      userId: input.userId,
+    });
+
+    return {
+      ssoOrgId: org.id,
+      name: input.name,
+      planCode: subscription.planCode,
+      planName: subscription.planName,
+      status: subscription.status,
+      currentEnd: subscription.currentEnd,
+      authorisation: subscription.authorisation,
+    };
+  }
+
+  /**
    * Let a client go.
    *
    * It keeps its data and its organisation; what it loses is the agency's
@@ -178,6 +268,18 @@ export class AgencyService {
         `${ssoOrgId} is not a client of ${agencyOrgId}`,
       );
     }
+
+    // The money first: if this fails, the client keeps both its cover and its
+    // agency, which is recoverable. Detaching first would leave a client paid
+    // for by nobody and still being charged to somebody.
+    await this.agencyBilling
+      .releaseClient(agencyOrgId, ssoOrgId)
+      .catch((err) => {
+        const detail = err instanceof Error ? err.message : String(err);
+        // A client attached before per-client subscriptions existed has nothing
+        // to release, and that is not a failure.
+        this.logger.log(`Nothing to release for ${ssoOrgId}: ${detail}`);
+      });
 
     await this.prisma.organisationSettings.update({
       where: { ssoOrgId },
