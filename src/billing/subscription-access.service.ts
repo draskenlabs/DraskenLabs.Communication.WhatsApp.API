@@ -3,6 +3,7 @@ import { Subscription } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { RazorpayService } from './razorpay.service';
+import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 
 /**
  * The paywall: "may this organisation act on this account right now?"
@@ -21,6 +22,7 @@ export class SubscriptionAccessService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly razorpay: RazorpayService,
+    private readonly orgSettings: OrganisationSettingsService,
   ) {}
 
   /**
@@ -33,13 +35,26 @@ export class SubscriptionAccessService {
    */
   static grants(sub: Pick<Subscription, 'status' | 'currentEnd'> | null): boolean {
     if (!sub) return false;
+    // A superseded row grants nothing whatever its dates say. It was replaced
+    // by the organisation's subscription, and letting a paid month on it keep
+    // the door open would hand out access the organisation is not paying for.
+    if (sub.status === 'superseded') return false;
     if (sub.currentEnd && sub.currentEnd.getTime() > Date.now()) return true;
     return sub.status === 'active' || sub.status === 'authenticated';
   }
 
-  /** The cache key: one organisation's use of one account. */
-  static scope(ssoOrgId: string, wabaId: string): string {
-    return `${ssoOrgId}:${wabaId}`;
+  /**
+   * The cache key: one organisation's use of one account, at one version of
+   * whoever pays for it.
+   *
+   * The version is what makes an agency workable. A client's access depends on
+   * its agency's subscription, so one failed debit has to darken every client
+   * of that agency and every account each of them holds. Enumerating those keys
+   * is fine at five clients and a problem at five hundred; bumping the payer's
+   * version orphans all of them in a single write instead.
+   */
+  static scope(ssoOrgId: string, wabaId: string, payerVersion = 0): string {
+    return `${ssoOrgId}:${wabaId}:v${payerVersion}`;
   }
 
   /**
@@ -51,13 +66,27 @@ export class SubscriptionAccessService {
    * one paying does not carry the other.
    */
   async hasAccess(ssoOrgId: string, wabaId: string): Promise<boolean> {
-    const key = SubscriptionAccessService.scope(ssoOrgId, wabaId);
+    const version = await this.orgSettings.cacheVersionFor(ssoOrgId);
+    const key = SubscriptionAccessService.scope(ssoOrgId, wabaId, version);
     const cached = await this.redis.getSubscriptionAccess(key);
     if (cached !== null) return cached;
 
-    const sub = await this.prisma.subscription.findUnique({
-      where: { wabaId_ssoOrgId: { wabaId, ssoOrgId } },
-    });
+    // Whoever pays answers for it. A client organisation holds no subscription
+    // of its own; its agency's is the one that decides whether it may send.
+    const payer = await this.orgSettings.billingOrgFor(ssoOrgId);
+
+    // An organisation-level subscription covers every account the payer holds,
+    // so the account's own row is looked for first and the organisation's is
+    // what answers when there is none — which, after the move to org-level
+    // billing, is every account.
+    const sub =
+      (await this.prisma.subscription.findUnique({
+        where: { wabaId_ssoOrgId: { wabaId, ssoOrgId: payer } },
+      })) ??
+      (await this.prisma.subscription.findFirst({
+        where: { ssoOrgId: payer, wabaId: null },
+        orderBy: { createdAt: 'desc' },
+      }));
 
     const allowed = SubscriptionAccessService.grants(sub);
     await this.redis.setSubscriptionAccess(key, allowed);
@@ -87,10 +116,24 @@ export class SubscriptionAccessService {
     );
   }
 
-  /** Drop the cached answer, so a state change lands at once. */
+  /** Drop the cached answer for one account, so a state change lands at once. */
   async invalidate(ssoOrgId: string, wabaId: string): Promise<void> {
+    const version = await this.orgSettings.cacheVersionFor(ssoOrgId);
     await this.redis.invalidateSubscriptionAccess(
-      SubscriptionAccessService.scope(ssoOrgId, wabaId),
+      SubscriptionAccessService.scope(ssoOrgId, wabaId, version),
     );
+  }
+
+  /**
+   * Drop every cached answer that depends on this organisation's subscription
+   * — its own accounts, and every account of every client inheriting from it.
+   *
+   * One increment rather than a walk: the version is part of each key, so the
+   * old ones stop being addressable at once and expire on their own. This is
+   * what a failed renewal on an agency has to call, and it must reach the
+   * clients or they carry on sending on a subscription that has lapsed.
+   */
+  async invalidatePayer(ssoOrgId: string): Promise<void> {
+    await this.orgSettings.bumpPayerVersion(ssoOrgId);
   }
 }

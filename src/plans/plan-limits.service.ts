@@ -1,15 +1,34 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 
-/** The numbers a plan puts on an organisation. Null is "no limit". */
+/**
+ * The numbers a plan puts on an organisation.
+ *
+ * Two kinds sit here and they read `null` differently, which is why the names
+ * differ. `included*` is **what the price covers** — beyond it the add-on price
+ * applies and nothing is refused, so `null` means nothing is included and
+ * everything bills. Everything else is a **ceiling** that refuses, where `null`
+ * means no limit.
+ */
 export interface EffectiveLimits {
   /** Code of the plan these came from, or null when nothing is subscribed. */
   planCode: string | null;
   planName: string | null;
-  wabas: number | null;
-  phoneNumbersPerWaba: number | null;
+
+  /* Billable — inclusion counts. */
+  includedWabas: number | null;
+  includedPhoneNumbersPerWaba: number | null;
+  includedClients: number | null;
+  additionalWabaPrice: number | null;
+  additionalNumberPrice: number | null;
+
+  /* Ceilings — refuse when reached. */
   teamMembers: number | null;
   webhookEndpoints: number | null;
+  apiKeysPerWaba: number | null;
+  contacts: number | null;
+  messagesPerMinute: number | null;
   historyDays: number | null;
 }
 
@@ -19,11 +38,52 @@ const LIVE_STATUSES = ['active', 'authenticated', 'pending', 'halted'] as const;
 const NO_PLAN: EffectiveLimits = {
   planCode: null,
   planName: null,
-  wabas: null,
-  phoneNumbersPerWaba: null,
+  includedWabas: null,
+  includedPhoneNumbersPerWaba: null,
+  includedClients: null,
+  additionalWabaPrice: null,
+  additionalNumberPrice: null,
   teamMembers: null,
   webhookEndpoints: null,
+  apiKeysPerWaba: null,
+  contacts: null,
+  messagesPerMinute: null,
   historyDays: null,
+};
+
+/** The columns every limit answer is built from. */
+const PLAN_SELECT = {
+  code: true,
+  name: true,
+  includedWabas: true,
+  includedPhoneNumbersPerWaba: true,
+  includedClients: true,
+  additionalWabaPrice: true,
+  additionalNumberPrice: true,
+  maxTeamMembers: true,
+  maxWebhookEndpoints: true,
+  maxApiKeysPerWaba: true,
+  maxContacts: true,
+  maxMessagesPerMinute: true,
+  historyDays: true,
+  rank: true,
+} as const;
+
+type PlanRow = {
+  code: string;
+  name: string;
+  includedWabas: number | null;
+  includedPhoneNumbersPerWaba: number | null;
+  includedClients: number | null;
+  additionalWabaPrice: number | null;
+  additionalNumberPrice: number | null;
+  maxTeamMembers: number | null;
+  maxWebhookEndpoints: number | null;
+  maxApiKeysPerWaba: number | null;
+  maxContacts: number | null;
+  maxMessagesPerMinute: number | null;
+  historyDays: number | null;
+  rank: number;
 };
 
 /**
@@ -34,11 +94,14 @@ const NO_PLAN: EffectiveLimits = {
  * about the product. This is the one place that answers "how many", and every
  * enforcement site asks it rather than keeping a constant of its own.
  *
- * **The best tier the organisation holds wins.** Subscriptions are per WABA, so
- * an organisation running one account on Growth and another on Starter is a
- * Growth customer for anything organisation-wide (accounts, members). Anything
- * per account — numbers, endpoints — is measured against that account's own
- * plan, because that is the subscription being paid for.
+ * **The payer is resolved first.** An agency buys once and its clients inherit,
+ * so a client organisation's limits are its agency's. For everybody else the
+ * payer is themselves, which is why the lookup is unconditional.
+ *
+ * **The best-ranked plan the payer holds wins**, for the ordinary case of an
+ * organisation part-way through a change. Rank rather than price: a negotiated
+ * plan has no price, and `price ?? 0` sorted the customer paying us most as the
+ * cheapest.
  *
  * An organisation with nothing subscribed falls back to the cheapest published
  * plan: it can try the product without being able to exceed what the entry
@@ -48,40 +111,56 @@ const NO_PLAN: EffectiveLimits = {
 export class PlanLimitsService {
   private readonly logger = new Logger(PlanLimitsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly orgSettings: OrganisationSettingsService,
+  ) {}
 
-  /** Organisation-wide limits: the best tier anything is subscribed on. */
+  /** Organisation-wide limits: the best tier the payer is subscribed on. */
   async forOrg(ssoOrgId: string): Promise<EffectiveLimits> {
+    const payer = await this.orgSettings.billingOrgFor(ssoOrgId);
+
     const subs = await this.prisma.subscription.findMany({
       where: {
-        ssoOrgId,
+        ssoOrgId: payer,
         status: { in: [...LIVE_STATUSES] },
         planRefId: { not: null },
       },
-      select: { plan: true },
+      select: { plan: { select: PLAN_SELECT } },
     });
 
-    const plans = subs.map((s) => s.plan).filter((p) => p !== null);
+    const plans = subs
+      .map((s) => s.plan)
+      .filter((p): p is PlanRow => p !== null);
     if (plans.length === 0) return this.entryLimits();
 
-    // "Best" by price, so an organisation is never held to a cheaper tier it
-    // also happens to hold.
-    const best = plans.sort((a, b) => (b.price ?? 0) - (a.price ?? 0))[0];
+    // Best by rank, so a quoted plan — which has no price to compare — is not
+    // treated as the cheapest thing the organisation holds.
+    const best = plans.sort((a, b) => b.rank - a.rank)[0];
     return this.toLimits(best);
   }
 
-  /** Limits for one account, from the subscription that pays for it. */
+  /**
+   * Limits for one account.
+   *
+   * Falls back to the organisation's plan rather than to entry limits: under an
+   * organisation-level subscription no WABA has one of its own, and answering
+   * "the cheapest published tier" for every account would quietly hold a paying
+   * customer to Starter.
+   */
   async forWaba(ssoOrgId: string, wabaId: string): Promise<EffectiveLimits> {
+    const payer = await this.orgSettings.billingOrgFor(ssoOrgId);
+
     const sub = await this.prisma.subscription.findUnique({
-      where: { wabaId_ssoOrgId: { wabaId, ssoOrgId } },
-      select: { status: true, plan: true },
+      where: { wabaId_ssoOrgId: { wabaId, ssoOrgId: payer } },
+      select: { status: true, plan: { select: PLAN_SELECT } },
     });
 
     if (
       !sub?.plan ||
       !LIVE_STATUSES.includes(sub.status as (typeof LIVE_STATUSES)[number])
     ) {
-      return this.entryLimits();
+      return this.forOrg(ssoOrgId);
     }
     return this.toLimits(sub.plan);
   }
@@ -119,8 +198,11 @@ export class PlanLimitsService {
    */
   private async entryLimits(): Promise<EffectiveLimits> {
     const entry = await this.prisma.plan.findFirst({
-      where: { active: true, price: { not: null } },
+      // Published tiers only: a negotiated plan is not an entry price, and
+      // taking limits from somebody else's contract would be nonsense.
+      where: { active: true, price: { not: null }, ssoOrgId: null },
       orderBy: { price: 'asc' },
+      select: PLAN_SELECT,
     });
     if (!entry) {
       this.logger.warn(
@@ -132,22 +214,20 @@ export class PlanLimitsService {
     return { ...this.toLimits(entry), planCode: null, planName: null };
   }
 
-  private toLimits(plan: {
-    code: string;
-    name: string;
-    maxWabas: number | null;
-    maxPhoneNumbersPerWaba: number | null;
-    maxTeamMembers: number | null;
-    maxWebhookEndpoints: number | null;
-    historyDays: number | null;
-  }): EffectiveLimits {
+  private toLimits(plan: PlanRow): EffectiveLimits {
     return {
       planCode: plan.code,
       planName: plan.name,
-      wabas: plan.maxWabas,
-      phoneNumbersPerWaba: plan.maxPhoneNumbersPerWaba,
+      includedWabas: plan.includedWabas,
+      includedPhoneNumbersPerWaba: plan.includedPhoneNumbersPerWaba,
+      includedClients: plan.includedClients,
+      additionalWabaPrice: plan.additionalWabaPrice,
+      additionalNumberPrice: plan.additionalNumberPrice,
       teamMembers: plan.maxTeamMembers,
       webhookEndpoints: plan.maxWebhookEndpoints,
+      apiKeysPerWaba: plan.maxApiKeysPerWaba,
+      contacts: plan.maxContacts,
+      messagesPerMinute: plan.maxMessagesPerMinute,
       historyDays: plan.historyDays,
     };
   }

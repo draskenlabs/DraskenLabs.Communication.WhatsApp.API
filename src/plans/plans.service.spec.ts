@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { PlansService } from './plans.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { firstArg } from 'src/common/utils/mock-args';
 
 const mockPrisma = { plan: { findMany: jest.fn(), findFirst: jest.fn() } };
 
@@ -14,17 +15,22 @@ const row = (over: Record<string, unknown> = {}) => ({
   currency: 'INR',
   unit: '/WABA/month',
   additionalNumberPrice: 19900,
-  maxWabas: 3,
-  maxPhoneNumbersPerWaba: 3,
+  additionalWabaPrice: 29900,
+  includedWabas: 3,
+  includedPhoneNumbersPerWaba: 1,
+  includedClients: null,
+  maxApiKeysPerWaba: 5,
+  maxContacts: 10000,
+  maxMessagesPerMinute: 500,
   maxTeamMembers: 5,
-  maxWebhookEndpoints: 10,
+  maxWebhookEndpoints: 5,
   historyDays: 90,
   recommended: true,
   ctaKind: 'subscribe',
   ctaLabel: 'Choose Growth',
   razorpayPlanId: 'plan_growth',
   inherits: { code: 'starter' },
-  features: [{ label: 'Up to 3 WABAs' }, { label: '3 phone numbers per WABA' }],
+  features: [{ label: 'Up to 3 WABAs' }, { label: '1 phone number per WABA' }],
   ...over,
 });
 
@@ -49,7 +55,7 @@ describe('PlansService', () => {
 
     expect(mockPrisma.plan.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { active: true },
+        where: { active: true, OR: [{ ssoOrgId: null }] },
         orderBy: { sortOrder: 'asc' },
       }),
     );
@@ -62,15 +68,19 @@ describe('PlansService', () => {
       recommended: true,
       limits: {
         wabas: 3,
-        phoneNumbersPerWaba: 3,
+        phoneNumbersPerWaba: 1,
+        clients: null,
+        apiKeysPerWaba: 5,
+        contacts: 10000,
+        messagesPerMinute: 500,
         teamMembers: 5,
-        webhookEndpoints: 10,
+        webhookEndpoints: 5,
         historyDays: 90,
       },
     });
     expect(plans[0].features).toEqual([
       'Up to 3 WABAs',
-      '3 phone numbers per WABA',
+      '1 phone number per WABA',
     ]);
   });
 
@@ -100,8 +110,13 @@ describe('PlansService', () => {
         price: null,
         priceLabel: 'Custom',
         additionalNumberPrice: null,
-        maxWabas: null,
-        maxPhoneNumbersPerWaba: null,
+        additionalWabaPrice: null,
+        includedWabas: null,
+        includedPhoneNumbersPerWaba: null,
+        includedClients: null,
+        maxApiKeysPerWaba: null,
+        maxContacts: null,
+        maxMessagesPerMinute: null,
         maxTeamMembers: null,
         maxWebhookEndpoints: null,
         historyDays: null,
@@ -125,12 +140,45 @@ describe('PlansService', () => {
     );
   });
 
+  it('shows a caller their own negotiated plan alongside the public ones', async () => {
+    // An agency's agreed rate lives in the same table as the price list. It is
+    // theirs to see once we know who is asking.
+    mockPrisma.plan.findMany.mockResolvedValue([row()]);
+
+    await service.findAll('sso_org_7');
+
+    expect(mockPrisma.plan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          active: true,
+          OR: [{ ssoOrgId: null }, { ssoOrgId: 'sso_org_7' }],
+        },
+      }),
+    );
+  });
+
+  it('never shows a private plan to an anonymous visitor', async () => {
+    // `/plans` is public. One customer's agreed rate is not something the next
+    // visitor gets to read, so with nobody identified only the public rows
+    // match.
+    mockPrisma.plan.findMany.mockResolvedValue([row()]);
+
+    await service.findAll();
+
+    const { where } = firstArg<{ where: { OR: unknown[] } }>(
+      mockPrisma.plan.findMany,
+    );
+    expect(where.OR).toEqual([{ ssoOrgId: null }]);
+  });
+
   it('orders the feature bullets as published', async () => {
     mockPrisma.plan.findMany.mockResolvedValue([row()]);
 
     await service.findAll();
 
-    const { select } = mockPrisma.plan.findMany.mock.calls[0][0];
+    const { select } = firstArg<{
+      select: { features: { orderBy: unknown } };
+    }>(mockPrisma.plan.findMany);
     expect(select.features.orderBy).toEqual({ sortOrder: 'asc' });
   });
 
@@ -141,7 +189,9 @@ describe('PlansService', () => {
       const plan = await service.findByCode('growth');
 
       expect(mockPrisma.plan.findFirst).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { code: 'growth', active: true } }),
+        expect.objectContaining({
+          where: { code: 'growth', active: true, OR: [{ ssoOrgId: null }] },
+        }),
       );
       expect(plan.name).toBe('Growth');
     });

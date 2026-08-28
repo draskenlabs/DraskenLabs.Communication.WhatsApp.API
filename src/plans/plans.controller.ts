@@ -1,5 +1,17 @@
-import { Controller, Get, Param } from '@nestjs/common';
-import { ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  Param,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { Request } from 'express';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 import { PlansService } from './plans.service';
 import { PlanDto } from './dto/plan.dto';
 import {
@@ -27,6 +39,29 @@ export class PlansController {
   })
   async findAll(): Promise<PlanDto[]> {
     return this.plans.findAll();
+  }
+
+  @Get('mine')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The price list as this organisation sees it',
+    description:
+      'The published tiers plus any plan negotiated for this organisation. ' +
+      'An agreed rate lives in the same table as the price list but is not ' +
+      'part of it, so it is only ever answered to a caller we can identify. ' +
+      'Declared above `:code` so the word is read as a route, not a plan code.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: PlanDto,
+    isArray: true,
+    description: 'Plans',
+  })
+  async findMine(@Req() req: Request): Promise<PlanDto[]> {
+    const ssoOrgId = (req as unknown as { orgId?: string }).orgId;
+    if (!ssoOrgId) {
+      throw new UnauthorizedException('Organisation not found in context');
+    }
+    return this.plans.findAll(ssoOrgId);
   }
 
   @Get(':code')

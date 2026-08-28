@@ -19,6 +19,13 @@ export class OrgSummaryDto {
   @ApiProperty() id: string;
   @ApiProperty() name: string;
   @ApiPropertyOptional() slug?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Set only on a client organisation: the agency that manages and pays ' +
+      'for it. Absent on an organisation the user belongs to directly.',
+  })
+  agencyOrgId?: string;
 }
 
 /** Response of `POST /auth/select-org` and `POST /auth/organisations`. */

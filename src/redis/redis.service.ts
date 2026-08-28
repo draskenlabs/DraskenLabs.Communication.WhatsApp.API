@@ -226,6 +226,36 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   // Short TTL *and* explicit invalidation: the webhook clears it so a
   // cancellation or a failed debit takes effect at once, and the expiry is the
   // backstop for a webhook that never arrives. Never cache this without a TTL.
+  /**
+   * Count one request against a fixed window, returning the running total.
+   *
+   * A fixed window rather than a sliding one: it is one round trip, it cannot
+   * drift between instances, and the worst it allows is a burst across a window
+   * boundary — which for a send limit is a nicer failure than the bookkeeping a
+   * sliding window needs on the hot path.
+   *
+   * The counter lives in Redis rather than in the process, because the limit is
+   * a promise about the whole deployment: keeping it per instance would quietly
+   * multiply it by however many are running.
+   */
+  async countInWindow(key: string, windowSeconds: number): Promise<number> {
+    const bucket = Math.floor(Date.now() / 1000 / windowSeconds);
+    const redisKey = `ratelimit:${key}:${bucket}`;
+    const count = await this.client.incr(redisKey);
+    // Only on the first increment: re-setting it on every request would keep
+    // pushing the expiry out and the window would never close.
+    if (count === 1) {
+      await this.client.expire(redisKey, windowSeconds + 1);
+    }
+    return count;
+  }
+
+  /** Seconds until the current window closes, for a `Retry-After` header. */
+  secondsUntilWindowEnds(windowSeconds: number): number {
+    const elapsed = Math.floor(Date.now() / 1000) % windowSeconds;
+    return Math.max(1, windowSeconds - elapsed);
+  }
+
   async setSubscriptionAccess(
     scope: string,
     allowed: boolean,

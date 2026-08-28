@@ -44,7 +44,7 @@ describe('MailNotifications — naming the organisation', () => {
     // renewed" without being told which one it was.
     mockOrgDirectory.name.mockResolvedValue('Another Organisation');
 
-    await service.subscriptionCharged(7, 'org_2', 'OneManPlay Games', new Date());
+    await service.subscriptionCharged(7, 'org_2', new Date());
 
     expect(mockOrgDirectory.name).toHaveBeenCalledWith('org_2');
     expect(factsOf(mockMail.sendTo)).toContainEqual([

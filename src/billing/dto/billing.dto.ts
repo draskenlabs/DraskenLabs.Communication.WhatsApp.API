@@ -1,5 +1,5 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+import { IsNotEmpty, IsString } from 'class-validator';
 
 /** What the subscription costs, read from the Razorpay plan. */
 export class SubscriptionPlanDto {
@@ -64,22 +64,99 @@ export class SubscriptionPaymentDto {
   paidAt: Date | null;
 }
 
-export class SubscriptionStateDto {
-  @ApiProperty({ description: 'The WhatsApp Business Account this covers' })
+/** One account the organisation's subscription pays for. */
+export class CoveredAccountDto {
+  @ApiProperty({ description: 'The WhatsApp Business Account' })
   wabaId: string;
+
+  @ApiProperty({ nullable: true, description: 'Its name, for display' })
+  name: string | null;
+
+  @ApiProperty({ description: 'Phone numbers registered on it' })
+  phoneNumbers: number;
+}
+
+/**
+ * What the subscription covers against what it includes.
+ *
+ * The two are deliberately separate numbers. Nothing here is a cap — an
+ * organisation may connect as many accounts and numbers as it likes — so the
+ * console's job is to say what the next one will cost, not to refuse it.
+ */
+export class SubscriptionUsageDto {
+  @ApiProperty({ description: 'WhatsApp Business Accounts connected' })
+  wabas: number;
+
+  @ApiProperty({ description: 'Phone numbers across all of them' })
+  phoneNumbers: number;
 
   @ApiProperty({
     nullable: true,
-    description: 'That account’s name, for display',
+    description: 'Accounts the plan includes, or null when it names no number',
   })
-  wabaName: string | null;
+  includedWabas: number | null;
 
   @ApiProperty({
+    nullable: true,
+    description: 'Numbers each account includes, or null when it names none',
+  })
+  includedPhoneNumbersPerWaba: number | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What each account past the included ones costs, in paise',
+  })
+  additionalWabaPrice: number | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What each number past the included ones costs, in paise',
+  })
+  additionalNumberPrice: number | null;
+}
+
+/** An upgrade waiting for the customer to authorise a new mandate. */
+export class PendingAuthorisationDto {
+  @ApiProperty({ description: 'Razorpay subscription id, to open Checkout on' })
+  subscriptionId: string;
+
+  @ApiProperty({ nullable: true, description: 'Hosted page, as a fallback' })
+  authorisationUrl: string | null;
+
+  @ApiProperty({ nullable: true, description: 'The tier being moved onto' })
+  planCode: string | null;
+
+  @ApiProperty({ nullable: true })
+  planName: string | null;
+
+  @ApiProperty({
+    nullable: true,
     description:
-      'Whether an API key scoped to this account may call the Messaging API ' +
-      'right now. True for a paid month that has not run out, even after cancelling.',
+      'The one-off difference charged for the rest of the month already paid ' +
+      'for, in paise. Null when the new tier starts at the renewal anyway.',
+  })
+  prorationAmount: number | null;
+}
+
+export class SubscriptionStateDto {
+  @ApiProperty({
+    description:
+      'Whether the organisation may call the Messaging API right now. True ' +
+      'for a paid month that has not run out, even after cancelling.',
   })
   active: boolean;
+
+  @ApiProperty({
+    type: CoveredAccountDto,
+    isArray: true,
+    description:
+      'Every account in the organisation. One subscription pays for all of ' +
+      'them, so this is what it covers rather than what it is billed against.',
+  })
+  covers: CoveredAccountDto[];
+
+  @ApiProperty({ type: SubscriptionUsageDto })
+  usage: SubscriptionUsageDto;
 
   @ApiProperty({
     nullable: true,
@@ -200,9 +277,20 @@ export class SubscriptionStateDto {
     example: 3,
   })
   paidCount: number;
+
+  @ApiProperty({
+    type: PendingAuthorisationDto,
+    nullable: true,
+    description:
+      'An upgrade the customer has been asked to authorise but has not yet. ' +
+      'A Razorpay mandate is authorised for a fixed amount, so moving up a ' +
+      'tier needs a new one — until they approve it they stay on, and keep ' +
+      'paying for, the tier they have.',
+  })
+  pendingAuthorisation: PendingAuthorisationDto | null;
 }
 
-/** Body for `PATCH /billing/subscriptions/:wabaId/plan`. */
+/** Body for `PATCH /billing/subscription/plan`. */
 export class ChangePlanDto {
   @ApiProperty({
     description:
@@ -216,25 +304,24 @@ export class ChangePlanDto {
   planCode: string;
 }
 
-/** Body for `POST /billing/subscriptions/:wabaId`. */
+/** Body for `POST /billing/subscription`. */
 export class RegisterSubscriptionDto {
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'Tier from the published price list (`GET /plans`), e.g. growth. Omit ' +
-      'to use the deployment’s configured plan. A tier that is quoted rather ' +
-      'than sold, or that has no Razorpay plan behind it, is refused.',
+      'Tier from the published price list (`GET /plans`), e.g. growth — or ' +
+      'from `GET /plans/mine`, which also carries a tier negotiated for this ' +
+      'organisation. Required: there is no deployment-wide default plan, ' +
+      'because a price list with four tiers cannot be expressed by one. A ' +
+      'tier that is quoted rather than sold, or that has no Razorpay plan ' +
+      'behind it, is refused.',
     example: 'growth',
   })
-  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  planCode?: string;
+  planCode: string;
 }
 
 export class SubscriptionRegisteredDto {
-  @ApiProperty({ description: 'The account the subscription was started for' })
-  wabaId: string;
-
   @ApiProperty({
     description: 'Open Razorpay Checkout with this subscription id',
   })
@@ -252,11 +339,17 @@ export class SubscriptionRegisteredDto {
   @ApiProperty()
   status: string;
 
+  @ApiProperty({ description: 'The tier it was sold as' })
+  planCode: string;
+
   @ApiProperty({
     nullable: true,
-    description: 'The tier it was sold as, or null on the configured plan',
+    description:
+      'On an upgrade, the one-off difference charged for the rest of the ' +
+      'month already paid for, in paise. Null on a first subscription, which ' +
+      'has no month behind it to make up.',
   })
-  planCode: string | null;
+  prorationAmount: number | null;
 }
 
 /** What Razorpay Checkout hands back when the mandate is authorised. */

@@ -196,9 +196,9 @@ describe('Retention (integration)', () => {
     it('only counts while the sweep is not turned on', async () => {
       const { userId, wabaId } = await seedAccount(h.prisma, { numbers: 1 });
       const billing = h.app.get(BillingService);
-      await billing.register(userId, ORG, wabaId, 'starter');
+      await billing.register(userId, ORG, 'starter');
       await h.prisma.subscription.updateMany({
-        where: { wabaId },
+        where: { ssoOrgId: ORG },
         data: {
           status: 'active',
           currentEnd: new Date(Date.now() + 86_400_000),
@@ -238,18 +238,8 @@ describe('Retention (integration)', () => {
         ssoOrgId: 'org_business',
         numbers: 1,
       });
-      await billing.register(
-        starter.userId,
-        'org_starter',
-        'waba_starter',
-        'starter',
-      );
-      await billing.register(
-        business.userId,
-        'org_business',
-        'waba_business',
-        'business',
-      );
+      await billing.register(starter.userId, 'org_starter', 'starter');
+      await billing.register(business.userId, 'org_business', 'business');
       await h.prisma.subscription.updateMany({
         data: {
           status: 'active',

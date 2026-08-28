@@ -12,8 +12,13 @@ interface PlanRow {
   currency: string;
   unit: string;
   additionalNumberPrice: number | null;
-  maxWabas: number | null;
-  maxPhoneNumbersPerWaba: number | null;
+  includedWabas: number | null;
+  includedPhoneNumbersPerWaba: number | null;
+  includedClients: number | null;
+  additionalWabaPrice: number | null;
+  maxApiKeysPerWaba: number | null;
+  maxContacts: number | null;
+  maxMessagesPerMinute: number | null;
   maxTeamMembers: number | null;
   maxWebhookEndpoints: number | null;
   historyDays: number | null;
@@ -38,18 +43,31 @@ export class PlansService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** What the pricing page renders: active plans, in published order. */
-  async findAll(): Promise<PlanDto[]> {
+  async findAll(ssoOrgId?: string): Promise<PlanDto[]> {
     const plans = await this.prisma.plan.findMany({
-      where: { active: true },
+      // Published tiers, plus the caller's own negotiated plan when we know who
+      // is asking. `/plans` is public by design, so a private row must never be
+      // reachable without an organisation to match it against — one customer's
+      // agreed rate is not something the next visitor gets to read.
+      where: {
+        active: true,
+        OR: [{ ssoOrgId: null }, ...(ssoOrgId ? [{ ssoOrgId }] : [])],
+      },
       orderBy: { sortOrder: 'asc' },
       select: this.selection,
     });
     return plans.map((plan) => this.toDto(plan));
   }
 
-  async findByCode(code: string): Promise<PlanDto> {
+  async findByCode(code: string, ssoOrgId?: string): Promise<PlanDto> {
     const plan = await this.prisma.plan.findFirst({
-      where: { code, active: true },
+      // Same rule as the list. Without it a guessable code would expose a
+      // private plan even with `findAll` filtered.
+      where: {
+        code,
+        active: true,
+        OR: [{ ssoOrgId: null }, ...(ssoOrgId ? [{ ssoOrgId }] : [])],
+      },
       select: this.selection,
     });
     if (!plan) throw new NotFoundException(`Plan ${code} not found`);
@@ -73,8 +91,13 @@ export class PlansService {
     currency: true,
     unit: true,
     additionalNumberPrice: true,
-    maxWabas: true,
-    maxPhoneNumbersPerWaba: true,
+    includedWabas: true,
+    includedPhoneNumbersPerWaba: true,
+    includedClients: true,
+    additionalWabaPrice: true,
+    maxApiKeysPerWaba: true,
+    maxContacts: true,
+    maxMessagesPerMinute: true,
     maxTeamMembers: true,
     maxWebhookEndpoints: true,
     historyDays: true,
@@ -100,9 +123,14 @@ export class PlansService {
       currency: plan.currency,
       unit: plan.unit,
       additionalNumberPrice: plan.additionalNumberPrice,
+      additionalWabaPrice: plan.additionalWabaPrice,
       limits: {
-        wabas: plan.maxWabas,
-        phoneNumbersPerWaba: plan.maxPhoneNumbersPerWaba,
+        wabas: plan.includedWabas,
+        phoneNumbersPerWaba: plan.includedPhoneNumbersPerWaba,
+        clients: plan.includedClients,
+        apiKeysPerWaba: plan.maxApiKeysPerWaba,
+        contacts: plan.maxContacts,
+        messagesPerMinute: plan.maxMessagesPerMinute,
         teamMembers: plan.maxTeamMembers,
         webhookEndpoints: plan.maxWebhookEndpoints,
         historyDays: plan.historyDays,

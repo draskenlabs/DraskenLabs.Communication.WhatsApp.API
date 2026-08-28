@@ -7,6 +7,9 @@ import { JwtService } from '@nestjs/jwt';
 import { RedisService } from 'src/redis/redis.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { orgDirectoryDouble } from 'src/org/org.test-doubles';
+import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
+import { organisationSettingsDouble } from 'src/organisation-settings/organisation-settings.test-doubles';
+import { firstArg } from 'src/common/utils/mock-args';
 
 const mockSsoService = {
   exchangeCode: jest.fn(),
@@ -29,6 +32,17 @@ const mockRedisService = {
 };
 
 const mockOrgDirectory = orgDirectoryDouble();
+const mockOrgSettings = organisationSettingsDouble();
+
+/** The settings row `get` should answer for one organisation. */
+const settings = (over: Record<string, unknown> = {}) => ({
+  ssoOrgId: 'org_x',
+  agencyOrgId: null,
+  isAgency: false,
+  clientName: null,
+  payerVersion: 0,
+  ...over,
+});
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -43,6 +57,7 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: mockJwtService },
         { provide: RedisService, useValue: mockRedisService },
         { provide: OrgDirectoryService, useValue: mockOrgDirectory },
+        { provide: OrganisationSettingsService, useValue: mockOrgSettings },
       ],
     }).compile();
     service = module.get<AuthService>(AuthService);
@@ -127,6 +142,52 @@ describe('AuthService', () => {
       mockRedisService.getSsoSession.mockResolvedValue(null);
       await expect(service.selectOrg(1, 'session-1', 'org_1')).rejects.toThrow(UnauthorizedException);
     });
+
+    it('lets an agency into a client it does not belong to in the SSO', async () => {
+      // Clients are organisations here, and nobody at the agency is a member of
+      // one. The relationship is ours to know, so the SSO's answer is not the
+      // last word.
+      mockRedisService.getSsoSession.mockResolvedValue({
+        ssoId: 'sso_1', ssoAccessToken: 't', orgs: [{ id: 'org_agency', name: 'Bright Reach' }],
+      });
+      mockOrgSettings.get.mockResolvedValueOnce(
+        settings({ ssoOrgId: 'org_client', agencyOrgId: 'org_agency', clientName: 'Kettle Coffee' }),
+      );
+
+      const result = await service.selectOrg(1, 'session-1', 'org_client');
+
+      expect(mockJwtService.signAsync).toHaveBeenCalledWith({
+        sub: 1, orgId: 'org_client', role: 'agency', sessionId: 'session-1', agencyOrgId: 'org_agency',
+      });
+      expect(result.organisation.name).toBe('Kettle Coffee');
+    });
+
+    it('refuses a client belonging to some other agency', async () => {
+      // The row says it has an agency; it is not this one. Matching on "has an
+      // agency" alone would hand every agency every other agency's clients.
+      mockRedisService.getSsoSession.mockResolvedValue({
+        ssoId: 'sso_1', ssoAccessToken: 't', orgs: [{ id: 'org_agency', name: 'Bright Reach' }],
+      });
+      mockOrgSettings.get.mockResolvedValueOnce(
+        settings({ ssoOrgId: 'org_client', agencyOrgId: 'org_rival' }),
+      );
+
+      await expect(service.selectOrg(1, 'session-1', 'org_client')).rejects.toThrow(ForbiddenException);
+      expect(mockJwtService.signAsync).not.toHaveBeenCalled();
+    });
+
+    it('leaves the agency claim off an ordinary organisation', async () => {
+      // Downstream reads the claim as "an agency is acting inside a client".
+      // Sending it on every token would make that reading meaningless.
+      mockRedisService.getSsoSession.mockResolvedValue({
+        ssoId: 'sso_1', ssoAccessToken: 't', orgs: [{ id: 'org_1', name: 'Acme' }],
+      });
+
+      await service.selectOrg(1, 'session-1', 'org_1');
+
+      const claims = firstArg<Record<string, unknown>>(mockJwtService.signAsync);
+      expect(claims).not.toHaveProperty('agencyOrgId');
+    });
   });
 
   describe('createOrganisation', () => {
@@ -150,6 +211,54 @@ describe('AuthService', () => {
       const orgs = [{ id: 'org_1', name: 'Acme' }];
       mockRedisService.getSsoSession.mockResolvedValue({ ssoId: 'sso_1', ssoAccessToken: 't', orgs });
       await expect(service.listOrganisations('session-1')).resolves.toEqual(orgs);
+    });
+
+    it('lists an agency\u2019s clients after its own organisations', async () => {
+      mockRedisService.getSsoSession.mockResolvedValue({
+        ssoId: 'sso_1', ssoAccessToken: 't', orgs: [{ id: 'org_agency', name: 'Bright Reach' }],
+      });
+      mockOrgSettings.get.mockResolvedValueOnce(
+        settings({ ssoOrgId: 'org_agency', isAgency: true }),
+      );
+      mockOrgSettings.clientRoster.mockResolvedValueOnce([
+        { ssoOrgId: 'org_client', clientName: 'Kettle Coffee' },
+      ]);
+
+      const orgs = await service.listOrganisations('session-1');
+
+      expect(orgs).toEqual([
+        { id: 'org_agency', name: 'Bright Reach' },
+        { id: 'org_client', name: 'Kettle Coffee', agencyOrgId: 'org_agency' },
+      ]);
+    });
+
+    it('names a client the agency has not labelled', async () => {
+      // A client organisation whose people have never logged in has no name
+      // anywhere, and a row of blank entries is not a switcher.
+      mockRedisService.getSsoSession.mockResolvedValue({
+        ssoId: 'sso_1', ssoAccessToken: 't', orgs: [{ id: 'org_agency', name: 'Bright Reach' }],
+      });
+      mockOrgSettings.get.mockResolvedValueOnce(
+        settings({ ssoOrgId: 'org_agency', isAgency: true }),
+      );
+      mockOrgSettings.clientRoster.mockResolvedValueOnce([
+        { ssoOrgId: 'org_client', clientName: null },
+      ]);
+      mockOrgDirectory.name.mockResolvedValueOnce('Kettle Coffee Pvt Ltd');
+
+      const orgs = await service.listOrganisations('session-1');
+
+      expect(orgs[1].name).toBe('Kettle Coffee Pvt Ltd');
+    });
+
+    it('adds nothing for an organisation that is not an agency', async () => {
+      mockRedisService.getSsoSession.mockResolvedValue({
+        ssoId: 'sso_1', ssoAccessToken: 't', orgs: [{ id: 'org_1', name: 'Acme' }],
+      });
+
+      await service.listOrganisations('session-1');
+
+      expect(mockOrgSettings.clientRoster).not.toHaveBeenCalled();
     });
 
     it('throws UnauthorizedException when the session expired', async () => {

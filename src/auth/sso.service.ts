@@ -6,6 +6,8 @@ export interface OrgSummary {
   id: string;
   name: string;
   slug?: string;
+  /** Set only on a client organisation: the agency that manages it. */
+  agencyOrgId?: string;
 }
 
 interface SsoTokenData {

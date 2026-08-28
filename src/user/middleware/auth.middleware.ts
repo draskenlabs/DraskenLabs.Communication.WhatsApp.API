@@ -40,6 +40,8 @@ export class AuthMiddleware implements NestMiddleware {
       (req as any).user = user;
       (req as any).orgId = payload.orgId;
       (req as any).role = payload.role;
+      // Present only when an agency is acting inside one of its clients.
+      (req as any).agencyOrgId = payload.agencyOrgId;
       (req as any).sessionId = payload.sessionId;
       next();
     } catch (error) {

@@ -71,20 +71,11 @@ export class WabaPhoneNumberService {
     if (!phone)
       throw new NotFoundException('Phone number not found for this WABA');
 
-    // How many numbers this account may run is what its plan says. Counted
-    // against numbers already registered on the Cloud API, not every number
-    // Meta lists on the account: the ones sitting unregistered cost nothing
-    // and send nothing.
-    const registered = await this.registeredCount(wabaId);
-    if (!this.isRegistered(phone)) {
-      const limits = await this.planLimits.forWaba(ssoOrgId, wabaId);
-      this.planLimits.assertWithin(
-        limits,
-        limits.phoneNumbersPerWaba,
-        registered,
-        'phone number',
-      );
-    }
+    // Registering a number is never refused: every plan includes one per
+    // account and each one after that bills at `additionalNumberPrice` on the
+    // next invoice. `registeredCount` still exists for that counter, which
+    // cares only about numbers live on the Cloud API — the ones sitting
+    // unregistered cost nothing and send nothing.
 
     const userWhatsapp = await this.membership.connection(
       ssoOrgId,

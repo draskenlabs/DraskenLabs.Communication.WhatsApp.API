@@ -80,7 +80,20 @@ The integration suite needs a database and is not part of `npm test`; see
 
 ---
 
+## 2026-08-28 — the endpoint limit follows the price list
+
+`maxWebhookEndpoints` is 1 / 5 / 10 by tier, down from 2 / 10 / unlimited. The
+seeded feature bullets were republished with it — a card that says "2 webhook
+endpoints" beside a column that enforces one is worse than no bullet at all.
+
+The limit is read from the **payer's** plan, so an agency's client is held to
+the agency's tier.
+
 ## Pending / not in scope
+
+| Item | Notes |
+|------|-------|
+| Real-time WebSocket push to the console |## Pending / not in scope
 
 | Item | Notes |
 |------|-------|

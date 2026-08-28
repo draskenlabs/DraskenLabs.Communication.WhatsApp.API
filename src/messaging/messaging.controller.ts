@@ -9,6 +9,7 @@ import {
   Query,
   Req,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -19,6 +20,7 @@ import { MessageAnalyticsDto } from './dto/message-analytics.dto';
 import { PaginationMetaDto } from 'src/common/responses/swagger-response.dto';
 import { BaseResponse } from 'src/common/responses/base-response';
 import { ApiWrappedOkResponse } from 'src/common/responses/swagger.decorators';
+import { SendRateGuard } from './send-rate.guard';
 
 @ApiTags('Messaging')
 @ApiSecurity('x-access-key')
@@ -28,6 +30,9 @@ export class MessagingController {
   constructor(private readonly messagingService: MessagingService) {}
 
   @Post()
+  // The one endpoint sold by rate, and the only one that was unthrottled: the
+  // module-wide throttler is opt-in per controller and nothing had opted in.
+  @UseGuards(SendRateGuard)
   @ApiOperation({ summary: 'Send a WhatsApp message' })
   @ApiWrappedOkResponse({ dataDto: SendMessageResponseDto, description: 'Message sent' })
   async send(@Req() req: Request, @Body() dto: SendMessageDto): Promise<SendMessageResponseDto> {

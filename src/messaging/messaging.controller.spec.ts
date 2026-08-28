@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { UnauthorizedException } from '@nestjs/common';
 import { MessagingController } from './messaging.controller';
 import { MessagingService } from './messaging.service';
+import { SendRateGuard } from './send-rate.guard';
 
 const mockMessagingService = {
   sendMessage: jest.fn(),
@@ -17,7 +18,9 @@ describe('MessagingController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MessagingController],
       providers: [{ provide: MessagingService, useValue: mockMessagingService }],
-    }).compile();
+    }).overrideGuard(SendRateGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
     controller = module.get<MessagingController>(MessagingController);
   });
 

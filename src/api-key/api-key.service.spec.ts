@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { ApiKeyService } from './api-key.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { EncryptionService } from 'src/common/services/crypto.service';
 import { RedisService } from 'src/redis/redis.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
@@ -14,6 +15,7 @@ const mockPrisma = {
     findUnique: jest.fn(),
     findFirst: jest.fn(),
     update: jest.fn(),
+    count: jest.fn(),
   },
   waba: { findFirst: jest.fn() },
 };
@@ -23,11 +25,26 @@ const mockRedis = { setApiKeyCache: jest.fn(), deleteApiKeyCache: jest.fn() };
 
 const mockMailNotifications = mailNotificationsDouble();
 
+const realLimits = new PlanLimitsService({} as never, {} as never);
+const mockPlanLimits = {
+  forWaba: jest.fn(),
+  // The real one: the refusal message is part of what this spec checks, and a
+  // stub would only ever assert that a stub was called.
+  assertWithin: (...args: Parameters<PlanLimitsService['assertWithin']>): void =>
+    realLimits.assertWithin(...args),
+};
+
 describe('ApiKeyService', () => {
   let service: ApiKeyService;
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockPrisma.userApiKey.count.mockResolvedValue(0);
+    mockPlanLimits.forWaba.mockResolvedValue({
+      planCode: 'growth',
+      planName: 'Growth',
+      apiKeysPerWaba: 5,
+    });
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         { provide: MailNotifications, useValue: mockMailNotifications },
@@ -35,12 +52,47 @@ describe('ApiKeyService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: RedisService, useValue: mockRedis },
+        { provide: PlanLimitsService, useValue: mockPlanLimits },
       ],
     }).compile();
     service = module.get<ApiKeyService>(ApiKeyService);
   });
 
   describe('createApiKey', () => {
+    it('refuses a key past what the plan allows for the account', async () => {
+      // Keys are not sold by the unit, so this refuses rather than bills. It
+      // also bounds the writes: every key lands in Redis as well as Postgres,
+      // on the path every API request already takes.
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1' });
+      mockPlanLimits.forWaba.mockResolvedValue({
+        planCode: 'starter',
+        planName: 'Starter',
+        apiKeysPerWaba: 1,
+      });
+      mockPrisma.userApiKey.count.mockResolvedValue(1);
+
+      await expect(
+        service.createApiKey(1, 'org_1', { wabaId: 'waba_1' } as never),
+      ).rejects.toThrow(/Starter plan includes 1 API key/);
+      expect(mockPrisma.userApiKey.create).not.toHaveBeenCalled();
+    });
+
+    it('counts only keys that are still live', async () => {
+      // A revoked key authenticates nothing, so holding its seat would make
+      // rotation impossible on a plan that includes one.
+      mockPrisma.waba.findFirst.mockResolvedValue({ wabaId: 'waba_1' });
+      mockPrisma.userApiKey.create.mockResolvedValue({});
+
+      await service.createApiKey(1, 'org_1', { wabaId: 'waba_1' } as never);
+
+      const arg = (
+        mockPrisma.userApiKey.count.mock.calls as unknown as {
+          where: { status: boolean };
+        }[][]
+      )[0][0];
+      expect(arg.where.status).toBe(true);
+    });
+
     const dto = { label: 'Test Key', wabaId: 'waba_1' } as any;
 
     it('creates a key, encrypts secret, caches in Redis', async () => {

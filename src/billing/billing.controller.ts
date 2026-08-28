@@ -5,7 +5,6 @@ import {
   Delete,
   Get,
   HttpCode,
-  Param,
   Patch,
   Post,
   Req,
@@ -38,38 +37,40 @@ import {
 export class BillingController {
   constructor(private readonly billing: BillingService) {}
 
-  @Get('subscriptions')
+  @Get('subscription')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Subscription state for every connected account',
+    summary: 'The organisation’s subscription, and what it covers',
     description:
-      'One row per WhatsApp Business Account in the organisation, subscribed ' +
-      'or not — an account missing from the list would read as disconnected ' +
-      'rather than unpaid.',
+      'One subscription pays for every account the organisation has ' +
+      'connected. Answers even when there is none — the console’s job is to ' +
+      'say whether the organisation is paid up and offer a tier if it is ' +
+      'not. `usage` says what is connected against what the tier includes, ' +
+      'and what the next account or number will cost: nothing here is a cap.',
   })
   @ApiWrappedOkResponse({
     dataDto: SubscriptionStateDto,
-    isArray: true,
-    description: 'Subscription state per account',
+    description: 'Subscription state',
   })
-  async list(@Req() req: Request): Promise<SubscriptionStateDto[]> {
+  async state(@Req() req: Request): Promise<SubscriptionStateDto> {
     const orgId = (req as any).orgId;
     if (!orgId)
       throw new UnauthorizedException('Organisation not found in context');
-    return this.billing.listStates(orgId);
+    return this.billing.state(orgId);
   }
 
-  @Post('subscriptions/:wabaId')
+  @Post('subscription')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { ttl: 60000, limit: 5 } })
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Subscribe one account',
+    summary: 'Subscribe the organisation',
     description:
       'Creates the subscription on the chosen tier and returns the id to open ' +
       'Razorpay Checkout with, plus the hosted page as a fallback. Nothing is ' +
-      'charged until the customer authorises the mandate. Omit `planCode` to ' +
-      'use the deployment’s configured plan.',
+      'charged until the customer authorises the mandate. One subscription ' +
+      'covers every account the organisation has, so this is done once — ' +
+      'before or after connecting anything.',
   })
   @ApiWrappedOkResponse({
     dataDto: SubscriptionRegisteredDto,
@@ -77,7 +78,6 @@ export class BillingController {
   })
   async register(
     @Req() req: Request,
-    @Param('wabaId') wabaId: string,
     @Body() dto: RegisterSubscriptionDto,
   ): Promise<SubscriptionRegisteredDto> {
     const user = (req as any).user;
@@ -87,10 +87,10 @@ export class BillingController {
 
     // The name and email come from the user row, not from the request: this
     // context holds only an id and an SSO id.
-    return this.billing.register(user.id, orgId, wabaId, dto?.planCode);
+    return this.billing.register(user.id, orgId, dto.planCode);
   }
 
-  @Post('subscriptions/:wabaId/confirm')
+  @Post('subscription/confirm')
   @ApiBearerAuth()
   @HttpCode(200)
   @ApiOperation({
@@ -106,27 +106,27 @@ export class BillingController {
   })
   async confirm(
     @Req() req: Request,
-    @Param('wabaId') wabaId: string,
     @Body() dto: ConfirmSubscriptionDto,
   ): Promise<SubscriptionStateDto> {
     const orgId = (req as any).orgId;
     if (!orgId)
       throw new UnauthorizedException('Organisation not found in context');
-    return this.billing.confirm(orgId, wabaId, dto);
+    return this.billing.confirm(orgId, dto);
   }
 
-  @Patch('subscriptions/:wabaId/plan')
+  @Patch('subscription/plan')
   @ApiBearerAuth()
   @HttpCode(200)
   @ApiOperation({
-    summary: "Move one account's subscription onto another tier",
+    summary: "Move the organisation's subscription onto another tier",
     description:
-      'A tier that costs more takes effect immediately — Razorpay closes the ' +
-      'current cycle and starts one on the new plan. A tier that costs the ' +
-      'same or less takes effect at the renewal, so the month already paid ' +
-      'for keeps what it bought. Nothing is prorated either way. Refused ' +
-      'where the mandate the customer authorised will not cover the higher ' +
-      'amount: that needs a new subscription, which only they can authorise.',
+      'A tier that costs more needs a new mandate — a Razorpay mandate is ' +
+      'authorised for a fixed amount — so the response carries a ' +
+      '`pendingAuthorisation` to open Checkout on. It starts charging where ' +
+      'the month already paid for ends, with the difference for the rest of ' +
+      'that month added as a one-off, and the old subscription is cancelled ' +
+      'only once the new one is authorised. A tier that costs the same or ' +
+      'less takes effect at the renewal, with no new mandate and no credit.',
   })
   @ApiWrappedOkResponse({
     dataDto: SubscriptionStateDto,
@@ -139,36 +139,33 @@ export class BillingController {
   })
   async changePlan(
     @Req() req: Request,
-    @Param('wabaId') wabaId: string,
     @Body() dto: ChangePlanDto,
   ): Promise<SubscriptionStateDto> {
     const orgId = (req as any).orgId;
     if (!orgId)
       throw new UnauthorizedException('Organisation not found in context');
-    return this.billing.changePlan(orgId, wabaId, dto.planCode);
+    return this.billing.changePlan(orgId, dto.planCode);
   }
 
-  @Delete('subscriptions/:wabaId')
+  @Delete('subscription')
   @ApiBearerAuth()
   @HttpCode(200)
   @ApiOperation({
-    summary: "Cancel one account's subscription",
+    summary: "Cancel the organisation's subscription",
     description:
       'Stops the next debit. The month already paid for is kept — access ' +
-      'continues until the end of it.',
+      'continues until the end of it. An upgrade the customer never got round ' +
+      'to authorising is abandoned with it.',
   })
   @ApiWrappedOkResponse({
     dataDto: SubscriptionStateDto,
     description: 'Subscription state',
   })
-  async cancel(
-    @Req() req: Request,
-    @Param('wabaId') wabaId: string,
-  ): Promise<SubscriptionStateDto> {
+  async cancel(@Req() req: Request): Promise<SubscriptionStateDto> {
     const orgId = (req as any).orgId;
     if (!orgId)
       throw new UnauthorizedException('Organisation not found in context');
-    return this.billing.cancel(orgId, wabaId);
+    return this.billing.cancel(orgId);
   }
 
   /** Razorpay-facing. Signature-checked by middleware; never called by a user. */

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { OrganisationSettingsModule } from './organisation-settings/organisation-settings.module';
 import { ConnectModule } from './connect/connect.module';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -24,6 +25,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { SearchModule } from './search/search.module';
 import { BillingModule } from './billing/billing.module';
 import { PlansModule } from './plans/plans.module';
+import { AgencyModule } from './agency/agency.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import * as Joi from 'joi';
 
@@ -91,15 +93,19 @@ import * as Joi from 'joi';
         LEGAL_EMAIL: Joi.string().email().optional(),
         // Enables POST /mail/broadcast when set. Unset means disabled.
         MAIL_ADMIN_TOKEN: Joi.string().optional(),
-        // Razorpay — optional, like push and email. Without a key pair and a
-        // plan the API runs normally, sells nothing and charges no one for the
-        // Messaging API, which is what development and self-hosting need.
+        // Enables the operator endpoints under /agency/internal, which convert
+        // an organisation to an agency and move who pays for a client. Unset
+        // means disabled, which is what a self-hosted deployment wants.
+        AGENCY_ADMIN_TOKEN: Joi.string().optional(),
+        // Razorpay — optional, like push and email. Without a key pair the API
+        // runs normally, sells nothing and charges no one for the Messaging
+        // API, which is what development and self-hosting need.
         RAZORPAY_KEY_ID: Joi.string().optional(),
         RAZORPAY_KEY_SECRET: Joi.string().optional(),
-        RAZORPAY_PLAN_ID: Joi.string().optional(),
         // Which Razorpay plan charges for each published tier, as
-        // `code:plan_id` pairs. Without it only RAZORPAY_PLAN_ID above can be
-        // sold, and the console offers to talk about the rest rather than
+        // `code:plan_id` pairs — written onto the tiers at boot, since the id
+        // belongs to the plan row and not to the deployment. Without it no
+        // tier can be bought, and the console offers to talk rather than
         // opening a checkout that would be refused.
         RAZORPAY_PLAN_IDS: Joi.string().optional(),
         RAZORPAY_WEBHOOK_SECRET: Joi.string().optional(),
@@ -110,6 +116,7 @@ import * as Joi from 'joi';
     }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
     ScheduleModule.forRoot(),
+    OrganisationSettingsModule,
     ConnectModule,
     RedisModule,
     CommonModule,
@@ -131,6 +138,7 @@ import * as Joi from 'joi';
     SearchModule,
     BillingModule,
     PlansModule,
+    AgencyModule,
   ],
   controllers: [AppController],
   providers: [AppService],
