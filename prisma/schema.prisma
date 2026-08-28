@@ -19,6 +19,14 @@ model User {
   email     String?
   firstName String?
   lastName  String?
+  /// Whether this person may use the operator console at `/admin`.
+  ///
+  /// A property of the person, not of an organisation: an operator opens
+  /// organisations they are not a member of, which is the whole point and is a
+  /// privilege boundary rather than anything a plan sells. Never self-serve —
+  /// the first one is seeded by migration, and after that only an existing
+  /// admin can grant it.
+  isAdmin   Boolean  @default(false)
   createdAt DateTime @default(now())
 
   UserWhatsapp    UserWhatsapp[]
@@ -250,6 +258,41 @@ model Plan {
 /// Organisations live in the SSO, so this is an annotation rather than a copy:
 /// the id is the SSO's, and every column here is a fact about how *we* treat
 /// that organisation. One row per organisation we have anything to say about.
+/// What an operator did, when, and to whom.
+///
+/// Written by every mutation the admin console makes. The actor's email is
+/// copied rather than joined: the row has to keep naming who did it after the
+/// account is gone, which is exactly when somebody comes looking.
+///
+/// `before` and `after` hold only the fields that changed, so the row says what
+/// the change *was* rather than merely that one happened — "who turned this
+/// customer's limit up" is the question these get asked.
+model AdminAuditLog {
+  id Int @id @default(autoincrement())
+
+  actorUserId Int
+  actorEmail  String?
+
+  /// A verb in the past tense, e.g. `plan.updated`, `admin.granted`.
+  action String
+
+  /// What was acted on: `organisation`, `plan`, `user`.
+  targetType String
+  targetId   String
+
+  /// One line a human can read in a list without opening anything.
+  summary String
+
+  before Json?
+  after  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@index([actorUserId])
+}
+
 model OrganisationSettings {
   ssoOrgId String @id
 
