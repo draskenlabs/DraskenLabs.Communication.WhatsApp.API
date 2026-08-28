@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ContactsService } from './contacts.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 
 const mockPrisma = {
   contact: {
@@ -20,18 +21,76 @@ const baseContact = {
   optedOut: false, metadata: null, createdAt: new Date(), updatedAt: new Date(),
 };
 
+const mockPlanLimits = { forOrg: jest.fn() };
+
 describe('ContactsService', () => {
   let service: ContactsService;
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockPlanLimits.forOrg.mockResolvedValue({
+      planCode: 'growth',
+      planName: 'Growth',
+      contacts: 10000,
+    });
+    mockPrisma.contact.count.mockResolvedValue(0);
     const module: TestingModule = await Test.createTestingModule({
-      providers: [ContactsService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [
+        ContactsService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: PlanLimitsService, useValue: mockPlanLimits },
+      ],
     }).compile();
     service = module.get<ContactsService>(ContactsService);
   });
 
   describe('create', () => {
+    it('refuses a contact past the plan limit', async () => {
+      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planCode: 'starter',
+        planName: 'Starter',
+        contacts: 1000,
+      });
+      mockPrisma.contact.count.mockResolvedValue(1000);
+
+      await expect(
+        service.create('org_1', { phone: '911234567890' } as never),
+      ).rejects.toThrow(/Starter plan includes 1000 contacts/);
+      expect(mockPrisma.contact.create).not.toHaveBeenCalled();
+    });
+
+    it('checks a whole batch before importing any of it', async () => {
+      // Row by row would leave a five-thousand-line file half in the database
+      // and half refused, which is worse than not importing it at all.
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planCode: 'growth',
+        planName: 'Growth',
+        contacts: 10000,
+      });
+      mockPrisma.contact.count.mockResolvedValue(9500);
+
+      await expect(
+        service.assertRoomFor('org_1', 400),
+      ).resolves.toBeUndefined();
+      await expect(service.assertRoomFor('org_1', 600)).rejects.toThrow(
+        /Importing 600 would take you past it/,
+      );
+    });
+
+    it('allows anything on a plan that names no contact limit', async () => {
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planCode: 'agency',
+        planName: 'Agency',
+        contacts: null,
+      });
+      mockPrisma.contact.count.mockResolvedValue(500000);
+
+      await expect(
+        service.assertRoomFor('org_1', 10000),
+      ).resolves.toBeUndefined();
+    });
+
     it('throws BadRequestException if phone already exists in org', async () => {
       mockPrisma.contact.findUnique.mockResolvedValue(baseContact);
       await expect(service.create('sso_org_1', { phone: '447911111111' })).rejects.toThrow(BadRequestException);

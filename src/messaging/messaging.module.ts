@@ -10,6 +10,9 @@ import { BillingModule } from 'src/billing/billing.module';
 import { WabaMembershipModule } from 'src/waba/waba-membership.module';
 import { SubscriptionMiddleware } from 'src/billing/middleware/subscription.middleware';
 import { ConversationWriterModule } from 'src/inbox/conversation-writer.module';
+import { PlansModule } from 'src/plans/plans.module';
+import { RedisModule } from 'src/redis/redis.module';
+import { SendRateGuard } from './send-rate.guard';
 
 @Module({
   imports: [
@@ -19,8 +22,15 @@ import { ConversationWriterModule } from 'src/inbox/conversation-writer.module';
     BillingModule,
     WabaMembershipModule,
     ConversationWriterModule,
+    PlansModule,
+    RedisModule,
   ],
-  providers: [MessagingService, AuthMiddleware, MessagingAuthMiddleware],
+  providers: [
+    MessagingService,
+    AuthMiddleware,
+    MessagingAuthMiddleware,
+    SendRateGuard,
+  ],
   controllers: [MessagingController],
   // The inbox sends its replies through this service, so every check a send
   // must pass — membership, WABA scope, subscription, opt-out — is the same

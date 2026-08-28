@@ -5,6 +5,7 @@ import { MailNotifications } from 'src/mail/mail.notifications';
 import { RedisService } from 'src/redis/redis.service';
 import * as crypto from 'crypto';
 import { CreateApiKeyDto, ApiKeyResponseDto } from './dto/api-key.dto';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 
 @Injectable()
 export class ApiKeyService {
@@ -13,6 +14,7 @@ export class ApiKeyService {
     private readonly encryptionService: EncryptionService,
     private readonly mail: MailNotifications,
     private readonly redisService: RedisService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
   async createApiKey(userId: number, ssoOrgId: string, dto: CreateApiKeyDto): Promise<ApiKeyResponseDto> {
@@ -26,6 +28,17 @@ export class ApiKeyService {
     if (!waba) {
       throw new NotFoundException(`WABA ${dto.wabaId} not found in this organisation`);
     }
+
+    // A cap rather than an inclusion: keys are not something we sell by the
+    // unit, and an unbounded count is an unbounded write to Redis on the hot
+    // path every request already takes through it.
+    const [live, limits] = await Promise.all([
+      this.prisma.userApiKey.count({
+        where: { ssoOrgId, wabaId: waba.wabaId, status: true },
+      }),
+      this.planLimits.forWaba(ssoOrgId, waba.wabaId),
+    ]);
+    this.planLimits.assertWithin(limits, limits.apiKeysPerWaba, live, 'API key');
 
     const accessKey = `ak_${crypto.randomBytes(12).toString('hex')}`;
     const secretKey = `sk_${crypto.randomBytes(24).toString('hex')}`;

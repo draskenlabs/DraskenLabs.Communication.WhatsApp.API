@@ -6,16 +6,22 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateContactDto, UpdateContactDto, ContactResponseDto } from './dto/contact.dto';
 import { BaseResponse } from 'src/common/responses/base-response';
+import { PlanLimitsService } from 'src/plans/plan-limits.service';
 
 @Injectable()
 export class ContactsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly planLimits: PlanLimitsService,
+  ) {}
 
   async create(ssoOrgId: string, dto: CreateContactDto): Promise<ContactResponseDto> {
     const existing = await this.prisma.contact.findUnique({
       where: { ssoOrgId_phone: { ssoOrgId, phone: dto.phone } },
     });
     if (existing) throw new BadRequestException('A contact with this phone number already exists');
+
+    await this.assertRoomFor(ssoOrgId, 1);
 
     const contact = await this.prisma.contact.create({
       data: {
@@ -28,6 +34,30 @@ export class ContactsService {
     });
 
     return this.toDto(contact);
+  }
+
+  /**
+   * Refuse an addition that would take the organisation past its contact limit.
+   *
+   * Takes the size of what is being added rather than assuming one, so a
+   * CSV import can ask before it starts. Checking row by row would leave a
+   * five-thousand-line file half in the database and half refused, which is
+   * worse than not importing it at all.
+   */
+  async assertRoomFor(ssoOrgId: string, adding: number): Promise<void> {
+    const [held, limits] = await Promise.all([
+      this.prisma.contact.count({ where: { ssoOrgId } }),
+      this.planLimits.forOrg(ssoOrgId),
+    ]);
+    if (limits.contacts === null) return;
+
+    if (held + adding > limits.contacts) {
+      const plan = limits.planName ? `The ${limits.planName} plan` : 'Your plan';
+      throw new BadRequestException(
+        `${plan} includes ${limits.contacts} contacts, and you have ${held}. ` +
+          `Importing ${adding} would take you past it — upgrade the plan or remove some first.`,
+      );
+    }
   }
 
   async findAll(
