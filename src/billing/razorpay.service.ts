@@ -306,6 +306,11 @@ export class RazorpayService {
      * pays for the same days twice.
      */
     startAt?: number;
+    /**
+     * How many of the plan to charge for. An agency paying for four clients on
+     * one tier is one subscription at quantity four.
+     */
+    quantity?: number;
   }): Promise<RazorpaySubscription> {
     try {
       const { data } = await this.api().post<RazorpaySubscription>(
@@ -317,6 +322,7 @@ export class RazorpayService {
           // Razorpay sends the mandate and pre-debit notifications the RBI
           // requires; doing it ourselves would duplicate them.
           customer_notify: 1,
+          ...(input.quantity ? { quantity: input.quantity } : {}),
           ...(input.startAt ? { start_at: input.startAt } : {}),
           notes: input.notes,
         },
@@ -436,6 +442,77 @@ export class RazorpayService {
       return data;
     } catch (err) {
       this.fail('Razorpay subscription cancellation failed', err);
+    }
+  }
+
+  /**
+   * A new plan at the provider, so a tier can be sold the moment it is written.
+   *
+   * Their plans are immutable: this is the only way an amount ever enters the
+   * system, and repricing means calling this again for a new tier rather than
+   * editing anything. Which is why the admin console can author a plan but
+   * never edit its price.
+   */
+  async createPlan(input: {
+    name: string;
+    amount: number;
+    currency: string;
+    description?: string;
+    /** `monthly` unless something else is ever sold. */
+    period?: 'daily' | 'weekly' | 'monthly' | 'yearly';
+    interval?: number;
+  }): Promise<RazorpayPlan> {
+    try {
+      const { data } = await this.api().post<RazorpayPlan>('/plans', {
+        period: input.period ?? 'monthly',
+        interval: input.interval ?? 1,
+        item: {
+          name: input.name,
+          amount: input.amount,
+          currency: input.currency,
+          ...(input.description ? { description: input.description } : {}),
+        },
+      });
+      return data;
+    } catch (err) {
+      this.fail('Razorpay plan creation failed', err);
+    }
+  }
+
+  /**
+   * How many of a plan a subscription is charged for.
+   *
+   * An agency pays for its clients this way: one mandate per plan it uses, with
+   * the quantity moving as clients come and go. The alternative — a
+   * subscription per client — is an authorisation per client, which nobody
+   * would sit through.
+   *
+   * Only `active` and `authenticated` subscriptions accept an update. One that
+   * is retrying or has stopped refuses, which is why the caller has to check
+   * before promising an agency it can take a client on.
+   */
+  async setSubscriptionQuantity(
+    subscriptionId: string,
+    quantity: number,
+    opts: { atCycleEnd?: boolean } = {},
+  ): Promise<RazorpaySubscription | null> {
+    try {
+      const { data } = await this.api().patch<RazorpaySubscription>(
+        `/subscriptions/${subscriptionId}`,
+        {
+          quantity,
+          schedule_change_at: opts.atCycleEnd ? 'cycle_end' : 'now',
+        },
+      );
+      return data;
+    } catch (err) {
+      const error = err as AxiosError<{ error?: { description?: string } }>;
+      const description =
+        error.response?.data?.error?.description ?? error.message;
+      this.logger.error(
+        `Could not set quantity ${quantity} on ${subscriptionId}: ${description}`,
+      );
+      return null;
     }
   }
 

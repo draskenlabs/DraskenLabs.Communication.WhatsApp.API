@@ -31,6 +31,7 @@ import {
   AdminUserDto,
   AttachClientDto,
   ConvertOrgDto,
+  CreatePlanDto,
   SetAdminDto,
   UpdatePlanDto,
 } from './dto/admin.dto';
@@ -96,6 +97,14 @@ export class AdminController {
   @Get('plans')
   plans(): Promise<AdminPlanDto[]> {
     return this.admin.plans();
+  }
+
+  @Post('plans')
+  createPlan(
+    @Req() req: Request,
+    @Body() dto: CreatePlanDto,
+  ): Promise<AdminPlanDto> {
+    return this.admin.createPlan(actorOf(req), dto);
   }
 
   @Patch('plans/:code')

@@ -8,10 +8,12 @@ import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { AgencyService } from 'src/agency/agency.service';
+import { RazorpayService } from 'src/billing/razorpay.service';
 import { AdminAuditService } from './admin-audit.service';
 import type { AdminActor } from './admin.guard';
 import type {
   AdminAuditPageDto,
+  CreatePlanDto,
   AdminOrganisationDetailDto,
   AdminOrganisationPageDto,
   AdminOrganisationRowDto,
@@ -76,6 +78,8 @@ const EDITABLE = [
   'sortOrder',
   'recommended',
   'active',
+  'ctaKind',
+  'ctaLabel',
 ] as const;
 
 const PAGE_SIZE = 25;
@@ -120,6 +124,8 @@ export class AdminService {
     private readonly planLimits: PlanLimitsService,
     private readonly agency: AgencyService,
     private readonly audit: AdminAuditService,
+    // A price only ever enters the system as a provider plan, created here.
+    private readonly razorpay: RazorpayService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -517,6 +523,111 @@ export class AdminService {
       sellable: Boolean(razorpayPlanId) && plan.active,
       subscribers: subscribers.get(plan.code) ?? 0,
     }));
+  }
+
+  /**
+   * A new plan, and the provider plan behind it.
+   *
+   * Both in one call on purpose. A plan row with a price and no provider plan
+   * cannot be checked out, and the console would show it as sellable while
+   * every attempt to buy it failed — so either both exist or neither does.
+   *
+   * A quoted plan (`ctaKind: 'contact'`) carries no amount and needs nothing at
+   * the provider: it is a card that invites a conversation.
+   */
+  async createPlan(
+    actor: AdminActor,
+    dto: CreatePlanDto,
+  ): Promise<AdminPlanDto> {
+    const existing = await this.prisma.plan.findUnique({
+      where: { code: dto.code },
+      select: { code: true },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        `A plan with code ${dto.code} already exists`,
+      );
+    }
+
+    const ctaKind = dto.ctaKind ?? (dto.price ? 'subscribe' : 'contact');
+    if (ctaKind === 'subscribe' && !dto.price) {
+      throw new BadRequestException(
+        'A plan that can be subscribed to needs a price. Use ctaKind "contact" for a quoted plan.',
+      );
+    }
+    if (ctaKind === 'contact' && !dto.priceLabel && !dto.price) {
+      throw new BadRequestException(
+        'A quoted plan needs a priceLabel — it is what the card shows instead of an amount.',
+      );
+    }
+
+    const currency = (dto.currency ?? 'INR').toUpperCase();
+
+    // Created before the row, so a provider failure leaves nothing behind. The
+    // other order leaves a plan nobody can buy and no error explaining why.
+    let razorpayPlanId: string | null = null;
+    if (ctaKind === 'subscribe' && dto.price) {
+      const created = await this.razorpay.createPlan({
+        name: dto.name,
+        amount: dto.price,
+        currency,
+        description: dto.audience,
+      });
+      razorpayPlanId = created.id;
+    }
+
+    const plan = await this.prisma.plan.create({
+      data: {
+        code: dto.code,
+        name: dto.name,
+        audience: dto.audience,
+        price: dto.price ?? null,
+        priceLabel: dto.priceLabel ?? null,
+        currency,
+        unit: dto.unit ?? '/month',
+        ssoOrgId: dto.ssoOrgId ?? null,
+        ctaKind,
+        ctaLabel:
+          dto.ctaLabel ??
+          (ctaKind === 'subscribe' ? `Choose ${dto.name}` : 'Contact sales'),
+        razorpayPlanId,
+        additionalWabaPrice: dto.additionalWabaPrice ?? null,
+        additionalNumberPrice: dto.additionalNumberPrice ?? null,
+        includedWabas: dto.includedWabas ?? null,
+        includedPhoneNumbersPerWaba: dto.includedPhoneNumbersPerWaba ?? null,
+        includedClients: dto.includedClients ?? null,
+        maxTeamMembers: dto.maxTeamMembers ?? null,
+        maxWebhookEndpoints: dto.maxWebhookEndpoints ?? null,
+        maxApiKeysPerWaba: dto.maxApiKeysPerWaba ?? null,
+        maxContacts: dto.maxContacts ?? null,
+        maxMessagesPerMinute: dto.maxMessagesPerMinute ?? null,
+        historyDays: dto.historyDays ?? null,
+        rank: dto.rank ?? 0,
+        sortOrder: dto.sortOrder ?? 0,
+        // Never on creation. A new tier becoming the highlighted one is a
+        // separate decision, made with the price list in front of you.
+        recommended: false,
+        active: true,
+      },
+      select: PLAN_SELECT,
+    });
+
+    await this.audit.record(actor, {
+      action: 'plan.created',
+      targetType: 'plan',
+      targetId: plan.code,
+      summary: dto.ssoOrgId
+        ? `Created ${plan.name}, private to ${dto.ssoOrgId}`
+        : `Created ${plan.name} on the public price list`,
+      after: {
+        price: plan.price,
+        currency: plan.currency,
+        ssoOrgId: plan.ssoOrgId,
+        ctaKind: plan.ctaKind,
+      },
+    });
+
+    return (await this.plans()).find((p) => p.code === plan.code)!;
   }
 
   async updatePlan(

@@ -7,6 +7,7 @@ import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { AgencyService } from 'src/agency/agency.service';
+import { RazorpayService } from 'src/billing/razorpay.service';
 import type { AdminActor } from './admin.guard';
 
 const ACTOR: AdminActor = { id: 1, email: 'ops@drasken.com', name: 'Ops' };
@@ -21,6 +22,7 @@ const mockPrisma = {
   plan: {
     findUnique: jest.fn(),
     findMany: jest.fn(),
+    create: jest.fn(),
     update: jest.fn(),
     updateMany: jest.fn(),
   },
@@ -50,6 +52,7 @@ const mockAgency = {
   detachClient: jest.fn(),
 };
 const mockAudit = { record: jest.fn() };
+const mockRazorpay = { createPlan: jest.fn() };
 
 const user = (over: Record<string, unknown> = {}) => ({
   id: 2,
@@ -121,6 +124,7 @@ describe('AdminService', () => {
     mockOrgSettings.clientsOf.mockResolvedValue([]);
     mockPlanLimits.forOrg.mockResolvedValue({ planCode: null, contacts: null });
     mockAudit.record.mockResolvedValue(undefined);
+    mockRazorpay.createPlan.mockResolvedValue({ id: 'plan_created' });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -131,6 +135,7 @@ describe('AdminService', () => {
         { provide: PlanLimitsService, useValue: mockPlanLimits },
         { provide: AgencyService, useValue: mockAgency },
         { provide: AdminAuditService, useValue: mockAudit },
+        { provide: RazorpayService, useValue: mockRazorpay },
       ],
     }).compile();
     service = module.get(AdminService);
@@ -181,6 +186,124 @@ describe('AdminService', () => {
       await expect(service.organisation('org_nobody')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('writing a new plan', () => {
+    const dto = {
+      code: 'agency-growth',
+      name: 'Agency Growth',
+      audience: 'Agencies with a handful of clients.',
+      price: 499_900,
+      includedClients: 10,
+      maxContacts: 10_000,
+    };
+
+    beforeEach(() => {
+      mockPrisma.plan.findUnique.mockResolvedValue(null);
+      mockPrisma.plan.create.mockImplementation(
+        ({ data }: { data: Record<string, unknown> }) => Promise.resolve(data),
+      );
+      mockPrisma.plan.findMany.mockResolvedValue([
+        plan({ code: 'agency-growth', name: 'Agency Growth' }),
+      ]);
+    });
+
+    it('creates the provider plan and the row together', async () => {
+      // A row with a price and no provider plan shows as sellable and refuses
+      // every attempt to buy it.
+      await service.createPlan(ACTOR, dto);
+
+      expect(mockRazorpay.createPlan).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 499_900, currency: 'INR' }),
+      );
+      const [{ data }] = mockPrisma.plan.create.mock.calls[0] as [
+        { data: { razorpayPlanId: string; ctaKind: string } },
+      ];
+      expect(data.razorpayPlanId).toBe('plan_created');
+      expect(data.ctaKind).toBe('subscribe');
+    });
+
+    it('leaves nothing behind when the provider refuses', async () => {
+      // The provider plan is created first for exactly this reason.
+      mockRazorpay.createPlan.mockRejectedValue(new Error('gateway down'));
+
+      await expect(service.createPlan(ACTOR, dto)).rejects.toThrow();
+      expect(mockPrisma.plan.create).not.toHaveBeenCalled();
+    });
+
+    it('needs no provider plan for a quoted tier', async () => {
+      await service.createPlan(ACTOR, {
+        code: 'enterprise',
+        name: 'Enterprise',
+        audience: 'Talk to us.',
+        priceLabel: 'Custom',
+        ctaKind: 'contact',
+      });
+
+      expect(mockRazorpay.createPlan).not.toHaveBeenCalled();
+      const [{ data }] = mockPrisma.plan.create.mock.calls[0] as [
+        { data: { razorpayPlanId: string | null; price: number | null } },
+      ];
+      expect(data.razorpayPlanId).toBeNull();
+      expect(data.price).toBeNull();
+    });
+
+    it('refuses a sellable plan with no price', async () => {
+      await expect(
+        service.createPlan(ACTOR, {
+          code: 'free',
+          name: 'Free',
+          audience: 'Nobody.',
+          ctaKind: 'subscribe',
+        }),
+      ).rejects.toThrow(/needs a price/);
+    });
+
+    it('refuses a quoted plan with nothing on the card', async () => {
+      await expect(
+        service.createPlan(ACTOR, {
+          code: 'blank',
+          name: 'Blank',
+          audience: 'Nobody.',
+          ctaKind: 'contact',
+        }),
+      ).rejects.toThrow(/priceLabel/);
+    });
+
+    it('refuses a code already in use', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue({ code: 'growth' });
+
+      await expect(
+        service.createPlan(ACTOR, { ...dto, code: 'growth' }),
+      ).rejects.toThrow(/already exists/);
+      expect(mockRazorpay.createPlan).not.toHaveBeenCalled();
+    });
+
+    it('scopes a private plan to the organisation it was written for', async () => {
+      await service.createPlan(ACTOR, { ...dto, ssoOrgId: 'org_northwind' });
+
+      const [{ data }] = mockPrisma.plan.create.mock.calls[0] as [
+        { data: { ssoOrgId: string } },
+      ];
+      expect(data.ssoOrgId).toBe('org_northwind');
+
+      const [, entry] = mockAudit.record.mock.calls[0] as [
+        unknown,
+        { summary: string },
+      ];
+      expect(entry.summary).toContain('private to org_northwind');
+    });
+
+    it('never makes a new plan the recommended one', async () => {
+      // A new tier becoming the highlighted one is a separate decision, made
+      // with the price list in front of you.
+      await service.createPlan(ACTOR, dto);
+
+      const [{ data }] = mockPrisma.plan.create.mock.calls[0] as [
+        { data: { recommended: boolean } },
+      ];
+      expect(data.recommended).toBe(false);
     });
   });
 

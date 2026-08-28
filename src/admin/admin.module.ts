@@ -7,6 +7,7 @@ import { OrgDirectoryModule } from 'src/org/org-directory.module';
 import { PlansModule } from 'src/plans/plans.module';
 import { AgencyModule } from 'src/agency/agency.module';
 import { UserModule } from 'src/user/user.module';
+import { BillingModule } from 'src/billing/billing.module';
 
 /**
  * The operator console.
@@ -19,7 +20,15 @@ import { UserModule } from 'src/user/user.module';
 @Module({
   // UserModule for the JwtModule it exports — the guard verifies the token
   // itself rather than letting a middleware answer 401 on this prefix.
-  imports: [OrgDirectoryModule, PlansModule, AgencyModule, UserModule],
+  imports: [
+    OrgDirectoryModule,
+    PlansModule,
+    AgencyModule,
+    UserModule,
+    // For RazorpayService: a plan's price only exists once the provider has a
+    // plan for it, and the console is where a plan is written.
+    BillingModule,
+  ],
   controllers: [AdminController],
   providers: [AdminService, AdminAuditService, AdminGuard],
   exports: [AdminService],

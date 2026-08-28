@@ -1,9 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
+  Length,
+  Matches,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -308,6 +311,138 @@ export class UpdatePlanDto {
   @ApiPropertyOptional() @IsOptional() @IsInt() sortOrder?: number;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() recommended?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() active?: boolean;
+
+  @ApiPropertyOptional({ enum: ['subscribe', 'contact'] })
+  @IsOptional()
+  @IsIn(['subscribe', 'contact'])
+  ctaKind?: 'subscribe' | 'contact';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  ctaLabel?: string;
+}
+
+/**
+ * A new plan.
+ *
+ * The one place an amount ever enters the system. A provider plan is immutable,
+ * so the price is set here, at creation, and never again — repricing is a new
+ * plan, which is exactly what this endpoint is for.
+ */
+export class CreatePlanDto {
+  @ApiProperty({
+    description:
+      'Stable identifier used in seeds, analytics and URLs. Lower case, ' +
+      'letters, numbers and hyphens.',
+  })
+  @IsString()
+  @Matches(/^[a-z0-9][a-z0-9-]{1,48}$/, {
+    message:
+      'code must be lower case letters, numbers and hyphens, 2–49 characters',
+  })
+  code: string;
+
+  @ApiProperty() @IsString() @MaxLength(120) name: string;
+
+  @ApiProperty({ description: 'Who the plan is for, in one line' })
+  @IsString()
+  @MaxLength(240)
+  audience: string;
+
+  @ApiPropertyOptional({
+    description:
+      'In paise. Omit for a quoted plan, which carries a label instead and ' +
+      'cannot be checked out.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(100)
+  price?: number;
+
+  @ApiPropertyOptional({
+    description: 'Shown instead of an amount, e.g. "Custom"',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  priceLabel?: string;
+
+  @ApiPropertyOptional({ default: 'INR' })
+  @IsOptional()
+  @IsString()
+  @Length(3, 3)
+  currency?: string;
+
+  @ApiPropertyOptional({ description: 'What the price is per, e.g. "/month"' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  unit?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'The organisation this is negotiated for. Set it and the plan never ' +
+      'appears on the public price list, and only that organisation can buy it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  ssoOrgId?: string;
+
+  @ApiPropertyOptional({ enum: ['subscribe', 'contact'], default: 'subscribe' })
+  @IsOptional()
+  @IsIn(['subscribe', 'contact'])
+  ctaKind?: 'subscribe' | 'contact';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  ctaLabel?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  additionalWabaPrice?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  additionalNumberPrice?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) includedWabas?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  includedPhoneNumbersPerWaba?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  includedClients?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) maxTeamMembers?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxWebhookEndpoints?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxApiKeysPerWaba?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) maxContacts?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxMessagesPerMinute?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) historyDays?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() rank?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() sortOrder?: number;
 }
 
 /** A person who can, or is about to be able to, use this console. */
