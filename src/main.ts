@@ -13,9 +13,15 @@ import { json } from 'express';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
-  // Preserve raw body bytes for webhook HMAC signature validation
+  // Preserve raw body bytes for webhook HMAC signature validation.
+  //
+  // The size limit is express's own default (100kb) raised to 1mb and made
+  // explicit. A bulk contact import is the largest legitimate body here and
+  // needs the headroom; nothing on this API needs more than that, and leaving
+  // it unbounded lets one request hold megabytes of parsed JSON per worker.
   app.use(
     json({
+      limit: '1mb',
       verify: (req: any, _res, buf) => {
         req.rawBody = buf;
       },
