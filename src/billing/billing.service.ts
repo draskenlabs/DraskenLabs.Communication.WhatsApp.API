@@ -679,7 +679,7 @@ export class BillingService {
     const promoted = upgrading ? await this.promoteUpgrade(sub) : sub;
 
     const remote = await this.razorpay.fetchSubscription(
-      promoted.razorpaySubscriptionId,
+      this.ownMandate(promoted),
     );
     const updated = await this.applyRemote(promoted, remote);
 
@@ -708,7 +708,7 @@ export class BillingService {
     },
   ) {
     try {
-      await this.razorpay.cancelSubscription(sub.razorpaySubscriptionId, true);
+      await this.razorpay.cancelSubscription(this.ownMandate(sub), true);
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.error(
@@ -1048,7 +1048,7 @@ export class BillingService {
       notes: {
         ssoOrgId: sub.ssoOrgId,
         planCode: target.code,
-        upgradeFrom: sub.razorpaySubscriptionId,
+        upgradeFrom: this.ownMandate(sub),
       },
     });
 
@@ -1107,7 +1107,7 @@ export class BillingService {
       razorpayPlanId: string | null;
     },
   ): Promise<SubscriptionStateDto> {
-    await this.razorpay.changeSubscriptionPlan(sub.razorpaySubscriptionId, {
+    await this.razorpay.changeSubscriptionPlan(this.ownMandate(sub), {
       planId: target.razorpayPlanId!,
       atCycleEnd: true,
     });
@@ -1198,7 +1198,7 @@ export class BillingService {
     const paidMonthLeft =
       !!sub.currentEnd && sub.currentEnd.getTime() > Date.now();
     const remote = await this.razorpay.cancelSubscription(
-      sub.razorpaySubscriptionId,
+      this.ownMandate(sub),
       paidMonthLeft,
     );
 
@@ -1332,11 +1332,17 @@ export class BillingService {
     id: number;
     ssoOrgId: string;
     wabaId: string | null;
-    razorpaySubscriptionId: string;
+    razorpaySubscriptionId: string | null;
     planRefId: number | null;
   }): Promise<void> {
     try {
       if (!sub.planRefId) return;
+      // An add-on is raised against a mandate, and a client an agency pays for
+      // has none of its own. Its accounts are counted against its own plan and
+      // charged to the agency's group — which is where that overage belongs,
+      // not on a subscription that cannot be debited.
+      const mandate = sub.razorpaySubscriptionId;
+      if (!mandate) return;
 
       const plan = await this.prisma.plan.findUnique({
         where: { id: sub.planRefId },
@@ -1367,8 +1373,16 @@ export class BillingService {
             })
           ).map((row) => row.wabaId);
 
-      await this.billExtraWabas(sub, plan, wabaIds.length);
-      await this.billExtraNumbers(sub, plan, wabaIds);
+      await this.billExtraWabas(
+        { razorpaySubscriptionId: mandate },
+        plan,
+        wabaIds.length,
+      );
+      await this.billExtraNumbers(
+        { razorpaySubscriptionId: mandate },
+        plan,
+        wabaIds,
+      );
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.error(`Could not bill overage for ${sub.id}: ${detail}`);
@@ -1545,6 +1559,24 @@ export class BillingService {
     }
   }
 
+  /**
+   * The provider subscription this row is charged on.
+   *
+   * Every write path in this service — confirming, upgrading, downgrading,
+   * cancelling, reconciling — acts on a mandate the organisation holds itself.
+   * A client an agency pays for holds none: it is a quantity on the agency's,
+   * and those actions belong to the agency's subscription rather than this one.
+   * Saying so once here beats seven assertions that it cannot be null.
+   */
+  private ownMandate(sub: { razorpaySubscriptionId: string | null }): string {
+    if (!sub.razorpaySubscriptionId) {
+      throw new BadRequestException(
+        'This organisation is billed through its agency, which holds the mandate.',
+      );
+    }
+    return sub.razorpaySubscriptionId;
+  }
+
   /** Nothing more will be charged and nothing more can be reactivated. */
   private isFinished(sub: Subscription): boolean {
     return (
@@ -1584,6 +1616,9 @@ export class BillingService {
           notIn: ['cancelled', 'expired', 'completed', 'superseded'],
         },
         OR: [{ currentEnd: { lt: new Date() } }, { currentEnd: null }],
+        // A client an agency pays for has no provider subscription to read.
+        // The agency's group is reconciled on its own.
+        razorpaySubscriptionId: { not: null },
       },
       take: 100,
     });
@@ -1591,7 +1626,7 @@ export class BillingService {
     for (const sub of stale) {
       try {
         const remote = await this.razorpay.fetchSubscription(
-          sub.razorpaySubscriptionId,
+          this.ownMandate(sub),
         );
         await this.applyRemote(sub, remote);
         await this.access.invalidatePayer(sub.ssoOrgId);

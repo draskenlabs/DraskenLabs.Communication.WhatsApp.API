@@ -141,20 +141,40 @@ describe('SubscriptionAccessService', () => {
       expect(where.wabaId).toBeNull();
     });
 
-    it("lets a client through on its agency's subscription", async () => {
-      // The agency pays once. A client organisation holds nothing of its own,
-      // so the lookup has to happen under the payer or every client is refused.
+    it("falls back to the agency's subscription when a client holds none", async () => {
+      // A client attached before per-client subscriptions existed holds
+      // nothing of its own, so the lookup has to reach the payer or every one
+      // of them is refused.
       mockRedis.getSubscriptionAccess.mockResolvedValue(null);
       mockSettings.billingOrgFor.mockResolvedValue('agency_1');
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
+      mockPrisma.subscription.findFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(row({ ssoOrgId: 'agency_1', wabaId: null }));
+
+      await expect(service.hasAccess('client_1', 'waba_1')).resolves.toBe(true);
+
+      const first = mockPrisma.subscription.findFirst.mock.calls[0][0] as {
+        where: { ssoOrgId: string };
+      };
+      const second = mockPrisma.subscription.findFirst.mock.calls[1][0] as {
+        where: { ssoOrgId: string };
+      };
+      expect(first.where.ssoOrgId).toBe('client_1');
+      expect(second.where.ssoOrgId).toBe('agency_1');
+    });
+
+    it("answers on the client's own subscription without asking who pays", async () => {
+      // Where an agency buys a plan for each client, the client holds one and
+      // it is what decides — including when the agency's own has lapsed.
+      mockRedis.getSubscriptionAccess.mockResolvedValue(null);
+      mockPrisma.subscription.findUnique.mockResolvedValue(null);
       mockPrisma.subscription.findFirst.mockResolvedValue(
-        row({ ssoOrgId: 'agency_1', wabaId: null }),
+        row({ ssoOrgId: 'client_1', wabaId: null }),
       );
 
       await expect(service.hasAccess('client_1', 'waba_1')).resolves.toBe(true);
-      const { where } = mockPrisma.subscription.findFirst.mock
-        .calls[0][0] as { where: { ssoOrgId: string } };
-      expect(where.ssoOrgId).toBe('agency_1');
+      expect(mockSettings.billingOrgFor).not.toHaveBeenCalled();
     });
 
     it("keys the cache on the payer's version, so one bump darkens every client", async () => {

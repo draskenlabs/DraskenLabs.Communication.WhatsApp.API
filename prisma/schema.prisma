@@ -244,8 +244,9 @@ model Plan {
 
   inherits      Plan?          @relation("PlanInheritance", fields: [inheritsPlanId], references: [id], onDelete: Restrict)
   inheritedBy   Plan[]         @relation("PlanInheritance")
-  features      PlanFeature[]
-  subscriptions Subscription[] @relation("SubscriptionPlan")
+  features       PlanFeature[]
+  subscriptions  Subscription[]       @relation("SubscriptionPlan")
+  billingGroups  AgencyBillingGroup[] @relation("BillingGroupPlan")
   /// Subscriptions that move onto this plan at their next renewal.
   pendingFor    Subscription[] @relation("SubscriptionPendingPlan")
 
@@ -383,7 +384,13 @@ model Subscription {
   ssoOrgId String
 
   razorpayCustomerId     String?
-  razorpaySubscriptionId String  @unique
+  /// The provider subscription this is charged on, when it has one of its own.
+  ///
+  /// Null for a client an agency pays for: those are charged through a shared
+  /// subscription with a quantity, held on `billingGroup`. Postgres treats
+  /// NULLs as distinct in a unique index, so the constraint still holds for
+  /// every row that does name one.
+  razorpaySubscriptionId String? @unique
   /// The Razorpay plan charged, recorded per subscription so a later price
   /// change cannot rewrite what an existing customer agreed to.
   planId                 String
@@ -433,16 +440,31 @@ model Subscription {
   /// That subscription's hosted authorisation page, as Checkout's fallback.
   pendingShortUrl               String?
 
+  /// The organisation paying for this, when it is not the one using it.
+  ///
+  /// Null means self-paid, which every subscription was until agencies could
+  /// buy for their clients. `ssoOrgId` is who it entitles; this is who is
+  /// charged, and the two are only ever different for an agency's client.
+  payerOrgId String?
+
+  /// The shared provider subscription this client is a quantity on.
+  ///
+  /// An agency pays for its clients as one subscription per plan with a
+  /// quantity, because a subscription per client would be an authorisation per
+  /// client. Null for anything self-paid.
+  billingGroupId Int?
+
   /// Who registered it — the person the billing emails go to.
   createdByUserId Int
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  waba        Waba?                 @relation(fields: [wabaId], references: [wabaId])
-  plan        Plan?                 @relation("SubscriptionPlan", fields: [planRefId], references: [id], onDelete: Restrict)
-  pendingPlan Plan?                 @relation("SubscriptionPendingPlan", fields: [pendingPlanRefId], references: [id], onDelete: Restrict)
-  payments    SubscriptionPayment[]
+  waba         Waba?                 @relation(fields: [wabaId], references: [wabaId])
+  plan         Plan?                 @relation("SubscriptionPlan", fields: [planRefId], references: [id], onDelete: Restrict)
+  pendingPlan  Plan?                 @relation("SubscriptionPendingPlan", fields: [pendingPlanRefId], references: [id], onDelete: Restrict)
+  payments     SubscriptionPayment[]
+  billingGroup AgencyBillingGroup?   @relation(fields: [billingGroupId], references: [id], onDelete: SetNull)
 
   // An organisation has at most one subscription that is not tied to a single
   // account. `@@unique([wabaId, ssoOrgId])` cannot say that — Postgres treats
@@ -455,6 +477,63 @@ model Subscription {
   @@index([planRefId])
   @@index([pendingPlanRefId])
   @@index([ssoOrgId])
+  @@index([status])
+  @@index([payerOrgId])
+  @@index([billingGroupId])
+}
+
+/// One mandate an agency holds, for one plan, covering several clients.
+///
+/// A subscription per client would mean an authorisation per client, which
+/// nobody would sit through. Instead an agency holds one provider subscription
+/// per plan it uses, and the quantity is how many of its clients are on that
+/// plan: six on Growth and two on Business is two mandates, at quantity six and
+/// two.
+///
+/// The client's own `Subscription` row is still what every limit and paywall
+/// check reads. This is only how the money is taken.
+model AgencyBillingGroup {
+  id Int @id @default(autoincrement())
+
+  /// The agency being charged.
+  agencyOrgId String
+  /// The plan its clients on this group are on.
+  planRefId   Int
+
+  razorpayCustomerId     String?
+  razorpaySubscriptionId String  @unique
+  /// The provider plan charged, recorded per group so a later price change
+  /// cannot rewrite what this agency agreed to.
+  planId                 String
+
+  /// How many clients this is charging for. Kept here rather than counted
+  /// from the subscriptions each time: it is what was last sent to the
+  /// provider, and a disagreement with the row count is a bug worth seeing.
+  quantity Int @default(0)
+
+  status SubscriptionStatus @default(created)
+
+  currentStart DateTime?
+  currentEnd   DateTime?
+
+  cancelAtCycleEnd Boolean   @default(false)
+  cancelledAt      DateTime?
+
+  /// The hosted authorisation page, until the mandate is registered.
+  shortUrl String?
+
+  createdByUserId Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan          Plan           @relation("BillingGroupPlan", fields: [planRefId], references: [id], onDelete: Restrict)
+  subscriptions Subscription[]
+
+  /// One group per agency and plan. A second would be a second mandate for
+  /// the same thing.
+  @@unique([agencyOrgId, planRefId])
+  @@index([agencyOrgId])
   @@index([status])
 }
 

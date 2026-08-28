@@ -195,7 +195,14 @@ export class AdminSubscriptionRowDto {
   @ApiProperty() currency: string;
   @ApiProperty({ nullable: true }) currentEnd: Date | null;
   @ApiProperty() cancelAtCycleEnd: boolean;
-  @ApiProperty() razorpaySubscriptionId: string;
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Null for a client an agency pays for — it is a quantity on the ' +
+      'agency’s subscription rather than one of its own.',
+  })
+  razorpaySubscriptionId: string | null;
+
   @ApiProperty({ nullable: true }) lastPaymentAt: Date | null;
   @ApiProperty() createdAt: Date;
 }

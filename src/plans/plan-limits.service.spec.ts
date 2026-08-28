@@ -115,18 +115,43 @@ describe('PlanLimitsService', () => {
       expect(limits.includedWabas).toBe(50);
     });
 
-    it('resolves the paying organisation before looking for a subscription', async () => {
-      // A client organisation has no subscription of its own; its agency's is
-      // the one that answers for it.
+    it('falls back to the paying organisation when it has nothing of its own', async () => {
+      // A client attached before per-client subscriptions existed holds none,
+      // and inherits its agency's exactly as it did.
       mockSettings.billingOrgFor.mockResolvedValue('agency_1');
-      mockPrisma.subscription.findMany.mockResolvedValue([{ plan: agency }]);
+      mockPrisma.subscription.findMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ plan: agency }]);
 
       const limits = await service.forOrg('client_1');
 
       expect(mockSettings.billingOrgFor).toHaveBeenCalledWith('client_1');
       const { where } = firstArg<WhereArg>(mockPrisma.subscription.findMany);
-      expect(where.ssoOrgId).toBe('agency_1');
+      expect(where.ssoOrgId).toBe('client_1');
       expect(limits.planCode).toBe('agency');
+    });
+
+    it('holds a client to the plan bought for it, not to what its agency holds', async () => {
+      // The point of per-client subscriptions: a client on Growth is on
+      // Growth, even where the agency itself is on something better.
+      mockSettings.billingOrgFor.mockResolvedValue('agency_1');
+      mockPrisma.subscription.findMany.mockResolvedValue([{ plan: growth }]);
+
+      const limits = await service.forOrg('client_1');
+
+      expect(limits.planCode).toBe('growth');
+      // Never asked: the client answered for itself.
+      expect(mockSettings.billingOrgFor).not.toHaveBeenCalled();
+    });
+
+    it('does not ask the payer twice when the payer is the organisation', async () => {
+      mockSettings.billingOrgFor.mockResolvedValue('org_1');
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+
+      await service.forOrg('org_1');
+
+      // One read for itself, then the entry floor — not the same query twice.
+      expect(mockPrisma.subscription.findMany).toHaveBeenCalledTimes(1);
     });
 
     it('counts only subscriptions that are paying for something', async () => {

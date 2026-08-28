@@ -33,7 +33,9 @@ export class SubscriptionAccessService {
    * gets in; the same rule covers a failed renewal, where the previous month
    * remains paid for while Razorpay retries.
    */
-  static grants(sub: Pick<Subscription, 'status' | 'currentEnd'> | null): boolean {
+  static grants(
+    sub: Pick<Subscription, 'status' | 'currentEnd'> | null,
+  ): boolean {
     if (!sub) return false;
     // A superseded row grants nothing whatever its dates say. It was replaced
     // by the organisation's subscription, and letting a paid month on it keep
@@ -71,26 +73,46 @@ export class SubscriptionAccessService {
     const cached = await this.redis.getSubscriptionAccess(key);
     if (cached !== null) return cached;
 
-    // Whoever pays answers for it. A client organisation holds no subscription
-    // of its own; its agency's is the one that decides whether it may send.
-    const payer = await this.orgSettings.billingOrgFor(ssoOrgId);
-
-    // An organisation-level subscription covers every account the payer holds,
-    // so the account's own row is looked for first and the organisation's is
-    // what answers when there is none — which, after the move to org-level
-    // billing, is every account.
+    // The organisation's own subscription answers first. Where an agency buys
+    // a plan for each client, the client holds one and it is what decides.
+    //
+    // Only when it holds none does whoever pays answer instead — which is a
+    // client attached before per-client subscriptions existed, inheriting its
+    // agency's exactly as it did.
     const sub =
-      (await this.prisma.subscription.findUnique({
-        where: { wabaId_ssoOrgId: { wabaId, ssoOrgId: payer } },
-      })) ??
-      (await this.prisma.subscription.findFirst({
-        where: { ssoOrgId: payer, wabaId: null },
-        orderBy: { createdAt: 'desc' },
-      }));
+      (await this.forOrganisation(ssoOrgId, wabaId)) ??
+      (await this.fromPayer(ssoOrgId, wabaId));
 
     const allowed = SubscriptionAccessService.grants(sub);
     await this.redis.setSubscriptionAccess(key, allowed);
     return allowed;
+  }
+
+  /**
+   * The subscription an organisation holds itself.
+   *
+   * An organisation-level subscription covers every account it has, so the
+   * account's own row is looked for first and the organisation's answers when
+   * there is none — which, after the move to org-level billing, is every
+   * account.
+   */
+  private async forOrganisation(ssoOrgId: string, wabaId: string) {
+    return (
+      (await this.prisma.subscription.findUnique({
+        where: { wabaId_ssoOrgId: { wabaId, ssoOrgId } },
+      })) ??
+      (await this.prisma.subscription.findFirst({
+        where: { ssoOrgId, wabaId: null },
+        orderBy: { createdAt: 'desc' },
+      }))
+    );
+  }
+
+  /** Whoever pays for it, when the organisation holds nothing of its own. */
+  private async fromPayer(ssoOrgId: string, wabaId: string) {
+    const payer = await this.orgSettings.billingOrgFor(ssoOrgId);
+    if (payer === ssoOrgId) return null;
+    return this.forOrganisation(payer, wabaId);
   }
 
   /**
