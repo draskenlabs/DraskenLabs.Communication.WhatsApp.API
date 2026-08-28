@@ -65,9 +65,12 @@
 - `Subscription.planRefId` foreign key mapping a subscription to the plan it
   was sold from, leaving the Razorpay plan id untouched as the record of what
   is charged.
-- The published tiers and their feature lists seeded by the migration, with the
-  bullets republished alongside the columns whenever the columns change — a card
-  that disagrees with what is enforced is worse than a card with fewer bullets.
+- The published tiers seeded by the migration. **The bullets no longer restate
+  the numbers** (`20260828120000_plan_bullets_are_qualitative`): every limit is
+  already a column, and those columns are what enforcement reads, so publishing
+  the same figures again as sentences gave the card two sources for one fact.
+  The console renders the columns; what is left as a bullet is what a column
+  cannot say.
 - `GET /plans`, `GET /plans/mine` and `GET /plans/:code`, excluding
   `razorpayPlanId`.
 - Specs for the service (ordering, limit mapping, unpriced plans, the id that
