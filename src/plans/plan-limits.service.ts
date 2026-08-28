@@ -19,6 +19,16 @@ export interface EffectiveLimits {
   /* Billable — inclusion counts. */
   includedWabas: number | null;
   includedPhoneNumbersPerWaba: number | null;
+  /**
+   * Clients an agency plan includes.
+   *
+   * Sits with the inclusions because the intention is to sell clients by the
+   * unit, but it is the one that currently *refuses* — there is no per-client
+   * price to charge beyond it, and each client carries a full set of the
+   * plan's limits, so an unbounded roster is an unbounded estate on one
+   * subscription. `AgencyService.attachClient` enforces it as a ceiling until
+   * there is a price to move it back to the other column.
+   */
   includedClients: number | null;
   additionalWabaPrice: number | null;
   additionalNumberPrice: number | null;

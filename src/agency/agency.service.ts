@@ -120,6 +120,28 @@ export class AgencyService {
       );
     }
 
+    // Only a client that is not already on the roster takes a place. Calling
+    // this again for one the agency has is a rename, and refusing that at the
+    // limit would leave a full agency unable to correct a label.
+    if (client.agencyOrgId !== agencyOrgId) {
+      const [limits, held] = await Promise.all([
+        this.planLimits.forOrg(agencyOrgId),
+        this.prisma.organisationSettings.count({ where: { agencyOrgId } }),
+      ]);
+      // Classed as an inclusion rather than a ceiling in the schema, because
+      // the intention is to sell clients by the unit. Until there is a
+      // per-client price to charge, "included" with nothing beyond it is a
+      // number that means nothing — and each client carries a *full* set of
+      // the plan's limits, so an unbounded roster is an unbounded estate on
+      // one subscription. Enforced as a ceiling until it can be billed.
+      this.planLimits.assertWithin(
+        limits,
+        limits.includedClients,
+        held,
+        'client',
+      );
+    }
+
     await this.prisma.organisationSettings.upsert({
       where: { ssoOrgId },
       update: {

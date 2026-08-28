@@ -10,6 +10,7 @@ import { BaseResponseInterceptor } from 'src/common/interceptors/base-response.i
 import { GlobalExceptionFilter } from 'src/common/filters/global-exception.filter';
 import { MailService } from 'src/mail/mail.service';
 import { FakeRazorpay } from './fake-razorpay';
+import Redis from 'ioredis';
 
 /**
  * The whole API, against a real Postgres and a stand-in for Razorpay.
@@ -68,6 +69,10 @@ const MUTABLE_TABLES = [
   'PhoneQualityEvent',
   'WabaPhoneNumber',
   'WabaOrganisation',
+  // Agency and client relationships. Missing until an agency test finally
+  // counted rows and found somebody else's clients on its roster — every
+  // suite before that wrote these and none of them cleared them.
+  'OrganisationSettings',
   'UserApiKey',
   'UserWhatsapp',
   'Waba',
@@ -90,6 +95,12 @@ export async function startHarness(): Promise<Harness> {
 
   const razorpay = new FakeRazorpay();
   const apiBase = await razorpay.start();
+
+  // The suite's own connection, so `reset()` can clear the cache without
+  // widening RedisService's public surface for a test.
+  const cache = new Redis(
+    process.env.REDIS_URL_TEST ?? 'redis://127.0.0.1:6379',
+  );
 
   Object.assign(process.env, {
     DATABASE_URL: databaseUrl,
@@ -159,6 +170,11 @@ export async function startHarness(): Promise<Harness> {
 
     async reset() {
       razorpay.reset();
+      // Access answers are cached under a key carrying the payer's version, so
+      // a database truncated back to version 0 starts matching entries written
+      // before it. The version was never a cache-buster; it only looked like
+      // one while the rows survived the reset.
+      await cache.flushdb();
       await prisma.$executeRawUnsafe(
         `TRUNCATE TABLE ${MUTABLE_TABLES.map((t) => `"${t}"`).join(', ')} RESTART IDENTITY CASCADE`,
       );
@@ -200,6 +216,7 @@ export async function startHarness(): Promise<Harness> {
 
     async close() {
       await app.close();
+      await cache.quit();
       await razorpay.stop();
     },
   };

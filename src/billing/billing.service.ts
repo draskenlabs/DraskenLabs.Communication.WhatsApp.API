@@ -31,6 +31,7 @@ import {
   SubscriptionUsageDto,
 } from './dto/billing.dto';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
+import { OrgService } from 'src/org/org.service';
 
 /** Razorpay's status strings, which are also ours. Anything else is ignored. */
 const STATUSES = new Set<string>([
@@ -52,6 +53,18 @@ const EMPTY_USAGE: SubscriptionUsageDto = {
   includedPhoneNumbersPerWaba: null,
   additionalWabaPrice: null,
   additionalNumberPrice: null,
+  clients: null,
+  includedClients: null,
+  contacts: 0,
+  maxContacts: null,
+  webhookEndpoints: 0,
+  maxWebhookEndpointsPerWaba: null,
+  apiKeys: 0,
+  maxApiKeysPerWaba: null,
+  teamMembers: null,
+  maxTeamMembers: null,
+  maxMessagesPerMinute: null,
+  historyDays: null,
 };
 
 /** Unix seconds to a Date, tolerating the nulls Razorpay sends before a charge. */
@@ -90,6 +103,9 @@ export class BillingService {
     private readonly provisioning: WabaProvisioningService,
     private readonly orgSettings: OrganisationSettingsService,
     private readonly planLimits: PlanLimitsService,
+    // Seats are the SSO's to count, not ours. Read here so the billing page
+    // can show the allowance it sells against what is actually taken.
+    private readonly org: OrgService,
   ) {}
 
   /**
@@ -262,8 +278,11 @@ export class BillingService {
    * it likes; what the plan decides is how many are included and what the rest
    * cost, so the console shows a price for the next one rather than a refusal.
    */
-  async state(ssoOrgId: string): Promise<SubscriptionStateDto> {
-    return this.stateOf(ssoOrgId, await this.find(ssoOrgId));
+  async state(
+    ssoOrgId: string,
+    authorization?: string,
+  ): Promise<SubscriptionStateDto> {
+    return this.stateOf(ssoOrgId, await this.find(ssoOrgId), authorization);
   }
 
   /**
@@ -281,11 +300,31 @@ export class BillingService {
           pendingPlan?: { code: string; name: string } | null;
         })
       | null,
+    /**
+     * The caller's bearer token, when there is one. Only the team-member count
+     * needs it, and only the console's own request carries one — the webhook
+     * and write paths reach here without a session, and report that count as
+     * unknown rather than as zero.
+     */
+    authorization?: string,
   ): Promise<SubscriptionStateDto> {
-    const [covers, limits] = await Promise.all([
+    const [covers, limits, settings, contacts] = await Promise.all([
       this.coveredAccounts(ssoOrgId),
       this.planLimits.forOrg(ssoOrgId),
+      this.orgSettings.get(ssoOrgId),
+      this.prisma.contact.count({ where: { ssoOrgId } }),
     ]);
+
+    // Counted for the organisation being looked at, which is how the limit is
+    // applied: a client of an agency has its own contacts measured against the
+    // agency's allowance, not the agency's total across every client.
+    const clients = settings.isAgency
+      ? (await this.orgSettings.clientsOf(ssoOrgId)).length
+      : null;
+
+    const teamMembers = authorization
+      ? await this.teamMemberCount(ssoOrgId, authorization)
+      : null;
 
     const pendingAuthorisation = sub?.pendingRazorpaySubscriptionId
       ? {
@@ -308,9 +347,60 @@ export class BillingService {
         includedPhoneNumbersPerWaba: limits.includedPhoneNumbersPerWaba,
         additionalWabaPrice: limits.additionalWabaPrice,
         additionalNumberPrice: limits.additionalNumberPrice,
+        clients,
+        includedClients: limits.includedClients,
+        contacts,
+        maxContacts: limits.contacts,
+        webhookEndpoints: covers.reduce(
+          (sum, w) => sum + w.webhookEndpoints,
+          0,
+        ),
+        maxWebhookEndpointsPerWaba: limits.webhookEndpoints,
+        apiKeys: covers.reduce((sum, w) => sum + w.apiKeys, 0),
+        maxApiKeysPerWaba: limits.apiKeysPerWaba,
+        teamMembers,
+        maxTeamMembers: limits.teamMembers,
+        maxMessagesPerMinute: limits.messagesPerMinute,
+        historyDays: limits.historyDays,
       },
       pendingAuthorisation,
     });
+  }
+
+  /**
+   * Members plus pending invitations, or null if the SSO could not be asked.
+   *
+   * The only count on this page that does not live in our database. It is
+   * never allowed to fail the request: a billing page that 500s because the
+   * SSO is slow would hide the payment state over a line about seat usage, so
+   * an unreachable SSO reports "unknown" and the console shows the allowance
+   * without a figure against it.
+   *
+   * An invitation counts, because it is a seat somebody is about to take —
+   * which is exactly how `inviteMember` counts it when it refuses.
+   */
+  private async teamMemberCount(
+    ssoOrgId: string,
+    authorization: string,
+  ): Promise<number | null> {
+    try {
+      // The SSO client is untyped, so both answers arrive as `any`. Narrowed
+      // here rather than trusted: a shape we did not expect is "unknown", not
+      // a count.
+      const [members, invitations] = await Promise.all([
+        this.org.listMembers(ssoOrgId, authorization),
+        this.org.listInvitations(ssoOrgId, authorization),
+      ]);
+      if (!Array.isArray(members)) return null;
+      return (
+        members.length + (Array.isArray(invitations) ? invitations.length : 0)
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Could not read team members for ${ssoOrgId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -329,17 +419,51 @@ export class BillingService {
     });
     if (wabas.length === 0) return [];
 
-    const numbers = await this.prisma.wabaPhoneNumber.groupBy({
-      by: ['wabaId'],
-      where: { wabaId: { in: wabas.map((w) => w.wabaId) } },
-      _count: { _all: true },
-    });
-    const byWaba = new Map(numbers.map((n) => [n.wabaId, n._count._all]));
+    const wabaIds = wabas.map((w) => w.wabaId);
+
+    // Grouped rather than one query per account: this is the billing page, and
+    // the counts are what the meters and the add-on charge are read from.
+    const [numbers, endpoints, keys] = await Promise.all([
+      this.prisma.wabaPhoneNumber.groupBy({
+        by: ['wabaId'],
+        where: { wabaId: { in: wabaIds } },
+        _count: { _all: true },
+      }),
+      this.prisma.webhookEndpoint.groupBy({
+        by: ['wabaId'],
+        where: { ssoOrgId, wabaId: { in: wabaIds } },
+        _count: { _all: true },
+      }),
+      // Revoked keys are not held against the ceiling, so they are not counted
+      // towards it here either — the enforcement filters on `status` too.
+      this.prisma.userApiKey.groupBy({
+        by: ['wabaId'],
+        where: { ssoOrgId, wabaId: { in: wabaIds }, status: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const tally = (
+      rows: { wabaId: string | null; _count: { _all: number } }[],
+    ): Map<string, number> =>
+      new Map(
+        rows
+          .filter((r): r is { wabaId: string; _count: { _all: number } } =>
+            Boolean(r.wabaId),
+          )
+          .map((r) => [r.wabaId, r._count._all] as const),
+      );
+
+    const numbersBy = tally(numbers);
+    const endpointsBy = tally(endpoints);
+    const keysBy = tally(keys);
 
     return wabas.map((waba) => ({
       wabaId: waba.wabaId,
       name: waba.name,
-      phoneNumbers: byWaba.get(waba.wabaId) ?? 0,
+      phoneNumbers: numbersBy.get(waba.wabaId) ?? 0,
+      webhookEndpoints: endpointsBy.get(waba.wabaId) ?? 0,
+      apiKeys: keysBy.get(waba.wabaId) ?? 0,
     }));
   }
 

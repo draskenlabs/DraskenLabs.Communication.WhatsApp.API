@@ -26,6 +26,7 @@ import { SearchModule } from './search/search.module';
 import { BillingModule } from './billing/billing.module';
 import { PlansModule } from './plans/plans.module';
 import { AgencyModule } from './agency/agency.module';
+import { AdminModule } from './admin/admin.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import * as Joi from 'joi';
 
@@ -139,6 +140,7 @@ import * as Joi from 'joi';
     BillingModule,
     PlansModule,
     AgencyModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

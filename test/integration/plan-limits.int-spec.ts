@@ -2,6 +2,7 @@ import { BillingService } from 'src/billing/billing.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { WabaService } from 'src/waba/waba.service';
 import { WebhookEndpointsService } from 'src/webhooks/webhook-endpoints.service';
+import { AgencyService } from 'src/agency/agency.service';
 import { Harness, ORG, seedAccount, startHarness } from './harness';
 
 /**
@@ -18,6 +19,7 @@ describe('Plan limits (integration)', () => {
   let billing: BillingService;
   let endpoints: WebhookEndpointsService;
   let wabas: WabaService;
+  let agency: AgencyService;
 
   beforeAll(async () => {
     h = await startHarness();
@@ -25,6 +27,7 @@ describe('Plan limits (integration)', () => {
     billing = h.app.get(BillingService);
     endpoints = h.app.get(WebhookEndpointsService);
     wabas = h.app.get(WabaService);
+    agency = h.app.get(AgencyService);
   }, 60_000);
 
   afterAll(async () => {
@@ -244,6 +247,103 @@ describe('Plan limits (integration)', () => {
       // console says so — it is not turned away.
       expect(await h.prisma.waba.count()).toBe(4);
       expect((await limits.forOrg(ORG)).additionalWabaPrice).toBe(29900);
+    });
+  });
+
+  describe('how many clients an agency may hold', () => {
+    /** What the migration seeded, so the edits below can be put back. */
+    let seededIncludedClients: number | null = null;
+
+    beforeAll(async () => {
+      const growth = await h.prisma.plan.findUniqueOrThrow({
+        where: { code: 'growth' },
+        select: { includedClients: true },
+      });
+      seededIncludedClients = growth.includedClients;
+    });
+
+    // `reset()` truncates what a test writes but not the price list, which a
+    // migration seeds — so a suite that edits a plan has to put it back, or
+    // every later one reads limits this one invented.
+    afterEach(async () => {
+      await h.prisma.plan.update({
+        where: { code: 'growth' },
+        data: { includedClients: seededIncludedClients },
+      });
+    });
+
+    /**
+     * Each client carries a *full* set of the plan's limits — its own
+     * contacts, seats, endpoints and keys, counted against the agency's tier.
+     * So the roster length is the multiplier on the whole estate, and
+     * `includedClients` is the only thing bounding it.
+     */
+    async function agencyOn(clients: number): Promise<string> {
+      const { userId } = await seedAccount(h.prisma, { wabaId: 'waba_agency' });
+
+      // The subscription row directly, rather than through `subscribe()`.
+      // What is under test is the count against the plan, and going via the
+      // Razorpay stand-in would make this suite depend on the state another
+      // one left it in — which is exactly how it first failed.
+      const growth = await h.prisma.plan.update({
+        where: { code: 'growth' },
+        data: { includedClients: clients },
+        select: { id: true, razorpayPlanId: true },
+      });
+      await h.prisma.subscription.create({
+        data: {
+          ssoOrgId: ORG,
+          createdByUserId: userId,
+          razorpaySubscriptionId: `sub_agency_${Date.now()}`,
+          planId: growth.razorpayPlanId ?? 'plan_growth',
+          planRefId: growth.id,
+          status: 'active',
+          currentEnd: new Date(Date.now() + 20 * 24 * 3600 * 1000),
+        },
+      });
+
+      await agency.convert(ORG, true, userId);
+      return ORG;
+    }
+
+    it('refuses a client past the number the plan includes', async () => {
+      const agencyOrgId = await agencyOn(2);
+      await agency.attachClient(agencyOrgId, 'org_one');
+      await agency.attachClient(agencyOrgId, 'org_two');
+
+      await expect(
+        agency.attachClient(agencyOrgId, 'org_three'),
+      ).rejects.toThrow(/includes 2 clients, and you have 2/);
+
+      // And the refusal left nothing behind.
+      const settings = await h.prisma.organisationSettings.findUnique({
+        where: { ssoOrgId: 'org_three' },
+      });
+      expect(settings).toBeNull();
+    });
+
+    it('takes another once one is let go', async () => {
+      const agencyOrgId = await agencyOn(2);
+      await agency.attachClient(agencyOrgId, 'org_one');
+      await agency.attachClient(agencyOrgId, 'org_two');
+      await agency.detachClient(agencyOrgId, 'org_one');
+
+      await expect(
+        agency.attachClient(agencyOrgId, 'org_three'),
+      ).resolves.toBeDefined();
+    });
+
+    it("holds a client to the agency's plan, not to the entry tier", async () => {
+      // The point of the bound: the client inherits the agency's limits, so
+      // every client on the roster is another full allowance of them.
+      const agencyOrgId = await agencyOn(5);
+      await agency.attachClient(agencyOrgId, 'org_one');
+
+      const clientLimits = await limits.forOrg('org_one');
+      expect(clientLimits.planCode).toBe('growth');
+      expect(clientLimits.contacts).toBe(
+        (await limits.forOrg(agencyOrgId)).contacts,
+      );
     });
   });
 });

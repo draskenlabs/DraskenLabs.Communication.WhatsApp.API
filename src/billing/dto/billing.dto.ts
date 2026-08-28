@@ -74,14 +74,32 @@ export class CoveredAccountDto {
 
   @ApiProperty({ description: 'Phone numbers registered on it' })
   phoneNumbers: number;
+
+  @ApiProperty({ description: 'Webhook endpoints configured on it' })
+  webhookEndpoints: number;
+
+  @ApiProperty({ description: 'Live API keys issued for it' })
+  apiKeys: number;
 }
 
 /**
- * What the subscription covers against what it includes.
+ * What the organisation is using, against what its plan allows.
  *
- * The two are deliberately separate numbers. Nothing here is a cap — an
- * organisation may connect as many accounts and numbers as it likes — so the
- * console's job is to say what the next one will cost, not to refuse it.
+ * Two kinds of allowance sit here and they read differently, which is why the
+ * field names differ.
+ *
+ * `included*` is **what the price covers**. Nothing is capped — an organisation
+ * may connect as many accounts and numbers as it likes — so past the included
+ * count the add-on price applies and the console's job is to say what the next
+ * one costs, not to refuse it.
+ *
+ * `max*` is a **ceiling**, and reaching one refuses the next addition. Those
+ * are worth seeing before they refuse something, which is the whole reason
+ * they are reported here rather than only in the error.
+ *
+ * A count is `null` when it could not be established (team members live in the
+ * SSO, not in this database) or does not apply (clients, for an organisation
+ * that is not an agency). A limit is `null` when the plan names no number.
  */
 export class SubscriptionUsageDto {
   @ApiProperty({ description: 'WhatsApp Business Accounts connected' })
@@ -113,6 +131,67 @@ export class SubscriptionUsageDto {
     description: 'What each number past the included ones costs, in paise',
   })
   additionalNumberPrice: number | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Client organisations under this agency, or null if not one',
+  })
+  clients: number | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Clients the plan includes, or null when it names no number',
+  })
+  includedClients: number | null;
+
+  @ApiProperty({ description: 'Contacts stored by this organisation' })
+  contacts: number;
+
+  @ApiProperty({ nullable: true, description: 'Ceiling on contacts' })
+  maxContacts: number | null;
+
+  @ApiProperty({ description: 'Webhook endpoints across all accounts' })
+  webhookEndpoints: number;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Ceiling on webhook endpoints, applied to each account',
+  })
+  maxWebhookEndpointsPerWaba: number | null;
+
+  @ApiProperty({ description: 'Live API keys across all accounts' })
+  apiKeys: number;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Ceiling on API keys, applied to each account',
+  })
+  maxApiKeysPerWaba: number | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Members and pending invitations, or null when the SSO could not be ' +
+      'asked. Absence is not zero.',
+  })
+  teamMembers: number | null;
+
+  @ApiProperty({ nullable: true, description: 'Ceiling on team members' })
+  maxTeamMembers: number | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Send rate the plan allows. A rate has no stock to count, so it is ' +
+      'reported as the allowance alone.',
+  })
+  maxMessagesPerMinute: number | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'How long message history is kept, in days',
+  })
+  historyDays: number | null;
 }
 
 /** An upgrade waiting for the customer to authorise a new mandate. */

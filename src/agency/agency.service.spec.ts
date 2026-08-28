@@ -18,6 +18,7 @@ const mockPrisma = {
     findMany: jest.fn(),
     upsert: jest.fn(),
     update: jest.fn(),
+    count: jest.fn(),
   },
   wabaOrganisation: { findMany: jest.fn() },
   wabaPhoneNumber: { groupBy: jest.fn() },
@@ -30,7 +31,15 @@ const mockPrisma = {
 // answering in the next describe block.
 let mockSettings: ReturnType<typeof organisationSettingsDouble>;
 let mockOrgDirectory: ReturnType<typeof orgDirectoryDouble>;
-const mockPlanLimits = { forOrg: jest.fn() };
+// The real `assertWithin`, bound to a bare instance. It is a pure function of
+// its arguments, and a stub would only prove that a stub throws.
+const realLimits = new PlanLimitsService(null as never, null as never);
+const mockPlanLimits = {
+  forOrg: jest.fn(),
+  assertWithin: realLimits.assertWithin.bind(
+    realLimits,
+  ) as PlanLimitsService['assertWithin'],
+};
 
 /** The settings row `get` should answer for one organisation. */
 const settings = (over: Record<string, unknown> = {}) => ({
@@ -50,6 +59,7 @@ describe('AgencyService', () => {
     mockSettings = organisationSettingsDouble();
     mockOrgDirectory = orgDirectoryDouble();
     mockPrisma.organisationSettings.findMany.mockResolvedValue([]);
+    mockPrisma.organisationSettings.count.mockResolvedValue(0);
     mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
     mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
     mockPrisma.contact.groupBy.mockResolvedValue([]);
@@ -159,6 +169,82 @@ describe('AgencyService', () => {
       expect(update.clientName).toBe('Kettle Coffee');
       expect(update.payerVersion).toEqual({ increment: 1 });
       expect(summary.name).toBe('Kettle Coffee');
+    });
+
+    it('refuses a client past what the agency plan includes', async () => {
+      // Each client carries a *full* set of the plan's limits — its own
+      // contacts, seats, endpoints and keys — so an unbounded roster is an
+      // unbounded estate on one subscription. This is the only thing bounding
+      // it, and until today it was displayed everywhere and enforced nowhere.
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planName: 'Agency',
+        includedClients: 5,
+      });
+      mockPrisma.organisationSettings.count.mockResolvedValue(5);
+
+      await expect(
+        service.attachClient('org_agency', 'org_client'),
+      ).rejects.toThrow(/includes 5 clients, and you have 5/);
+      expect(mockPrisma.organisationSettings.upsert).not.toHaveBeenCalled();
+    });
+
+    it('allows one more while there is room', async () => {
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planName: 'Agency',
+        includedClients: 5,
+      });
+      mockPrisma.organisationSettings.count.mockResolvedValue(4);
+
+      await expect(
+        service.attachClient('org_agency', 'org_client'),
+      ).resolves.toBeDefined();
+    });
+
+    it('lets a negotiated plan that names no number take any number', async () => {
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planName: 'Northwind',
+        includedClients: null,
+      });
+      mockPrisma.organisationSettings.count.mockResolvedValue(400);
+
+      await expect(
+        service.attachClient('org_agency', 'org_client'),
+      ).resolves.toBeDefined();
+    });
+
+    it('still renames a client the agency already has when it is full', async () => {
+      // Re-attaching one already on the roster takes no new place. Refusing it
+      // would leave a full agency unable to correct a label.
+      mockSettings.get.mockReset();
+      mockSettings.get
+        .mockResolvedValueOnce(
+          settings({ ssoOrgId: 'org_agency', isAgency: true }),
+        )
+        .mockResolvedValueOnce(
+          settings({ ssoOrgId: 'org_client', agencyOrgId: 'org_agency' }),
+        );
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planName: 'Agency',
+        includedClients: 5,
+      });
+      mockPrisma.organisationSettings.count.mockResolvedValue(5);
+
+      await expect(
+        service.attachClient('org_agency', 'org_client', 'New label'),
+      ).resolves.toBeDefined();
+    });
+
+    it("counts the agency's own roster, not everybody's", async () => {
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planName: 'Agency',
+        includedClients: 5,
+      });
+
+      await service.attachClient('org_agency', 'org_client');
+
+      expect(mockPrisma.organisationSettings.count).toHaveBeenCalledWith({
+        where: { agencyOrgId: 'org_agency' },
+      });
     });
 
     it('refuses a client for an organisation that is not an agency', async () => {

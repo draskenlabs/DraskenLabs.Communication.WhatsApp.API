@@ -70,7 +70,7 @@ export class OrgService {
     }
   }
 
-  async listMembers(orgId: string, authorization: string) {
+  async listMembers(orgId: string, authorization: string): Promise<unknown> {
     try {
       const { data } = await axios.get(
         `${this.apiBase}/organizations/${orgId}/members`,
@@ -162,7 +162,10 @@ export class OrgService {
     }
   }
 
-  async listInvitations(orgId: string, authorization: string) {
+  async listInvitations(
+    orgId: string,
+    authorization: string,
+  ): Promise<unknown> {
     try {
       const { data } = await axios.get(
         `${this.apiBase}/organizations/${orgId}/invitations`,
