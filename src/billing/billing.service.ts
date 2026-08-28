@@ -33,6 +33,7 @@ import {
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { OrgService } from 'src/org/org.service';
 import { AgencyBillingService } from './agency-billing.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
 
 /** Razorpay's status strings, which are also ours. Anything else is ignored. */
 const STATUSES = new Set<string>([
@@ -110,6 +111,7 @@ export class BillingService {
     // An agency's mandate covers several clients at once; its webhooks reach
     // no single subscription and are applied through here.
     private readonly agencyBilling: AgencyBillingService,
+    private readonly orgDirectory: OrgDirectoryService,
   ) {}
 
   /**
@@ -197,6 +199,7 @@ export class BillingService {
       payments?: SubscriptionPaymentDto[];
       covers?: CoveredAccountDto[];
       usage?: SubscriptionUsageDto;
+      payerName?: string | null;
       pendingAuthorisation?: PendingAuthorisationDto | null;
     } = {},
   ): SubscriptionStateDto {
@@ -209,6 +212,8 @@ export class BillingService {
       active: SubscriptionAccessService.grants(sub),
       covers,
       usage: extras.usage ?? EMPTY_USAGE,
+      payerOrgId: sub?.payerOrgId ?? null,
+      payerName: extras.payerName ?? null,
       status: sub?.status ?? null,
       currentStart: sub?.currentStart ?? null,
       currentEnd: sub?.currentEnd ?? null,
@@ -340,7 +345,14 @@ export class BillingService {
         }
       : null;
 
+    // Named where we know it, so the page can say "paid by Northwind Digital"
+    // rather than an opaque id.
+    const payerName = sub?.payerOrgId
+      ? await this.orgDirectory.name(sub.payerOrgId)
+      : null;
+
     return this.toState(sub, {
+      payerName,
       plan: sub ? await this.plan(sub.planId) : null,
       payments: await this.paymentsFor(sub?.id),
       covers,
@@ -1348,6 +1360,7 @@ export class BillingService {
     ssoOrgId: string;
     wabaId: string | null;
     razorpaySubscriptionId: string | null;
+    payerOrgId: string | null;
     planRefId: number | null;
   }): Promise<void> {
     try {
@@ -1372,9 +1385,14 @@ export class BillingService {
       });
       if (!plan) return;
 
-      // One subscription can answer for several organisations: an agency pays
-      // and its clients inherit, so overage is counted across all of them.
-      const scope = await this.orgSettings.billingScope(sub.ssoOrgId);
+      // Once, an agency's clients inherited its subscription and their
+      // accounts were pooled into its overage. They hold subscriptions of
+      // their own now, each counted against the plan bought for it — so this
+      // is the organisation itself, and only a client left on the older
+      // arrangement still reaches through to its agency.
+      const scope = sub.payerOrgId
+        ? [sub.ssoOrgId]
+        : await this.orgSettings.billingScope(sub.ssoOrgId);
 
       // The accounts this subscription covers. A per-WABA subscription — the
       // shape that existed before organisation-level billing — still answers

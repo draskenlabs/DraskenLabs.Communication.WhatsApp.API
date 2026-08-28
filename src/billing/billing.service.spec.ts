@@ -12,6 +12,7 @@ import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.serv
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { OrgService } from 'src/org/org.service';
 import { AgencyBillingService } from './agency-billing.service';
+import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { firstArg } from 'src/common/utils/mock-args';
 
 const mockPrisma = {
@@ -89,6 +90,7 @@ const mockOrg = { listMembers: jest.fn(), listInvitations: jest.fn() };
 
 /** An agency's mandate covers several clients; the group path handles those. */
 const mockAgencyBilling = { applyToGroup: jest.fn() };
+const mockOrgDirectory = { name: jest.fn() };
 
 const mockPlanLimits = { forOrg: jest.fn() };
 
@@ -180,6 +182,7 @@ describe('BillingService', () => {
     mockOrg.listMembers.mockResolvedValue([]);
     mockOrg.listInvitations.mockResolvedValue([]);
     mockAgencyBilling.applyToGroup.mockResolvedValue(false);
+    mockOrgDirectory.name.mockResolvedValue(null);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BillingService,
@@ -193,6 +196,7 @@ describe('BillingService', () => {
         { provide: PlanLimitsService, useValue: mockPlanLimits },
         { provide: OrgService, useValue: mockOrg },
         { provide: AgencyBillingService, useValue: mockAgencyBilling },
+        { provide: OrgDirectoryService, useValue: mockOrgDirectory },
       ],
     }).compile();
     service = module.get<BillingService>(BillingService);
@@ -1312,9 +1316,9 @@ describe('BillingService', () => {
           name: 'Growth',
         });
         mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
-    mockPrisma.webhookEndpoint.groupBy.mockResolvedValue([]);
-    mockPrisma.userApiKey.groupBy.mockResolvedValue([]);
-    mockPrisma.contact.count.mockResolvedValue(0);
+        mockPrisma.webhookEndpoint.groupBy.mockResolvedValue([]);
+        mockPrisma.userApiKey.groupBy.mockResolvedValue([]);
+        mockPrisma.contact.count.mockResolvedValue(0);
         mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
         mockRazorpay.addSubscriptionAddon.mockResolvedValue({ id: 'ao_1' });
       });

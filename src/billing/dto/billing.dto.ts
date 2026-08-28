@@ -240,6 +240,21 @@ export class SubscriptionStateDto {
   @ApiProperty({
     nullable: true,
     description:
+      'The organisation paying for this one, when it is not itself. Set for ' +
+      'an agency’s client: the console shows what the plan is and who pays ' +
+      'for it, instead of offering a checkout that would be refused.',
+  })
+  payerOrgId: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What that organisation is called, where we know it',
+  })
+  payerName: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
       'Razorpay status, or null when this account was never subscribed',
     example: 'active',
   })

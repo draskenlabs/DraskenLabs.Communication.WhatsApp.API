@@ -17,6 +17,7 @@ import { SubscriptionAccessModule } from './subscription-access.module';
 import { ProvisioningModule } from 'src/provisioning/provisioning.module';
 import { PlansModule } from 'src/plans/plans.module';
 import { OrgModule } from 'src/org/org.module';
+import { OrgDirectoryModule } from 'src/org/org-directory.module';
 
 @Module({
   imports: [
@@ -29,6 +30,8 @@ import { OrgModule } from 'src/org/org.module';
     PlansModule,
     // Seats live in the SSO, so the team-members meter is read through here.
     OrgModule,
+    // What an organisation is called, for "paid by …" on a client's page.
+    OrgDirectoryModule,
   ],
   controllers: [BillingController],
   providers: [

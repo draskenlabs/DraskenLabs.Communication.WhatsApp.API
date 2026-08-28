@@ -135,3 +135,24 @@ export class ClientSubscribedDto {
   })
   authorisation: { subscriptionId: string; shortUrl: string | null } | null;
 }
+
+/** One mandate an agency holds, and what it covers. */
+export class AgencyMandateDto {
+  @ApiProperty() planCode: string;
+  @ApiProperty() planName: string;
+  @ApiProperty({ description: 'Clients on this plan' }) clients: number;
+  @ApiProperty({ nullable: true, description: 'Per client, in paise' })
+  pricePerClient: number | null;
+  @ApiProperty({ nullable: true, description: 'Clients times the price' })
+  monthly: number | null;
+  @ApiProperty() currency: string;
+  @ApiProperty() status: string;
+  @ApiProperty({ nullable: true }) currentEnd: Date | null;
+  @ApiProperty() cancelAtCycleEnd: boolean;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Where to authorise it, while it is still waiting to be',
+  })
+  authorisationUrl: string | null;
+}

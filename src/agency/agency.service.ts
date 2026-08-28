@@ -13,6 +13,7 @@ import { SsoService } from 'src/auth/sso.service';
 import { RedisService } from 'src/redis/redis.service';
 import { AgencyBillingService } from 'src/billing/agency-billing.service';
 import {
+  AgencyMandateDto,
   AgencyRosterDto,
   ClientSubscribedDto,
   ClientSummaryDto,
@@ -310,6 +311,35 @@ export class AgencyService {
         planName: limits.planName,
       },
     };
+  }
+
+  /**
+   * What the agency is paying, one line per mandate.
+   *
+   * One per plan rather than per client, so an agency with eight clients on
+   * two tiers reads two lines and a total — which is what it is actually
+   * charged, rather than eight separate figures it would have to add up.
+   */
+  async mandates(agencyOrgId: string): Promise<AgencyMandateDto[]> {
+    await this.assertAgency(agencyOrgId);
+    const groups = await this.agencyBilling.groupsFor(agencyOrgId);
+
+    return groups.map((group) => ({
+      planCode: group.plan.code,
+      planName: group.plan.name,
+      clients: group.quantity,
+      pricePerClient: group.plan.price,
+      monthly:
+        group.plan.price === null ? null : group.plan.price * group.quantity,
+      currency: group.plan.currency,
+      status: group.status,
+      currentEnd: group.currentEnd,
+      cancelAtCycleEnd: group.cancelAtCycleEnd,
+      // Only while there is something to authorise. Once the mandate is
+      // registered the link opens a page with nothing left to do on it.
+      authorisationUrl:
+        group.status === 'created' ? (group.shortUrl ?? null) : null,
+    }));
   }
 
   /** Rename a client. The label is the agency's, so this is theirs to change. */

@@ -2,6 +2,7 @@ import { AgencyBillingService } from 'src/billing/agency-billing.service';
 import { AgencyService } from 'src/agency/agency.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { SubscriptionAccessService } from 'src/billing/subscription-access.service';
+import { BillingService } from 'src/billing/billing.service';
 import { Harness, ORG, seedAccount, startHarness } from './harness';
 
 /**
@@ -19,6 +20,7 @@ describe('Agency billing (integration)', () => {
   let agency: AgencyService;
   let limits: PlanLimitsService;
   let access: SubscriptionAccessService;
+  let billing: BillingService;
 
   beforeAll(async () => {
     h = await startHarness();
@@ -26,6 +28,7 @@ describe('Agency billing (integration)', () => {
     agency = h.app.get(AgencyService);
     limits = h.app.get(PlanLimitsService);
     access = h.app.get(SubscriptionAccessService);
+    billing = h.app.get(BillingService);
   }, 60_000);
 
   afterAll(async () => {
@@ -242,6 +245,32 @@ describe('Agency billing (integration)', () => {
       await expect(access.hasAccess('org_kettle', 'waba_kettle')).resolves.toBe(
         true,
       );
+    });
+  });
+
+  describe("what a client's own billing page says", () => {
+    it('reports the plan bought for it, and who pays', async () => {
+      // It used to say "not subscribed" and "API keys refused" over keys that
+      // worked, and offer a Subscribe button that always failed — because the
+      // client held no subscription for the page to read.
+      const userId = await anAgency();
+      await take(userId, 'org_kettle', 'growth');
+      await authorise();
+
+      const state = await billing.state('org_kettle');
+
+      expect(state.planCode).toBe('growth');
+      expect(state.active).toBe(true);
+      expect(state.payerOrgId).toBe(ORG);
+    });
+
+    it('still refuses to sell a client a second subscription', async () => {
+      const userId = await anAgency();
+      await take(userId, 'org_kettle');
+
+      await expect(
+        billing.register(userId, 'org_kettle', 'growth'),
+      ).rejects.toThrow();
     });
   });
 

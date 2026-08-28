@@ -132,11 +132,14 @@ describe('SubscriptionAccessService', () => {
       // subscription is the organisation's and covers all of them.
       mockRedis.getSubscriptionAccess.mockResolvedValue(null);
       mockPrisma.subscription.findUnique.mockResolvedValue(null);
-      mockPrisma.subscription.findFirst.mockResolvedValue(row({ wabaId: null }));
+      mockPrisma.subscription.findFirst.mockResolvedValue(
+        row({ wabaId: null }),
+      );
 
       await expect(service.hasAccess('org_1', 'waba_9')).resolves.toBe(true);
-      const { where } = mockPrisma.subscription.findFirst.mock
-        .calls[0][0] as { where: { ssoOrgId: string; wabaId: null } };
+      const { where } = mockPrisma.subscription.findFirst.mock.calls[0][0] as {
+        where: { ssoOrgId: string; wabaId: null };
+      };
       expect(where.ssoOrgId).toBe('org_1');
       expect(where.wabaId).toBeNull();
     });

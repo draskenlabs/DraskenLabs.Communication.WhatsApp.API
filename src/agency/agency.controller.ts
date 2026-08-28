@@ -22,6 +22,7 @@ import {
 import { Request } from 'express';
 import { AgencyService } from './agency.service';
 import {
+  AgencyMandateDto,
   AgencyRosterDto,
   AttachClientDto,
   ClientSubscribedDto,
@@ -65,6 +66,18 @@ export class AgencyController {
    * phantom clients — an organisation id typed by hand into an attach endpoint
    * that never checked it existed.
    */
+  @Get('mandates')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'What the agency pays, one line per mandate' })
+  @ApiWrappedOkResponse({
+    dataDto: AgencyMandateDto,
+    isArray: true,
+    description: 'One per plan the agency has clients on',
+  })
+  async mandates(@Req() req: Request): Promise<AgencyMandateDto[]> {
+    return this.agency.mandates(this.orgOf(req));
+  }
+
   @Post('clients')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create a client and subscribe it to a plan' })

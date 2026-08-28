@@ -15,14 +15,20 @@ const config = (values: Record<string, string | undefined>) => ({
 });
 
 /** The axios instance `axios.create` hands the service. */
-const httpDouble = () => ({ post: jest.fn(), get: jest.fn(), patch: jest.fn() });
+const httpDouble = () => ({
+  post: jest.fn(),
+  get: jest.fn(),
+  patch: jest.fn(),
+});
 
 /** Razorpay's 400 for an email that is already on a customer. */
 const duplicateError = () => ({
   message: 'Request failed with status code 400',
   response: {
     status: 400,
-    data: { error: { description: 'Customer already exists for the merchant' } },
+    data: {
+      error: { description: 'Customer already exists for the merchant' },
+    },
   },
 });
 
@@ -44,7 +50,9 @@ const CONFIGURED = {
 
 /** The signature Checkout returns: HMAC over `payment_id|subscription_id`. */
 const sign = (paymentId: string, subscriptionId: string) =>
-  createHmac('sha256', SECRET).update(`${paymentId}|${subscriptionId}`).digest('hex');
+  createHmac('sha256', SECRET)
+    .update(`${paymentId}|${subscriptionId}`)
+    .digest('hex');
 
 describe('RazorpayService', () => {
   describe('isConfigured', () => {
@@ -148,7 +156,9 @@ describe('RazorpayService', () => {
       });
       const service = await build(CONFIGURED);
 
-      await expect(service.createCustomer({ email: 'a@example.com' })).resolves.toEqual({
+      await expect(
+        service.createCustomer({ email: 'a@example.com' }),
+      ).resolves.toEqual({
         id: 'cust_existing',
       });
     });
@@ -163,7 +173,9 @@ describe('RazorpayService', () => {
 
       await service.createCustomer({ name: 'Ada', email: 'a@example.com' });
 
-      expect(http.patch).toHaveBeenCalledWith('/customers/cust_existing', { name: 'Ada' });
+      expect(http.patch).toHaveBeenCalledWith('/customers/cust_existing', {
+        name: 'Ada',
+      });
     });
 
     it('pages until it finds the customer', async () => {
@@ -180,7 +192,9 @@ describe('RazorpayService', () => {
         });
       const service = await build(CONFIGURED);
 
-      await expect(service.createCustomer({ email: 'a@example.com' })).resolves.toEqual({
+      await expect(
+        service.createCustomer({ email: 'a@example.com' }),
+      ).resolves.toEqual({
         id: 'cust_existing',
       });
       expect(http.get).toHaveBeenLastCalledWith('/customers', {
@@ -190,12 +204,14 @@ describe('RazorpayService', () => {
 
     it('stops at a short page rather than paging forever', async () => {
       http.post.mockRejectedValue(duplicateError());
-      http.get.mockResolvedValue({ data: { items: [{ id: 'cust_x', email: 'x@e.com' }] } });
+      http.get.mockResolvedValue({
+        data: { items: [{ id: 'cust_x', email: 'x@e.com' }] },
+      });
       const service = await build(CONFIGURED);
 
-      await expect(service.createCustomer({ email: 'a@example.com' })).rejects.toThrow(
-        BadGatewayException,
-      );
+      await expect(
+        service.createCustomer({ email: 'a@example.com' }),
+      ).rejects.toThrow(BadGatewayException);
       expect(http.get).toHaveBeenCalledTimes(1);
     });
 
@@ -206,21 +222,24 @@ describe('RazorpayService', () => {
       http.get.mockRejectedValue(new Error('network'));
       const service = await build(CONFIGURED);
 
-      await expect(service.createCustomer({ email: 'a@example.com' })).rejects.toThrow(
-        'Customer already exists for the merchant',
-      );
+      await expect(
+        service.createCustomer({ email: 'a@example.com' }),
+      ).rejects.toThrow('Customer already exists for the merchant');
     });
 
     it('does not search for anything else that goes wrong', async () => {
       http.post.mockRejectedValue({
         message: 'boom',
-        response: { status: 400, data: { error: { description: 'Invalid email' } } },
+        response: {
+          status: 400,
+          data: { error: { description: 'Invalid email' } },
+        },
       });
       const service = await build(CONFIGURED);
 
-      await expect(service.createCustomer({ email: 'a@example.com' })).rejects.toThrow(
-        'Invalid email',
-      );
+      await expect(
+        service.createCustomer({ email: 'a@example.com' }),
+      ).rejects.toThrow('Invalid email');
       expect(http.get).not.toHaveBeenCalled();
     });
   });

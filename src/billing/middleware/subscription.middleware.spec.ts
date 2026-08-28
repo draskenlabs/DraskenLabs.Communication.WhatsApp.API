@@ -59,7 +59,11 @@ describe('SubscriptionMiddleware', () => {
   it('answers 402 when the key’s account is not subscribed', async () => {
     mockBilling.hasAccess.mockResolvedValue(false);
 
-    const req = { authType: 'apiKey', orgId: 'org_1', apiKeyWabaId: 'waba_2' } as any;
+    const req = {
+      authType: 'apiKey',
+      orgId: 'org_1',
+      apiKeyWabaId: 'waba_2',
+    } as any;
     await expect(middleware.use(req, {} as any, next)).rejects.toMatchObject({
       status: 402,
     });
@@ -94,7 +98,11 @@ describe('SubscriptionMiddleware', () => {
 
   it('refuses a key naming no account rather than failing open', async () => {
     await expect(
-      middleware.use({ authType: 'apiKey', orgId: 'org_1' } as any, {} as any, next),
+      middleware.use(
+        { authType: 'apiKey', orgId: 'org_1' } as any,
+        {} as any,
+        next,
+      ),
     ).rejects.toThrow(HttpException);
   });
 });

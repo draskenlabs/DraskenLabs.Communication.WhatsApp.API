@@ -37,6 +37,7 @@ export class AgencyModule {
       .forRoutes(
         { path: 'agency/clients', method: RequestMethod.GET },
         { path: 'agency/clients', method: RequestMethod.POST },
+        { path: 'agency/mandates', method: RequestMethod.GET },
         { path: 'agency/clients/:ssoOrgId', method: RequestMethod.PATCH },
       );
   }
