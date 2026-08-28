@@ -101,11 +101,18 @@ export class BillingService {
    * Null for a request that names no plan: a deployment with a single
    * configured Razorpay plan carries on exactly as it did.
    */
-  private async sellablePlan(planCode?: string) {
+  private async sellablePlan(planCode?: string, ssoOrgId?: string) {
     if (!planCode) return null;
 
     const plan = await this.prisma.plan.findFirst({
-      where: { code: planCode, active: true },
+      // A private plan is only sellable to the organisation it was written for.
+      // Without the match, knowing a code would be enough to buy somebody
+      // else's negotiated rate.
+      where: {
+        code: planCode,
+        active: true,
+        OR: [{ ssoOrgId: null }, ...(ssoOrgId ? [{ ssoOrgId }] : [])],
+      },
       select: {
         id: true,
         name: true,
@@ -119,8 +126,10 @@ export class BillingService {
     });
     if (!plan) throw new NotFoundException(`Plan ${planCode} is not on offer`);
 
-    // Agency is quoted, not sold. Letting Checkout open on it would charge
-    // whatever plan happened to be wired up, which is nobody's agreed price.
+    // The public Custom and Agency cards are marketing, not products: they
+    // carry no numbers and no Razorpay plan. A signed deal is a row of its own,
+    // scoped to the organisation and marked `subscribe`, so it checks out here
+    // like any other tier.
     if (plan.ctaKind === 'contact') {
       throw new BadRequestException(
         `${plan.name} is priced individually — contact sales rather than subscribing here.`,
@@ -353,7 +362,7 @@ export class BillingService {
     await this.ownedWaba(ssoOrgId, wabaId);
     // Checked before anything is created at Razorpay: a bad tier must fail
     // without leaving a customer or a half-made subscription behind.
-    const plan = await this.sellablePlan(planCode);
+    const plan = await this.sellablePlan(planCode, ssoOrgId);
     const existing = await this.find(ssoOrgId, wabaId);
 
     // Registering again while one is running would leave two mandates against
@@ -709,7 +718,7 @@ export class BillingService {
     // Refused before Razorpay is touched, as registering is: an unknown tier,
     // a quoted one or one this deployment has not wired up must fail without
     // changing anything.
-    const target = await this.sellablePlan(planCode);
+    const target = await this.sellablePlan(planCode, ssoOrgId);
     if (!target) throw new BadRequestException('A plan is required');
 
     const sub = await this.find(ssoOrgId, wabaId);

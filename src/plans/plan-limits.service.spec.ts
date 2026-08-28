@@ -3,6 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import { PlanLimitsService, EffectiveLimits } from './plan-limits.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
+import { firstArg } from 'src/common/utils/mock-args';
 
 const mockPrisma = {
   subscription: { findMany: jest.fn(), findUnique: jest.fn() },
@@ -10,15 +11,6 @@ const mockPrisma = {
 };
 
 const mockSettings = { billingOrgFor: jest.fn() };
-
-/**
- * The first argument a mocked Prisma call was made with, typed.
- *
- * `mock.calls[0][0]` is `any`, and reaching into it is how a spec quietly
- * stops checking anything — the shape is asserted here instead.
- */
-const firstArg = <T>(fn: jest.Mock): T =>
-  (fn.mock.calls as unknown as T[][])[0][0];
 
 type WhereArg = {
   where: {

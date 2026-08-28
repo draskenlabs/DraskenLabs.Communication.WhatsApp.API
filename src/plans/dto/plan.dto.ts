@@ -20,6 +20,35 @@ export class PlanLimitsDto {
   })
   phoneNumbersPerWaba: number | null;
 
+  @ApiProperty({
+    example: 20,
+    nullable: true,
+    description:
+      'Client organisations included. Only ever set on an agency plan.',
+  })
+  clients: number | null;
+
+  @ApiProperty({
+    example: 5,
+    nullable: true,
+    description: 'API keys per account.',
+  })
+  apiKeysPerWaba: number | null;
+
+  @ApiProperty({
+    example: 10000,
+    nullable: true,
+    description: 'Contacts in the organisation.',
+  })
+  contacts: number | null;
+
+  @ApiProperty({
+    example: 500,
+    nullable: true,
+    description: 'Messages a single API key may send in a minute.',
+  })
+  messagesPerMinute: number | null;
+
   @ApiProperty({ nullable: true })
   teamMembers: number | null;
 
@@ -73,6 +102,14 @@ export class PlanDto {
       'smallest currency unit',
   })
   additionalNumberPrice: number | null;
+
+  @ApiProperty({
+    example: 29900,
+    nullable: true,
+    description:
+      'Monthly price per WhatsApp Business Account beyond the included count, in paise.',
+  })
+  additionalWabaPrice: number | null;
 
   @ApiProperty({ type: PlanLimitsDto })
   limits: PlanLimitsDto;

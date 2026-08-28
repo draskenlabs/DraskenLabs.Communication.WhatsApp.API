@@ -25,6 +25,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { SearchModule } from './search/search.module';
 import { BillingModule } from './billing/billing.module';
 import { PlansModule } from './plans/plans.module';
+import { AgencyModule } from './agency/agency.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import * as Joi from 'joi';
 
@@ -92,6 +93,10 @@ import * as Joi from 'joi';
         LEGAL_EMAIL: Joi.string().email().optional(),
         // Enables POST /mail/broadcast when set. Unset means disabled.
         MAIL_ADMIN_TOKEN: Joi.string().optional(),
+        // Enables the operator endpoints under /agency/internal, which convert
+        // an organisation to an agency and move who pays for a client. Unset
+        // means disabled, which is what a self-hosted deployment wants.
+        AGENCY_ADMIN_TOKEN: Joi.string().optional(),
         // Razorpay — optional, like push and email. Without a key pair and a
         // plan the API runs normally, sells nothing and charges no one for the
         // Messaging API, which is what development and self-hosting need.
@@ -133,6 +138,7 @@ import * as Joi from 'joi';
     SearchModule,
     BillingModule,
     PlansModule,
+    AgencyModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -90,6 +90,23 @@ export class OrganisationSettingsService {
   }
 
   /**
+   * An agency's clients, with what the agency calls each one.
+   *
+   * `clientName` is ours, not the SSO's: an agency names a client when it takes
+   * it on, and nobody in that client organisation has to have logged in for the
+   * agency's switcher to read properly.
+   */
+  async clientRoster(
+    agencyOrgId: string,
+  ): Promise<{ ssoOrgId: string; clientName: string | null }[]> {
+    return this.prisma.organisationSettings.findMany({
+      where: { agencyOrgId },
+      select: { ssoOrgId: true, clientName: true },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  /**
    * The organisations one subscription answers for: the payer, and anyone
    * inheriting from it. What the overage counters are measured across.
    */
