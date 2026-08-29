@@ -150,6 +150,62 @@ describe('Invoicing (integration)', () => {
     });
   });
 
+  describe('the receipt', () => {
+    it('is raised with the invoice, in its own series', async () => {
+      const sub = await selfPaid();
+
+      await charge({ subscriptionId: sub, paymentId: 'pay_1' });
+
+      const receipt = await h.prisma.receipt.findFirstOrThrow({});
+      expect(receipt.number).toBe('RCT-WAC-2627-0001');
+      // Its own counter: both documents are the first of their kind, and
+      // neither took a number from the other's book.
+      const invoice = await h.prisma.invoice.findFirstOrThrow({});
+      expect(invoice.number).toBe('INV-WAC-2627-0001');
+      expect(receipt.invoiceId).toBe(invoice.id);
+      expect(receipt.amount).toBe(invoice.total);
+    });
+
+    it('rides the same email as the invoice, as a second attachment', async () => {
+      const sub = await selfPaid();
+
+      await charge({ subscriptionId: sub, paymentId: 'pay_1' });
+
+      const sent = mail.find((m) => m.options.template === 'billing.invoice');
+      const names = (sent?.options.attachments ?? []).map((a) => a.filename);
+      expect(names).toEqual([
+        'INV-WAC-2627-0001.pdf',
+        'RCT-WAC-2627-0001.pdf',
+      ]);
+
+      const receiptPdf = sent?.options.attachments?.[1];
+      expect(
+        Buffer.from(receiptPdf?.content ?? '', 'base64')
+          .toString('latin1')
+          .startsWith('%PDF-'),
+      ).toBe(true);
+    });
+
+    it('is stamped as sent alongside the invoice', async () => {
+      const sub = await selfPaid();
+
+      await charge({ subscriptionId: sub, paymentId: 'pay_1' });
+
+      const receipt = await h.prisma.receipt.findFirstOrThrow({});
+      expect(receipt.emailedAt).not.toBeNull();
+      expect(receipt.emailedTo).toBe('integration@example.test');
+    });
+
+    it('is not raised twice for a replayed charge', async () => {
+      const sub = await selfPaid();
+
+      await charge({ subscriptionId: sub, paymentId: 'pay_1', eventId: 'evt_a' });
+      await charge({ subscriptionId: sub, paymentId: 'pay_1', eventId: 'evt_b' });
+
+      expect(await h.prisma.receipt.count()).toBe(1);
+    });
+  });
+
   describe('the series', () => {
     it('hands three concurrent charges three distinct numbers', async () => {
       // The whole reason the counter is one INSERT … ON CONFLICT … RETURNING

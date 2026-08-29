@@ -500,6 +500,55 @@ export class InvoiceLineDto {
 }
 
 /**
+ * A receipt, as the console shows it.
+ *
+ * Deliberately thinner than an invoice: a receipt acknowledges money and
+ * points at the document that explains it, so it carries no lines and no tax
+ * split. `invoiceNumber` is how a reader gets from one to the other.
+ */
+export class ReceiptDto {
+  @ApiProperty({ example: 'RCT-WAC-2627-0001' }) number: string;
+
+  @ApiProperty({ example: '2627' }) financialYear: string;
+
+  @ApiProperty() issuedAt: Date;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'When the money actually arrived',
+  })
+  receivedAt: Date | null;
+
+  @ApiProperty({
+    nullable: true,
+    example: 'INV-WAC-2627-0001',
+    description: 'The invoice this settles',
+  })
+  invoiceNumber: string | null;
+
+  @ApiProperty() ssoOrgId: string;
+
+  @ApiProperty({ nullable: true }) organisationName: string | null;
+
+  @ApiProperty({ nullable: true, example: 'Growth' }) summary: string | null;
+
+  @ApiProperty({
+    description: 'What was received, in the smallest currency unit',
+    example: 117882,
+  })
+  amount: number;
+
+  @ApiProperty({ example: 'INR' }) currency: string;
+
+  @ApiProperty({ nullable: true, example: 'Visa ···· 4242' })
+  paymentMethod: string | null;
+
+  @ApiProperty({ nullable: true }) emailedAt: Date | null;
+
+  @ApiProperty({ example: 'pay_29QQoUBi66xm2f' }) razorpayPaymentId: string;
+}
+
+/**
  * An invoice as the console shows it.
  *
  * Everything here is the snapshot taken when the document was raised, not a

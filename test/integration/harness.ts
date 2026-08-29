@@ -75,11 +75,15 @@ export interface Harness {
 const MUTABLE_TABLES = [
   // Invoices and their lines. They outlive the subscription they invoiced, so
   // CASCADE from `Subscription` would not take them — they have to be named.
+  // Receipts cascade from their invoice, but are named anyway: the order here
+  // is the order they are truncated in, and a receipt outlives nothing.
+  'Receipt',
   'InvoiceLine',
   'Invoice',
-  // The series counter. Left behind and the next suite's first invoice is
+  // The series counters. Left behind and the next suite's first invoice is
   // numbered 4, which every assertion about a number would then have to know.
   'InvoiceCounter',
+  'ReceiptCounter',
   'WebhookDelivery',
   'WebhookEndpoint',
   'WebhookEvent',

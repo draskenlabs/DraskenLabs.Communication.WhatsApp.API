@@ -548,6 +548,15 @@ export class MailNotifications {
    * Returns whether it went, because the caller stamps the invoice with the
    * fact that it did.
    */
+  /**
+   * The invoice and the receipt for one payment, in one email.
+   *
+   * Two documents, one message, deliberately: they are raised at the same
+   * instant for the same debit, and sending them separately would mean a
+   * customer filing two mails and wondering whether they had been charged
+   * twice. The invoice is what their accountant needs; the receipt is what
+   * proves it was paid.
+   */
   async invoiceIssued(input: {
     email: string;
     name: string | null;
@@ -560,17 +569,30 @@ export class MailNotifications {
     total: string;
     periodEnd: Date | null;
     pdf: Buffer;
+    /** The receipt for the same payment, where one was raised. */
+    receiptNumber?: string | null;
+    receiptPdf?: Buffer | null;
   }): Promise<boolean> {
+    const receipted = !!(input.receiptNumber && input.receiptPdf);
+
     return this.mail.sendRaw(input.email, {
       kind: 'transactional',
       template: 'billing.invoice',
       subject: `Invoice ${input.number}`,
       heading: `Invoice ${input.number}`,
-      intro:
-        'Here is the invoice for your subscription payment. The PDF is ' +
-        'attached, and nothing is outstanding.',
+      intro: receipted
+        ? 'Here are the invoice and the receipt for your subscription ' +
+          'payment. Both are attached, and nothing is outstanding.'
+        : 'Here is the invoice for your subscription payment. The PDF is ' +
+          'attached, and nothing is outstanding.',
       facts: [
         ['Invoice number', input.number],
+        ...(receipted
+          ? ([['Receipt number', input.receiptNumber as string]] as [
+              string,
+              string,
+            ][])
+          : []),
         ['Invoice date', this.date(input.issuedAt)],
         ...(input.organisationName
           ? ([['Organisation', input.organisationName]] as [string, string][])
@@ -584,8 +606,12 @@ export class MailNotifications {
           : []),
       ],
       paragraphs: [
-        'Every payment raises its own invoice, and they are all listed in the ' +
-          'console if you need one again.',
+        receipted
+          ? 'The invoice sets out what was charged and the tax on it; the ' +
+            'receipt acknowledges the payment. Both are listed in the console ' +
+            'if you need them again.'
+          : 'Every payment raises its own invoice, and they are all listed in ' +
+            'the console if you need one again.',
       ],
       action: { label: 'View invoices', path: '/billing' },
       footnote:
@@ -597,6 +623,15 @@ export class MailNotifications {
           contentType: 'application/pdf',
           content: input.pdf.toString('base64'),
         },
+        ...(receipted
+          ? [
+              {
+                filename: `${input.receiptNumber as string}.pdf`,
+                contentType: 'application/pdf',
+                content: (input.receiptPdf as Buffer).toString('base64'),
+              },
+            ]
+          : []),
       ],
     });
   }

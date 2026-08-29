@@ -13,6 +13,7 @@ import {
 import { InvoiceSeller, formatAmount, renderInvoicePdf } from './invoice.pdf';
 import { placeOfSupplyLabel, splitTax, stateCodeOfGstin } from './gst';
 import { InvoiceDto } from './dto/billing.dto';
+import { ReceiptService } from './receipt.service';
 
 /** An invoice with the lines that make it up, which is the only useful shape. */
 export type InvoiceWithLines = Invoice & { lines: InvoiceLine[] };
@@ -119,6 +120,7 @@ export class InvoiceService {
     private readonly config: ConfigService,
     private readonly orgDirectory: OrgDirectoryService,
     private readonly mail: MailNotifications,
+    private readonly receipts: ReceiptService,
   ) {}
 
   /* ---------------------------------------------------------------- *
@@ -182,7 +184,7 @@ export class InvoiceService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const sequence = await this.nextSequence(tx, year);
-        return tx.invoice.create({
+        const invoice = await tx.invoice.create({
           data: {
             number: invoiceNumber(this.series, year, sequence),
             financialYear: year,
@@ -219,6 +221,12 @@ export class InvoiceService {
           },
           include: { lines: { orderBy: { position: 'asc' } } },
         });
+
+        // In the same transaction, so an invoice can never exist without the
+        // receipt that proves it was paid — a customer with one and not the
+        // other cannot demonstrate what they are entitled to.
+        await this.receipts.recordIn(tx, invoice);
+        return invoice;
       });
     } catch (err) {
       // Two deliveries of the same charge, racing. The one that lost reads the
@@ -473,8 +481,8 @@ export class InvoiceService {
    * ---------------------------------------------------------------- */
 
   /**
-   * Mail an invoice to the address on it, with the PDF attached, and record
-   * that it went.
+   * Mail the invoice and its receipt to the address on it, with both PDFs
+   * attached, and record that they went.
    *
    * A send that fails is left un-stamped rather than retried here: MailService
    * already retries a failed message on its own schedule, and `deliverPending`
@@ -488,6 +496,11 @@ export class InvoiceService {
       return false;
     }
 
+    // An invoice raised before receipts existed has none, and a receipt that
+    // somehow failed to write must not stop the invoice going out. Either way
+    // the customer gets the document that matters most.
+    const receipt = await this.receipts.forInvoice(invoice.id);
+
     const sent = await this.mail.invoiceIssued({
       email: invoice.billedToEmail,
       name: invoice.billedToName,
@@ -498,14 +511,25 @@ export class InvoiceService {
       total: formatAmount(invoice.total, invoice.currency),
       periodEnd: invoice.periodEnd,
       pdf: this.pdf(invoice),
+      receiptNumber: receipt?.number ?? null,
+      receiptPdf: receipt ? this.receipts.pdf(receipt, invoice) : null,
     });
 
     if (!sent) return false;
 
+    const emailedAt = new Date();
+    // Both stamped, because both were in the message. Stamping only the
+    // invoice would leave the sweep re-sending a receipt that has arrived.
     await this.prisma.invoice.update({
       where: { id: invoice.id },
-      data: { emailedAt: new Date(), emailedTo: invoice.billedToEmail },
+      data: { emailedAt, emailedTo: invoice.billedToEmail },
     });
+    if (receipt) {
+      await this.prisma.receipt.update({
+        where: { id: receipt.id },
+        data: { emailedAt, emailedTo: invoice.billedToEmail },
+      });
+    }
     return true;
   }
 
@@ -638,6 +662,14 @@ export class InvoiceService {
         (line) => line.ssoOrgId && allowed.includes(line.ssoOrgId),
       );
     return permitted ? invoice : null;
+  }
+
+  /** One invoice by row id, for joining a receipt back to its invoice. */
+  async byId(id: number): Promise<InvoiceWithLines | null> {
+    return this.prisma.invoice.findUnique({
+      where: { id },
+      include: { lines: { orderBy: { position: 'asc' } } },
+    });
   }
 
   /** Unscoped, for the operator console only. */

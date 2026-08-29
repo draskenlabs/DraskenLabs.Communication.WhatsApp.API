@@ -10,11 +10,20 @@ import {
   InvoiceService,
   InvoiceWithLines,
 } from './invoice.service';
+import { ReceiptService } from './receipt.service';
 import { firstArg } from 'src/common/utils/mock-args';
 
 const mockTx = {
   $queryRaw: jest.fn(),
   invoice: { create: jest.fn() },
+};
+
+// The receipt is written by its own service inside the same transaction, and
+// rendered beside the invoice when the pair are mailed.
+const mockReceipts = {
+  recordIn: jest.fn(),
+  forInvoice: jest.fn(),
+  pdf: jest.fn(() => Buffer.from('%PDF-receipt')),
 };
 
 const mockPrisma = {
@@ -26,6 +35,7 @@ const mockPrisma = {
   subscription: { findMany: jest.fn() },
   organisationSettings: { findMany: jest.fn(), findUnique: jest.fn() },
   user: { findUnique: jest.fn() },
+  receipt: { update: jest.fn() },
   $transaction: jest.fn((cb: (tx: typeof mockTx) => unknown): unknown =>
     cb(mockTx),
   ) as jest.Mock,
@@ -141,6 +151,16 @@ describe('InvoiceService', () => {
     // No tax identity on file unless a test puts one there: the default
     // customer is unregistered and has entered no address.
     mockPrisma.organisationSettings.findUnique.mockResolvedValue(null);
+    // A receipt is raised with every invoice; tests that care about it set
+    // their own. By default there is one, so the pair travel together.
+    mockReceipts.recordIn.mockResolvedValue({
+      id: 5,
+      number: 'RCT-WAC-2627-0001',
+    });
+    mockReceipts.forInvoice.mockResolvedValue({
+      id: 5,
+      number: 'RCT-WAC-2627-0001',
+    });
     mockPrisma.user.findUnique.mockResolvedValue({
       email: 'ada@example.com',
       firstName: 'Ada',
@@ -177,6 +197,7 @@ describe('InvoiceService', () => {
         { provide: ConfigService, useValue: mockConfig },
         { provide: OrgDirectoryService, useValue: mockOrgDirectory },
         { provide: MailNotifications, useValue: mockMail },
+        { provide: ReceiptService, useValue: mockReceipts },
       ],
     }).compile();
     service = module.get(InvoiceService);
@@ -481,6 +502,56 @@ describe('InvoiceService', () => {
       expect(invoice.sgstAmount).toBe(0);
       expect(invoice.igstAmount).toBe(0);
       expect(invoice.sacCode).toBeNull();
+    });
+  });
+
+  describe('the receipt', () => {
+    it('is raised in the same transaction as the invoice', async () => {
+      // An invoice without its receipt is a customer who cannot prove they
+      // paid. The pair commit together or not at all.
+      await service.issueFor(REQUEST);
+
+      expect(mockReceipts.recordIn).toHaveBeenCalledWith(
+        mockTx,
+        expect.objectContaining({ number: 'INV-WAC-2627-0001' }),
+      );
+    });
+
+    it('travels in the same email as the invoice', async () => {
+      await service.issueFor(REQUEST);
+
+      // Read off the typed double rather than matched, so the assertion is
+      // about the values and not about matcher shapes.
+      const [mailed] = mockMail.invoiceIssued.mock.calls[0];
+      expect(mailed.number).toBe('INV-WAC-2627-0001');
+      expect(mailed.receiptNumber).toBe('RCT-WAC-2627-0001');
+      expect(Buffer.isBuffer(mailed.receiptPdf)).toBe(true);
+    });
+
+    it('is stamped as sent alongside the invoice', async () => {
+      // Stamping only the invoice would leave the sweep re-sending a receipt
+      // that has already arrived.
+      await service.issueFor(REQUEST);
+
+      const stamped = firstArg<{
+        where: { id: number };
+        data: { emailedAt: Date; emailedTo: string };
+      }>(mockPrisma.receipt.update);
+      expect(stamped.where.id).toBe(5);
+      expect(stamped.data.emailedTo).toBe('ada@example.com');
+    });
+
+    it('does not stop the invoice going out when there is none', async () => {
+      // An invoice raised before receipts existed still has to be re-sendable.
+      mockReceipts.forInvoice.mockResolvedValue(null);
+
+      const sent = await service.deliver(row());
+
+      expect(sent).toBe(true);
+      expect(mockMail.invoiceIssued).toHaveBeenCalledWith(
+        expect.objectContaining({ receiptNumber: null, receiptPdf: null }),
+      );
+      expect(mockPrisma.receipt.update).not.toHaveBeenCalled();
     });
   });
 

@@ -24,11 +24,13 @@ import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { BillingService } from './billing.service';
 import { InvoiceService } from './invoice.service';
+import { ReceiptService } from './receipt.service';
 import { isInvoiceNumber } from './invoice.number';
 import {
   ChangePlanDto,
   ConfirmSubscriptionDto,
   InvoiceDto,
+  ReceiptDto,
   RegisterSubscriptionDto,
   SubscriptionRegisteredDto,
   SubscriptionStateDto,
@@ -44,6 +46,7 @@ export class BillingController {
   constructor(
     private readonly billing: BillingService,
     private readonly invoices: InvoiceService,
+    private readonly receipts: ReceiptService,
   ) {}
 
   @Get('subscription')
@@ -253,6 +256,71 @@ export class BillingController {
     );
     res.setHeader('Content-Length', String(pdf.length));
     res.end(pdf);
+  }
+
+  @Get('receipts')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Every receipt issued to this organisation',
+    description:
+      'What was received, as opposed to what was charged. Only this ' +
+      'organisation’s own: a receipt acknowledges money that left one ' +
+      'account, so a client an agency pays for has none of its own — its ' +
+      'agency holds them.',
+  })
+  @ApiWrappedOkResponse({ dataDto: ReceiptDto, isArray: true })
+  @ApiStandardErrorResponses()
+  async receiptList(@Req() req: Request): Promise<ReceiptDto[]> {
+    const receipts = await this.receipts.listForOrg(this.orgOf(req));
+    return Promise.all(
+      receipts.map(async (receipt) =>
+        this.receipts.toDto(receipt, await this.invoiceNumberFor(receipt)),
+      ),
+    );
+  }
+
+  @Get('receipts/:number/pdf')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The receipt as a PDF',
+    description:
+      'The same document that was emailed with the invoice when the payment ' +
+      'was taken. Only for a receipt issued to the caller.',
+  })
+  @ApiStandardErrorResponses()
+  async receiptPdf(
+    @Req() req: Request,
+    @Param('number') number: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const receipt = await this.receipts.findAddressedTo(
+      [this.orgOf(req)],
+      number,
+    );
+    if (!receipt) throw new NotFoundException(`No receipt ${number}`);
+
+    // The customer's address and registration live on the invoice, which is
+    // the document that states who they are for tax.
+    const invoice = await this.invoices.find(
+      (await this.invoiceNumberFor(receipt)) ?? '',
+    );
+    const pdf = this.receipts.pdf(receipt, invoice);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${this.receipts.filename(receipt)}"`,
+    );
+    res.setHeader('Content-Length', String(pdf.length));
+    res.end(pdf);
+  }
+
+  /** The number of the invoice a receipt settles, for display and rendering. */
+  private async invoiceNumberFor(receipt: {
+    invoiceId: number;
+  }): Promise<string | null> {
+    const invoice = await this.invoices.byId(receipt.invoiceId);
+    return invoice?.number ?? null;
   }
 
   /**

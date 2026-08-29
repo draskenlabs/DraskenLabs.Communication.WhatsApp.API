@@ -8,6 +8,7 @@ import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
 import { AgencyBillingService } from './agency-billing.service';
 import { InvoiceService } from './invoice.service';
+import { ReceiptService } from './receipt.service';
 import { RazorpayService } from './razorpay.service';
 import { RazorpaySignatureMiddleware } from './middleware/razorpay-signature.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
@@ -39,6 +40,7 @@ import { OrgDirectoryModule } from 'src/org/org-directory.module';
     BillingService,
     AgencyBillingService,
     InvoiceService,
+    ReceiptService,
     RazorpaySignatureMiddleware,
     SubscriptionMiddleware,
     AuthMiddleware,
@@ -49,6 +51,7 @@ import { OrgDirectoryModule } from 'src/org/org-directory.module';
     BillingService,
     AgencyBillingService,
     InvoiceService,
+    ReceiptService,
     SubscriptionMiddleware,
     SubscriptionAccessModule,
   ],
