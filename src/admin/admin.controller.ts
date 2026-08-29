@@ -10,6 +10,7 @@ import {
   Patch,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -17,11 +18,13 @@ import {
   ApiExcludeController,
   ApiOperation,
 } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { AdminGuard, actorOf } from './admin.guard';
 import { AdminService } from './admin.service';
+import { InvoiceService } from 'src/billing/invoice.service';
 import {
   AdminAuditPageDto,
+  AdminInvoicePageDto,
   AdminMeDto,
   AdminOrganisationDetailDto,
   AdminOrganisationPageDto,
@@ -48,7 +51,12 @@ import {
 @Controller('admin')
 @UseGuards(AdminGuard)
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    // Only to render one. Which invoices an operator may see is not a
+    // question — this console crosses every organisation boundary by design.
+    private readonly invoices: InvoiceService,
+  ) {}
 
   /**
    * Whether the caller is an operator.
@@ -92,6 +100,46 @@ export class AdminController {
     @Query('status') status?: string,
   ): Promise<AdminSubscriptionRowDto[]> {
     return this.admin.subscriptions(status);
+  }
+
+  @Get('invoices')
+  invoiceList(
+    @Query('search') search?: string,
+    @Query('ssoOrgId') ssoOrgId?: string,
+    @Query('page') page?: string,
+  ): Promise<AdminInvoicePageDto> {
+    return this.admin.invoices({
+      search,
+      ssoOrgId,
+      page: page ? Number(page) : undefined,
+    });
+  }
+
+  @Get('invoices/:number/pdf')
+  async invoicePdf(
+    @Param('number') number: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const invoice = await this.admin.invoice(number);
+    const pdf = this.invoices.pdf(invoice);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${this.invoices.filename(invoice)}"`,
+    );
+    res.setHeader('Content-Length', String(pdf.length));
+    res.end(pdf);
+  }
+
+  /** For the support case this screen exists for: "it never arrived". */
+  @Post('invoices/:number/resend')
+  @HttpCode(200)
+  resendInvoice(
+    @Req() req: Request,
+    @Param('number') number: string,
+  ): Promise<{ sent: boolean; to: string | null }> {
+    return this.admin.resendInvoice(actorOf(req), number);
   }
 
   @Get('plans')

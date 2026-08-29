@@ -12,6 +12,9 @@ import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { SsoService } from 'src/auth/sso.service';
 import { RedisService } from 'src/redis/redis.service';
 import { AgencyBillingService } from 'src/billing/agency-billing.service';
+import { InvoiceService, InvoiceWithLines } from 'src/billing/invoice.service';
+import { isInvoiceNumber } from 'src/billing/invoice.number';
+import { InvoiceDto } from 'src/billing/dto/billing.dto';
 import {
   AgencyMandateDto,
   AgencyRosterDto,
@@ -51,6 +54,9 @@ export class AgencyService {
     private readonly sso: SsoService,
     private readonly redis: RedisService,
     private readonly agencyBilling: AgencyBillingService,
+    // An agency's invoices are the agency's own; its clients' are its
+    // clients'. Both are read through here.
+    private readonly invoiceService: InvoiceService,
   ) {}
 
   /** Mark an organisation an agency, or demote one back. */
@@ -340,6 +346,53 @@ export class AgencyService {
       authorisationUrl:
         group.status === 'created' ? (group.shortUrl ?? null) : null,
     }));
+  }
+
+  /**
+   * Every invoice an agency should be able to see.
+   *
+   * Two halves, and both are needed. Its own are what it is paying now — one
+   * document per debit, itemised by client. Its clients' are what they paid
+   * for themselves before it took them on, or after it let them go: an agency
+   * asked to explain a client's billing history needs the whole of it, and the
+   * client may have nobody left who can sign in and produce it.
+   */
+  async invoices(agencyOrgId: string): Promise<InvoiceDto[]> {
+    await this.assertAgency(agencyOrgId);
+    const clients = await this.settings.clientsOf(agencyOrgId);
+    const invoices = await this.invoiceService.listForAgency(
+      agencyOrgId,
+      clients,
+    );
+    // Whole, not extracted: an agency pays these, and a client's own invoice
+    // from before it was taken on is one it is entitled to explain.
+    return invoices.map((invoice) => this.invoiceService.toDto(invoice));
+  }
+
+  /**
+   * One invoice, readable by this agency.
+   *
+   * Scoped to the agency and its roster: the numbers are sequential, so an
+   * unscoped lookup would let any agency walk the whole series.
+   */
+  async invoice(
+    agencyOrgId: string,
+    number: string,
+  ): Promise<InvoiceWithLines> {
+    await this.assertAgency(agencyOrgId);
+    if (!isInvoiceNumber(number)) {
+      throw new NotFoundException(`No invoice ${number}`);
+    }
+    const clients = await this.settings.clientsOf(agencyOrgId);
+    // Addressed to the agency or to one of its clients — not merely carrying a
+    // line for one, which would let an agency download another agency's
+    // document by taking on a client that once appeared on it.
+    const invoice = await this.invoiceService.findAddressedTo(
+      [agencyOrgId, ...clients],
+      number,
+    );
+    if (!invoice) throw new NotFoundException(`No invoice ${number}`);
+    return invoice;
   }
 
   /** Rename a client. The label is the agency's, so this is theirs to change. */

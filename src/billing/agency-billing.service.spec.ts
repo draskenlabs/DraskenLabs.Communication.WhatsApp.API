@@ -342,13 +342,16 @@ describe('AgencyBillingService', () => {
     it('moves every client on it, or their cover lapses in a month', async () => {
       // The quietest way this could break: the group renews, the clients do
       // not, and a month later every one of them is refused.
-      const handled = await service.applyToGroup('sub_group', {
+      const applied = await service.applyToGroup('sub_group', {
         status: 'active',
         current_start: 1_756_000_000,
         current_end: 1_758_600_000,
       });
 
-      expect(handled).toBe(true);
+      // The group is handed back rather than a bare `true`: the caller has one
+      // more thing to do with a captured debit, which is invoice it.
+      expect(applied?.billingGroupId).toBe(9);
+      expect(applied?.agencyOrgId).toBe('org_agency');
       const [{ where, data }] = mockPrisma.subscription.updateMany.mock
         .calls[0] as [
         { where: { billingGroupId: number }; data: { status: string } },
@@ -393,7 +396,7 @@ describe('AgencyBillingService', () => {
 
       await expect(
         service.applyToGroup('sub_unknown', { status: 'active' }),
-      ).resolves.toBe(false);
+      ).resolves.toBeNull();
     });
   });
 });

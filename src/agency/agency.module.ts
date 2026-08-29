@@ -39,6 +39,8 @@ export class AgencyModule {
         { path: 'agency/clients', method: RequestMethod.POST },
         { path: 'agency/mandates', method: RequestMethod.GET },
         { path: 'agency/clients/:ssoOrgId', method: RequestMethod.PATCH },
+        { path: 'agency/invoices', method: RequestMethod.GET },
+        { path: 'agency/invoices/:number/pdf', method: RequestMethod.GET },
       );
   }
 }

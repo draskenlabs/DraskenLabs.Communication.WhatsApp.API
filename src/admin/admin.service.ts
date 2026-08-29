@@ -3,16 +3,19 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { AgencyService } from 'src/agency/agency.service';
 import { RazorpayService } from 'src/billing/razorpay.service';
+import { InvoiceService, InvoiceWithLines } from 'src/billing/invoice.service';
 import { AdminAuditService } from './admin-audit.service';
 import type { AdminActor } from './admin.guard';
 import type {
   AdminAuditPageDto,
+  AdminInvoicePageDto,
   CreatePlanDto,
   AdminOrganisationDetailDto,
   AdminOrganisationPageDto,
@@ -127,6 +130,8 @@ export class AdminService {
     private readonly audit: AdminAuditService,
     // A price only ever enters the system as a provider plan, created here.
     private readonly razorpay: RazorpayService,
+    // Underscored to keep the name free for the method that lists them.
+    private readonly invoices_: InvoiceService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -496,6 +501,112 @@ export class AdminService {
         createdAt: row.createdAt,
       })),
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Invoices
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Every invoice raised, newest first, optionally narrowed.
+   *
+   * Unscoped by design — this is the only place a document can be found
+   * without knowing whose it is, which is what "somebody wrote in asking about
+   * INV-WAC-2627-0412" needs.
+   */
+  async invoices(opts: {
+    search?: string;
+    ssoOrgId?: string;
+    page?: number;
+  }): Promise<AdminInvoicePageDto> {
+    const term = opts.search?.trim();
+    const where: Prisma.InvoiceWhereInput = {
+      ...(opts.ssoOrgId
+        ? {
+            // A client's page shows what bought its month, not only what was
+            // charged to it — which for an agency's client is neither.
+            OR: [
+              { ssoOrgId: opts.ssoOrgId },
+              { lines: { some: { ssoOrgId: opts.ssoOrgId } } },
+            ],
+          }
+        : {}),
+      ...(term
+        ? {
+            AND: [
+              {
+                OR: [
+                  { number: { contains: term, mode: 'insensitive' } },
+                  { organisationName: { contains: term, mode: 'insensitive' } },
+                  { billedToEmail: { contains: term, mode: 'insensitive' } },
+                  {
+                    razorpayPaymentId: { contains: term, mode: 'insensitive' },
+                  },
+                  { ssoOrgId: { contains: term, mode: 'insensitive' } },
+                ],
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const page = Math.max(1, opts.page ?? 1);
+    const [rows, total] = await Promise.all([
+      this.prisma.invoice.findMany({
+        where,
+        orderBy: [{ issuedAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * PAGE_SIZE,
+        take: PAGE_SIZE,
+        include: { lines: { orderBy: { position: 'asc' } } },
+      }),
+      this.prisma.invoice.count({ where }),
+    ]);
+
+    return {
+      invoices: rows.map((invoice) => this.invoices_.toDto(invoice)),
+      total,
+      page,
+      totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
+      // What has been raised and never reached anybody. The one number on this
+      // screen that is a job rather than a record.
+      undelivered: await this.prisma.invoice.count({
+        where: { emailedAt: null },
+      }),
+    };
+  }
+
+  /** One invoice, for the operator console. Unscoped, like everything here. */
+  async invoice(number: string): Promise<InvoiceWithLines> {
+    const invoice = await this.invoices_.find(number);
+    if (!invoice) throw new NotFoundException(`No invoice ${number}`);
+    return invoice;
+  }
+
+  /**
+   * Send an invoice again, to the address on it.
+   *
+   * For the support case this screen exists for: a customer who says it never
+   * arrived. It goes to the address recorded on the document, not to one
+   * supplied with the request — an operator-triggered send to an arbitrary
+   * address is a way to mail somebody else's invoice anywhere.
+   */
+  async resendInvoice(
+    actor: AdminActor,
+    number: string,
+  ): Promise<{ sent: boolean; to: string | null }> {
+    const invoice = await this.invoice(number);
+    const sent = await this.invoices_.deliver(invoice);
+
+    await this.audit.record(actor, {
+      action: 'invoice.resend',
+      targetType: 'invoice',
+      targetId: number,
+      summary: sent
+        ? `Re-sent ${number} to ${invoice.billedToEmail}`
+        : `Could not re-send ${number}`,
+    });
+
+    return { sent, to: invoice.billedToEmail };
   }
 
   // ---------------------------------------------------------------------------

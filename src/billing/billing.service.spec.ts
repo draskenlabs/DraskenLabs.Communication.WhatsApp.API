@@ -12,6 +12,7 @@ import { WabaProvisioningService } from 'src/provisioning/waba-provisioning.serv
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { OrgService } from 'src/org/org.service';
 import { AgencyBillingService } from './agency-billing.service';
+import { InvoiceService } from './invoice.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { firstArg } from 'src/common/utils/mock-args';
 
@@ -90,6 +91,13 @@ const mockOrg = { listMembers: jest.fn(), listInvitations: jest.fn() };
 
 /** An agency's mandate covers several clients; the group path handles those. */
 const mockAgencyBilling = { applyToGroup: jest.fn() };
+// The document a debit leaves behind. Stubbed here: what it writes is proved
+// in its own suite and against a real database, and every path through this
+// service only has to not care whether it succeeded.
+const mockInvoices = {
+  issueFor: jest.fn(),
+  deliverPending: jest.fn(),
+};
 const mockOrgDirectory = { name: jest.fn() };
 
 const mockPlanLimits = { forOrg: jest.fn() };
@@ -181,7 +189,9 @@ describe('BillingService', () => {
     mockOrgSettings.clientsOf.mockResolvedValue([]);
     mockOrg.listMembers.mockResolvedValue([]);
     mockOrg.listInvitations.mockResolvedValue([]);
-    mockAgencyBilling.applyToGroup.mockResolvedValue(false);
+    mockAgencyBilling.applyToGroup.mockResolvedValue(null);
+    mockInvoices.issueFor.mockResolvedValue(null);
+    mockInvoices.deliverPending.mockResolvedValue(0);
     mockOrgDirectory.name.mockResolvedValue(null);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -196,6 +206,7 @@ describe('BillingService', () => {
         { provide: PlanLimitsService, useValue: mockPlanLimits },
         { provide: OrgService, useValue: mockOrg },
         { provide: AgencyBillingService, useValue: mockAgencyBilling },
+        { provide: InvoiceService, useValue: mockInvoices },
         { provide: OrgDirectoryService, useValue: mockOrgDirectory },
       ],
     }).compile();

@@ -14,6 +14,7 @@ import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { SsoService } from 'src/auth/sso.service';
 import { RedisService } from 'src/redis/redis.service';
 import { AgencyBillingService } from 'src/billing/agency-billing.service';
+import { InvoiceService } from 'src/billing/invoice.service';
 import { firstArg } from 'src/common/utils/mock-args';
 
 const mockPrisma = {
@@ -43,6 +44,13 @@ const mockRedis = { getSsoSession: jest.fn() };
 const mockAgencyBilling = {
   subscribeClient: jest.fn(),
   releaseClient: jest.fn(),
+};
+// Which invoices an agency may see is this service's decision; what one
+// contains is not, and is proved in the invoice service's own suite.
+const mockInvoices = {
+  listForAgency: jest.fn(),
+  findAddressedTo: jest.fn(),
+  toDto: jest.fn((invoice: { number: string }) => invoice),
 };
 
 const mockPlanLimits = {
@@ -85,6 +93,11 @@ describe('AgencyService', () => {
       authorisation: { subscriptionId: 'sub_new', shortUrl: 'https://pay' },
     });
     mockAgencyBilling.releaseClient.mockResolvedValue(undefined);
+    mockInvoices.listForAgency.mockResolvedValue([]);
+    mockInvoices.findAddressedTo.mockResolvedValue(null);
+    mockInvoices.toDto.mockImplementation(
+      (invoice: { number: string }) => invoice,
+    );
     mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
     mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
     mockPrisma.contact.groupBy.mockResolvedValue([]);
@@ -106,6 +119,7 @@ describe('AgencyService', () => {
         { provide: SsoService, useValue: mockSso },
         { provide: RedisService, useValue: mockRedis },
         { provide: AgencyBillingService, useValue: mockAgencyBilling },
+        { provide: InvoiceService, useValue: mockInvoices },
       ],
     }).compile();
     service = module.get(AgencyService);
@@ -610,6 +624,56 @@ describe('AgencyService', () => {
       expect(clients).toEqual([]);
       expect(totals.clients).toBe(0);
       expect(mockPrisma.wabaOrganisation.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('invoices', () => {
+    beforeEach(() => {
+      mockSettings.get.mockResolvedValue(settings({ isAgency: true }));
+      mockSettings.clientsOf.mockResolvedValue(['org_kettle', 'org_loom']);
+    });
+
+    it('covers the agency and its clients, not the agency alone', async () => {
+      // Its own are what it is paying now. Its clients' are what they paid
+      // before it took them on, or after it let them go — and an agency asked
+      // to explain a client's history needs both halves.
+      await service.invoices('org_agency');
+
+      expect(mockInvoices.listForAgency).toHaveBeenCalledWith('org_agency', [
+        'org_kettle',
+        'org_loom',
+      ]);
+    });
+
+    it('refuses for an organisation that manages nobody', async () => {
+      mockSettings.get.mockResolvedValue(settings());
+
+      await expect(service.invoices('org_1')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('rejects a number that is not one of ours before asking the database', async () => {
+      // The route parameter is the attack surface: a lookup by number must not
+      // become a search.
+      await expect(
+        service.invoice('org_agency', "'; DROP TABLE"),
+      ).rejects.toThrow(NotFoundException);
+      expect(mockInvoices.findAddressedTo).not.toHaveBeenCalled();
+    });
+
+    it('404s for a real number belonging to somebody else', async () => {
+      // The numbers are sequential, so an unscoped lookup would let any agency
+      // walk the whole series.
+      mockInvoices.findAddressedTo.mockResolvedValue(null);
+
+      await expect(
+        service.invoice('org_agency', 'INV-WAC-2627-0412'),
+      ).rejects.toThrow(NotFoundException);
+      expect(mockInvoices.findAddressedTo).toHaveBeenCalledWith(
+        ['org_agency', 'org_kettle', 'org_loom'],
+        'INV-WAC-2627-0412',
+      );
     });
   });
 

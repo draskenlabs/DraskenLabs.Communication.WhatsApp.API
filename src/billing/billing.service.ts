@@ -7,7 +7,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { Prisma, Subscription, SubscriptionStatus } from '@prisma/client';
+import {
+  Prisma,
+  Subscription,
+  SubscriptionPayment,
+  SubscriptionStatus,
+} from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
@@ -33,6 +38,7 @@ import {
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { OrgService } from 'src/org/org.service';
 import { AgencyBillingService } from './agency-billing.service';
+import { InvoiceService } from './invoice.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 
 /** Razorpay's status strings, which are also ours. Anything else is ignored. */
@@ -111,6 +117,9 @@ export class BillingService {
     // An agency's mandate covers several clients at once; its webhooks reach
     // no single subscription and are applied through here.
     private readonly agencyBilling: AgencyBillingService,
+    // Every captured debit leaves a numbered document behind. Raised here
+    // because this is where a payment is known to have been captured.
+    private readonly invoices: InvoiceService,
     private readonly orgDirectory: OrgDirectoryService,
   ) {}
 
@@ -253,12 +262,19 @@ export class BillingService {
     };
   }
 
-  /** The stored debits for a subscription, newest first. */
+  /**
+   * The stored debits for a subscription, newest first.
+   *
+   * Each carries the number of the invoice raised for it, so the console can
+   * link the document rather than making somebody go looking for the email it
+   * arrived in. Null on a payment taken before invoicing shipped, and on one
+   * that was never captured.
+   */
   private async paymentsFor(
     subscriptionId: number | undefined,
   ): Promise<SubscriptionPaymentDto[]> {
     if (!subscriptionId) return [];
-    return this.prisma.subscriptionPayment.findMany({
+    const payments = await this.prisma.subscriptionPayment.findMany({
       where: { subscriptionId },
       orderBy: [{ paidAt: 'desc' }, { id: 'desc' }],
       take: 12,
@@ -271,8 +287,14 @@ export class BillingService {
         method: true,
         methodDetail: true,
         paidAt: true,
+        invoice: { select: { number: true } },
       },
     });
+
+    return payments.map(({ invoice, ...payment }) => ({
+      ...payment,
+      invoiceNumber: invoice?.number ?? null,
+    }));
   }
 
   /**
@@ -1303,7 +1325,12 @@ export class BillingService {
 
     const sub = await this.prisma.subscription.findUnique({
       where: { razorpaySubscriptionId: entity.id },
-      include: { waba: { select: { name: true } } },
+      include: {
+        waba: { select: { name: true } },
+        // Named on the invoice this charge raises, snapshotted at issue so a
+        // tier renamed next month cannot rewrite a document already sent.
+        plan: { select: { code: true, name: true } },
+      },
     });
 
     if (!sub) {
@@ -1311,12 +1338,36 @@ export class BillingService {
       // subscription, so it is looked for separately. Without this a client's
       // period never moves and its access lapses a month after it was taken
       // on — the quietest way this could break.
-      const handled = await this.agencyBilling.applyToGroup(
+      const applied = await this.agencyBilling.applyToGroup(
         entity.id,
         entity,
         this.paymentRow(payment),
       );
-      if (handled) return;
+      if (applied) {
+        // One debit, several clients, one document — addressed to the agency,
+        // because the agency is whose bank moved. Which clients it bought for
+        // is what the invoice's lines say.
+        if (applied.payment?.status === 'captured') {
+          await this.invoices.issueFor({
+            paymentId: applied.payment.id,
+            razorpayPaymentId: applied.payment.razorpayPaymentId,
+            razorpayInvoiceId: applied.payment.razorpayInvoiceId,
+            ssoOrgId: applied.agencyOrgId,
+            billingGroupId: applied.billingGroupId,
+            userId: applied.userId,
+            planCode: applied.planCode,
+            planName: applied.planName,
+            amount: applied.payment.amount,
+            currency: applied.payment.currency,
+            paidAt: applied.payment.paidAt,
+            method: applied.payment.method,
+            methodDetail: applied.payment.methodDetail,
+            periodStart: applied.currentStart,
+            periodEnd: applied.currentEnd,
+          });
+        }
+        return;
+      }
 
       // A subscription created against another environment sharing the same
       // Razorpay account. Recorded above, then left alone.
@@ -1328,7 +1379,34 @@ export class BillingService {
     const currentEnd = at(entity.current_end);
 
     await this.applyRemote(sub, entity);
-    await this.recordPayment(sub.id, payment);
+    const recorded = await this.recordPayment(sub.id, payment);
+
+    // Money has moved, so there is a document to raise. After the payment row,
+    // so the invoice can point at it; before the emails below, so a customer
+    // never gets "your subscription is active" and its invoice out of order.
+    // Only a captured debit is invoiced: an authorised-but-uncaptured payment
+    // is money that has not moved, and a failed one is money that never will.
+    if (recorded?.status === 'captured') {
+      await this.invoices.issueFor({
+        paymentId: recorded.id,
+        razorpayPaymentId: recorded.razorpayPaymentId,
+        razorpayInvoiceId: recorded.razorpayInvoiceId,
+        ssoOrgId: sub.ssoOrgId,
+        userId: sub.createdByUserId,
+        planCode: sub.plan?.code ?? null,
+        planName: sub.plan?.name ?? null,
+        amount: recorded.amount,
+        currency: recorded.currency,
+        paidAt: recorded.paidAt,
+        method: recorded.method,
+        methodDetail: recorded.methodDetail,
+        // The cycle this charge bought, from the event rather than from our
+        // row: the row is written from the same event, but the period is what
+        // the customer is being invoiced *for*.
+        periodStart: at(entity.current_start),
+        periodEnd: currentEnd,
+      });
+    }
     // A cycle has just been paid for; queue what the next one owes for the
     // numbers on the account beyond the one the plan includes.
     if (event === 'subscription.charged') {
@@ -1537,8 +1615,8 @@ export class BillingService {
   private async recordPayment(
     subscriptionId: number,
     payment: RazorpayPayment | undefined,
-  ): Promise<void> {
-    if (!payment?.id) return;
+  ): Promise<SubscriptionPayment | null> {
+    if (!payment?.id) return null;
 
     const data = {
       razorpayInvoiceId: payment.invoice_id ?? null,
@@ -1551,7 +1629,7 @@ export class BillingService {
     };
 
     try {
-      await this.prisma.subscriptionPayment.upsert({
+      return await this.prisma.subscriptionPayment.upsert({
         where: { razorpayPaymentId: payment.id },
         create: { subscriptionId, razorpayPaymentId: payment.id, ...data },
         update: data,
@@ -1561,6 +1639,7 @@ export class BillingService {
       // Razorpay would retry the whole delivery and re-apply the state.
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Could not record payment ${payment.id}: ${detail}`);
+      return null;
     }
   }
 
@@ -1685,5 +1764,12 @@ export class BillingService {
         );
       }
     }
+
+    // Invoices raised but never sent — mail disabled at the time, or SES
+    // refusing when the charge landed. Outside the loop, and outside the
+    // Razorpay guard's concern: a document that exists and never reached its
+    // customer is the failure this deployment would never otherwise notice.
+    const sent = await this.invoices.deliverPending();
+    if (sent > 0) this.logger.log(`Delivered ${sent} pending invoice(s)`);
   }
 }

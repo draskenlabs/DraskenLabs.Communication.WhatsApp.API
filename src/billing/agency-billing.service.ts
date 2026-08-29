@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { SubscriptionPayment } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { RazorpayService } from './razorpay.service';
@@ -15,6 +16,26 @@ const UPDATABLE = ['active', 'authenticated'] as const;
 /** Unix seconds to a Date, tolerating the nulls sent before a charge. */
 function at(seconds: number | null | undefined): Date | null {
   return seconds ? new Date(seconds * 1000) : null;
+}
+
+/**
+ * What a webhook that turned out to be a group's did.
+ *
+ * Returned rather than a bare `true` because the caller has one more thing to
+ * do with it: a captured debit on an agency's mandate is money that moved, and
+ * money that moved gets a document.
+ */
+export interface AppliedGroupCharge {
+  billingGroupId: number;
+  agencyOrgId: string;
+  /** Who took the mandate out — the person the invoice goes to. */
+  userId: number;
+  planCode: string | null;
+  planName: string | null;
+  /** The debit as it was stored, or null for an event that carried none. */
+  payment: SubscriptionPayment | null;
+  currentStart: Date | null;
+  currentEnd: Date | null;
 }
 
 /** What the caller is told after a client is put on a plan. */
@@ -210,12 +231,17 @@ export class AgencyBillingService {
       methodDetail: string | null;
       paidAt: Date | null;
     },
-  ): Promise<boolean> {
+  ): Promise<AppliedGroupCharge | null> {
     const group = await this.prisma.agencyBillingGroup.findUnique({
       where: { razorpaySubscriptionId },
-      select: { id: true, agencyOrgId: true },
+      select: {
+        id: true,
+        agencyOrgId: true,
+        createdByUserId: true,
+        plan: { select: { code: true, name: true } },
+      },
     });
-    if (!group) return false;
+    if (!group) return null;
 
     const status = entity.status as never;
     const currentStart = at(entity.current_start);
@@ -244,20 +270,33 @@ export class AgencyBillingService {
       },
     });
 
-    if (payment) {
-      await this.prisma.subscriptionPayment.upsert({
-        where: { razorpayPaymentId: payment.razorpayPaymentId },
-        update: { status: payment.status, paidAt: payment.paidAt },
-        create: { ...payment, billingGroupId: group.id },
-      });
-    }
+    // Handed back rather than acted on here: what a debit is *worth* — the
+    // invoice — is the billing service's business, and this service does not
+    // know how to raise one.
+    const recorded = payment
+      ? await this.prisma.subscriptionPayment.upsert({
+          where: { razorpayPaymentId: payment.razorpayPaymentId },
+          update: { status: payment.status, paidAt: payment.paidAt },
+          create: { ...payment, billingGroupId: group.id },
+        })
+      : null;
 
     // Each client's answer changes, and each is cached separately.
     for (const client of clients) {
       await this.access.invalidatePayer(client.ssoOrgId);
     }
     await this.access.invalidatePayer(group.agencyOrgId);
-    return true;
+
+    return {
+      billingGroupId: group.id,
+      agencyOrgId: group.agencyOrgId,
+      userId: group.createdByUserId,
+      planCode: group.plan?.code ?? null,
+      planName: group.plan?.name ?? null,
+      payment: recorded,
+      currentStart,
+      currentEnd,
+    };
   }
 
   /** The groups an agency holds, for its billing page. */

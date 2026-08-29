@@ -7,6 +7,7 @@ import {
 import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
 import { AgencyBillingService } from './agency-billing.service';
+import { InvoiceService } from './invoice.service';
 import { RazorpayService } from './razorpay.service';
 import { RazorpaySignatureMiddleware } from './middleware/razorpay-signature.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
@@ -37,6 +38,7 @@ import { OrgDirectoryModule } from 'src/org/org-directory.module';
   providers: [
     BillingService,
     AgencyBillingService,
+    InvoiceService,
     RazorpaySignatureMiddleware,
     SubscriptionMiddleware,
     AuthMiddleware,
@@ -46,6 +48,7 @@ import { OrgDirectoryModule } from 'src/org/org-directory.module';
   exports: [
     BillingService,
     AgencyBillingService,
+    InvoiceService,
     SubscriptionMiddleware,
     SubscriptionAccessModule,
   ],
@@ -66,6 +69,11 @@ export class BillingModule implements NestModule {
       // controller reads `req.orgId`, which only this middleware sets.
       { path: 'billing/subscription/plan', method: RequestMethod.PATCH },
       { path: 'billing/subscription', method: RequestMethod.DELETE },
+      // Reading an invoice needs the session's organisation, and nothing else:
+      // the scope is what stops a sequential number being walked.
+      { path: 'billing/invoices', method: RequestMethod.GET },
+      { path: 'billing/invoices/:number', method: RequestMethod.GET },
+      { path: 'billing/invoices/:number/pdf', method: RequestMethod.GET },
     );
   }
 }

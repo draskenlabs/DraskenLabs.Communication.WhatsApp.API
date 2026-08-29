@@ -10,6 +10,7 @@ import {
   Patch,
   Post,
   Req,
+  Res,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -19,8 +20,10 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { AgencyService } from './agency.service';
+import { InvoiceService } from 'src/billing/invoice.service';
+import { InvoiceDto } from 'src/billing/dto/billing.dto';
 import {
   AgencyMandateDto,
   AgencyRosterDto,
@@ -42,6 +45,9 @@ export class AgencyController {
   constructor(
     private readonly agency: AgencyService,
     private readonly config: ConfigService,
+    // Only to render one: which invoices this agency may see is the service's
+    // decision, not the controller's.
+    private readonly invoices: InvoiceService,
   ) {}
 
   @Get('clients')
@@ -76,6 +82,52 @@ export class AgencyController {
   })
   async mandates(@Req() req: Request): Promise<AgencyMandateDto[]> {
     return this.agency.mandates(this.orgOf(req));
+  }
+
+  @Get('invoices')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The agency’s invoices, and its clients’ own',
+    description:
+      'Its own are what it is paying now, one document per debit, itemised ' +
+      'by client. Its clients’ are what they paid for themselves before they ' +
+      'were taken on, or after they were let go — an agency asked to explain ' +
+      'a client’s billing history needs the whole of it.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: InvoiceDto,
+    isArray: true,
+    description: 'Invoices, newest first',
+  })
+  async invoiceList(@Req() req: Request): Promise<InvoiceDto[]> {
+    return this.agency.invoices(this.orgOf(req));
+  }
+
+  @Get('invoices/:number/pdf')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'One of those invoices as a PDF',
+    description:
+      'The same document that was emailed when the payment was taken. ' +
+      'Scoped to the agency and its roster — the numbers are sequential, so ' +
+      'an unscoped lookup would let any agency walk the whole series.',
+  })
+  @ApiStandardErrorResponses()
+  async invoicePdf(
+    @Req() req: Request,
+    @Param('number') number: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const invoice = await this.agency.invoice(this.orgOf(req), number);
+    const pdf = this.invoices.pdf(invoice);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${this.invoices.filename(invoice)}"`,
+    );
+    res.setHeader('Content-Length', String(pdf.length));
+    res.end(pdf);
   }
 
   @Post('clients')

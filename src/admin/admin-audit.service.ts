@@ -5,7 +5,7 @@ import type { AdminActor } from './admin.guard';
 
 export interface AuditEntry {
   action: string;
-  targetType: 'organisation' | 'plan' | 'user';
+  targetType: 'organisation' | 'plan' | 'user' | 'invoice';
   targetId: string;
   summary: string;
   before?: Prisma.InputJsonValue;

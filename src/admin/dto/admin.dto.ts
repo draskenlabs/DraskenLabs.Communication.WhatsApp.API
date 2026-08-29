@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { InvoiceDto } from 'src/billing/dto/billing.dto';
 import {
   IsBoolean,
   IsIn,
@@ -520,6 +521,21 @@ export class AttachClientDto {
 }
 
 /** One recorded action. */
+/** A page of invoices, with the one figure on the screen that is a job. */
+export class AdminInvoicePageDto {
+  @ApiProperty({ type: [InvoiceDto] }) invoices: InvoiceDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() totalPages: number;
+
+  @ApiProperty({
+    description:
+      'Invoices raised and never emailed — a mail outage at the moment of ' +
+      'the charge. Not page-scoped: it is the whole backlog.',
+  })
+  undelivered: number;
+}
+
 export class AdminAuditRowDto {
   @ApiProperty() id: number;
   @ApiProperty({ nullable: true }) actorEmail: string | null;

@@ -62,6 +62,15 @@ export class SubscriptionPaymentDto {
 
   @ApiProperty({ nullable: true })
   paidAt: Date | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The invoice raised for this debit. Null for a payment taken before ' +
+      'invoicing shipped, and for one that was never captured.',
+    example: 'INV-WAC-2627-0001',
+  })
+  invoiceNumber: string | null;
 }
 
 /** One account the organisation's subscription pays for. */
@@ -462,4 +471,132 @@ export class ConfirmSubscriptionDto {
   @IsString()
   @IsNotEmpty()
   razorpaySignature: string;
+}
+
+/** One thing an invoice charged for. */
+export class InvoiceLineDto {
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The organisation this line bought for. A client of the agency being ' +
+      'charged, on an agency’s invoice.',
+  })
+  ssoOrgId: string | null;
+
+  @ApiProperty({ example: 'Growth — Kettle Coffee' })
+  description: string;
+
+  @ApiProperty({ nullable: true }) detail: string | null;
+  @ApiProperty({ nullable: true }) planCode: string | null;
+  @ApiProperty({ nullable: true }) planName: string | null;
+
+  @ApiProperty({ example: 1 }) quantity: number;
+
+  @ApiProperty({ description: 'Per unit, smallest currency unit' })
+  unitAmount: number;
+
+  @ApiProperty({ description: 'quantity × unitAmount' })
+  amount: number;
+}
+
+/**
+ * An invoice as the console shows it.
+ *
+ * Everything here is the snapshot taken when the document was raised, not a
+ * live read: a plan renamed or a client released next month cannot restate an
+ * invoice already sent.
+ */
+export class InvoiceDto {
+  @ApiProperty({
+    description: 'The number as printed, and the id every other route uses',
+    example: 'INV-WAC-2627-0001',
+  })
+  number: string;
+
+  @ApiProperty({
+    description: 'The Indian financial year it was raised in',
+    example: '2627',
+  })
+  financialYear: string;
+
+  @ApiProperty() issuedAt: Date;
+  @ApiProperty({ nullable: true }) paidAt: Date | null;
+
+  @ApiProperty({ description: 'The organisation charged — whose bank moved' })
+  ssoOrgId: string;
+
+  @ApiProperty({ nullable: true }) organisationName: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What the money bought, in a few words',
+    example: '3 client plans — Growth',
+  })
+  summary: string | null;
+
+  @ApiProperty({ type: [InvoiceLineDto] })
+  lines: InvoiceLineDto[];
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Start of the cycle charged for',
+  })
+  periodStart: Date | null;
+
+  @ApiProperty({ nullable: true }) periodEnd: Date | null;
+
+  @ApiProperty({
+    description: 'Taxable value in the smallest currency unit',
+    example: 42288,
+  })
+  subtotal: number;
+
+  @ApiProperty({
+    description: 'Tax in the smallest currency unit',
+    example: 7612,
+  })
+  taxAmount: number;
+
+  @ApiProperty({ description: 'Basis points, so 18% is 1800', example: 1800 })
+  taxRateBps: number;
+
+  @ApiProperty({ nullable: true, example: 'GST' }) taxLabel: string | null;
+
+  @ApiProperty({
+    description: 'What was actually taken. Not derived — this is what moved.',
+    example: 49900,
+  })
+  total: number;
+
+  @ApiProperty({ example: 'INR' }) currency: string;
+
+  @ApiProperty({ nullable: true, example: 'Visa ···· 4242' })
+  paymentMethod: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'When the email carrying it went',
+  })
+  emailedAt: Date | null;
+
+  @ApiProperty({ nullable: true }) emailedTo: string | null;
+
+  @ApiProperty({ example: 'pay_29QQoUBi66xm2f' })
+  razorpayPaymentId: string;
+
+  @ApiProperty({
+    description:
+      'True when this is somebody else’s document seen from a line on it — ' +
+      'an agency’s invoice, as one of its clients sees it. The lines and ' +
+      'total are then this organisation’s share, not the whole debit, and ' +
+      'the tax is absent because it divides the whole.',
+  })
+  extract: boolean;
+
+  @ApiProperty({
+    description:
+      'Whether the PDF is on offer. False for an extract: the document is ' +
+      'the payer’s entire debit and names its other clients.',
+  })
+  downloadable: boolean;
 }

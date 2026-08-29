@@ -28,6 +28,7 @@ export function mailNotificationsDouble(): jest.Mocked<
     | 'subscriptionCharged'
     | 'subscriptionPaymentFailed'
     | 'subscriptionCancelled'
+    | 'invoiceIssued'
   >
 > {
   return {
@@ -47,6 +48,9 @@ export function mailNotificationsDouble(): jest.Mocked<
     subscriptionCharged: jest.fn().mockResolvedValue(undefined),
     subscriptionPaymentFailed: jest.fn().mockResolvedValue(undefined),
     subscriptionCancelled: jest.fn().mockResolvedValue(undefined),
+    // Returns true, not undefined: the caller stamps the invoice as sent on
+    // the strength of this answer.
+    invoiceIssued: jest.fn().mockResolvedValue(true),
   } as never;
 }
 

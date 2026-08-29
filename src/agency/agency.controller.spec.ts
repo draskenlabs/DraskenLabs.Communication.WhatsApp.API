@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { AgencyController } from './agency.controller';
 import { AgencyService } from './agency.service';
+import { InvoiceService } from 'src/billing/invoice.service';
 
 const mockAgency = {
   roster: jest.fn().mockResolvedValue({ clients: [], totals: {} }),
@@ -14,6 +15,12 @@ const mockAgency = {
 
 const config: Record<string, string | undefined> = {};
 const mockConfig = { get: jest.fn((key: string) => config[key]) };
+// The controller only renders a document; which ones it may render is the
+// service's decision, and is tested there.
+const mockInvoices = {
+  pdf: jest.fn(() => Buffer.from('%PDF-1.4')),
+  filename: jest.fn(() => 'INV-WAC-2627-0001.pdf'),
+};
 
 describe('AgencyController', () => {
   let controller: AgencyController;
@@ -26,6 +33,7 @@ describe('AgencyController', () => {
       providers: [
         { provide: AgencyService, useValue: mockAgency },
         { provide: ConfigService, useValue: mockConfig },
+        { provide: InvoiceService, useValue: mockInvoices },
       ],
     }).compile();
     controller = module.get(AgencyController);

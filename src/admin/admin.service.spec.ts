@@ -8,6 +8,7 @@ import { OrganisationSettingsService } from 'src/organisation-settings/organisat
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { AgencyService } from 'src/agency/agency.service';
 import { RazorpayService } from 'src/billing/razorpay.service';
+import { InvoiceService } from 'src/billing/invoice.service';
 import type { AdminActor } from './admin.guard';
 
 const ACTOR: AdminActor = { id: 1, email: 'ops@drasken.com', name: 'Ops' };
@@ -41,6 +42,7 @@ const mockPrisma = {
   contact: { count: jest.fn() },
   message: { count: jest.fn() },
   adminAuditLog: { findMany: jest.fn(), count: jest.fn() },
+  invoice: { findMany: jest.fn(), count: jest.fn() },
 };
 
 const mockOrgDirectory = { name: jest.fn() };
@@ -53,6 +55,15 @@ const mockAgency = {
 };
 const mockAudit = { record: jest.fn() };
 const mockRazorpay = { createPlan: jest.fn(), fetchPlan: jest.fn() };
+// Rendering and re-sending a document is its own service's business; this
+// console only decides who may ask for one, which here is anybody.
+const mockInvoices = {
+  toDto: jest.fn((invoice: { number: string }) => invoice),
+  find: jest.fn(),
+  deliver: jest.fn(),
+  pdf: jest.fn(),
+  filename: jest.fn(),
+};
 
 const user = (over: Record<string, unknown> = {}) => ({
   id: 2,
@@ -129,6 +140,11 @@ describe('AdminService', () => {
       id: 'plan_other',
       item: { amount: 99_900, currency: 'INR' },
     });
+    mockInvoices.toDto.mockImplementation(
+      (invoice: { number: string }) => invoice,
+    );
+    mockInvoices.find.mockResolvedValue(null);
+    mockInvoices.deliver.mockResolvedValue(true);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -140,6 +156,7 @@ describe('AdminService', () => {
         { provide: AgencyService, useValue: mockAgency },
         { provide: AdminAuditService, useValue: mockAudit },
         { provide: RazorpayService, useValue: mockRazorpay },
+        { provide: InvoiceService, useValue: mockInvoices },
       ],
     }).compile();
     service = module.get(AdminService);
@@ -554,6 +571,100 @@ describe('AdminService', () => {
 
       expect(row.razorpayPlanId).toBe('plan_growth');
       expect(row.sellable).toBe(true);
+    });
+  });
+
+  describe('invoices', () => {
+    beforeEach(() => {
+      mockPrisma.invoice.findMany.mockResolvedValue([
+        { number: 'INV-WAC-2627-0001' },
+      ]);
+      mockPrisma.invoice.count.mockResolvedValue(1);
+    });
+
+    it('finds a document by its number, an email or a payment id', async () => {
+      // Which is what "somebody wrote in asking about INV-WAC-2627-0412"
+      // actually needs — the number is often the only thing they have.
+      await service.invoices({ search: 'ada@example.com' });
+
+      const [{ where }] = mockPrisma.invoice.findMany.mock.calls[0] as [
+        { where: { AND: [{ OR: Record<string, unknown>[] }] } },
+      ];
+      const fields = where.AND[0].OR.flatMap((clause) => Object.keys(clause));
+      expect(fields).toEqual(
+        expect.arrayContaining([
+          'number',
+          'billedToEmail',
+          'razorpayPaymentId',
+        ]),
+      );
+    });
+
+    it('shows a client what bought its month, not only what it was charged', async () => {
+      // An agency's client is charged nothing and is still on an invoice.
+      // Narrowing to `ssoOrgId` alone would show it an empty history.
+      await service.invoices({ ssoOrgId: 'org_kettle' });
+
+      const [{ where }] = mockPrisma.invoice.findMany.mock.calls[0] as [
+        { where: { OR: Record<string, unknown>[] } },
+      ];
+      expect(where.OR).toEqual([
+        { ssoOrgId: 'org_kettle' },
+        { lines: { some: { ssoOrgId: 'org_kettle' } } },
+      ]);
+    });
+
+    it('counts what was raised and never reached anybody', async () => {
+      // The one figure on that screen that is a job rather than a record.
+      mockPrisma.invoice.count
+        .mockResolvedValueOnce(12)
+        .mockResolvedValueOnce(3);
+
+      const page = await service.invoices({});
+
+      expect(page.undelivered).toBe(3);
+    });
+
+    it('404s for a number that does not exist', async () => {
+      mockInvoices.find.mockResolvedValue(null);
+
+      await expect(service.invoice('INV-WAC-2627-9999')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('re-sends to the address on the document, not one supplied with the request', async () => {
+      // An operator-triggered send to an arbitrary address is a way to mail
+      // somebody else's invoice anywhere.
+      mockInvoices.find.mockResolvedValue({
+        number: 'INV-WAC-2627-0001',
+        billedToEmail: 'ada@example.com',
+      });
+
+      const result = await service.resendInvoice(ACTOR, 'INV-WAC-2627-0001');
+
+      expect(result).toEqual({ sent: true, to: 'ada@example.com' });
+      expect(mockInvoices.deliver).toHaveBeenCalledWith(
+        expect.objectContaining({ number: 'INV-WAC-2627-0001' }),
+      );
+    });
+
+    it('records a re-send, since it puts a document in somebody’s inbox', async () => {
+      mockInvoices.find.mockResolvedValue({
+        number: 'INV-WAC-2627-0001',
+        billedToEmail: 'ada@example.com',
+      });
+
+      await service.resendInvoice(ACTOR, 'INV-WAC-2627-0001');
+
+      expect(mockAudit.record).toHaveBeenCalledWith(
+        ACTOR,
+        expect.objectContaining({
+          action: 'invoice.resend',
+          targetType: 'invoice',
+          targetId: 'INV-WAC-2627-0001',
+        }),
+      );
     });
   });
 
