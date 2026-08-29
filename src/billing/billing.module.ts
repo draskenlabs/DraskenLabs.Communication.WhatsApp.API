@@ -9,7 +9,6 @@ import { BillingService } from './billing.service';
 import { AgencyBillingService } from './agency-billing.service';
 import { InvoiceService } from './invoice.service';
 import { ReceiptService } from './receipt.service';
-import { RazorpayService } from './razorpay.service';
 import { RazorpaySignatureMiddleware } from './middleware/razorpay-signature.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
 import { AuthMiddleware } from 'src/user/middleware/auth.middleware';
@@ -64,19 +63,22 @@ export class BillingModule implements NestModule {
       .apply(RazorpaySignatureMiddleware)
       .forRoutes({ path: 'billing/webhook', method: RequestMethod.POST });
 
-    consumer.apply(AuthMiddleware).forRoutes(
-      { path: 'billing/subscription', method: RequestMethod.GET },
-      { path: 'billing/subscription', method: RequestMethod.POST },
-      { path: 'billing/subscription/confirm', method: RequestMethod.POST },
-      // Bound by method and path, so a new route is a new entry here: the
-      // controller reads `req.orgId`, which only this middleware sets.
-      { path: 'billing/subscription/plan', method: RequestMethod.PATCH },
-      { path: 'billing/subscription', method: RequestMethod.DELETE },
-      // Reading an invoice needs the session's organisation, and nothing else:
-      // the scope is what stops a sequential number being walked.
-      { path: 'billing/invoices', method: RequestMethod.GET },
-      { path: 'billing/invoices/:number', method: RequestMethod.GET },
-      { path: 'billing/invoices/:number/pdf', method: RequestMethod.GET },
-    );
+    // Every route on the controller, rather than a list of them.
+    //
+    // This used to enumerate each path and method, with a comment warning that
+    // a new route needed a new entry. It did not survive contact: five routes
+    // were added without one, and because the controller reads `req.orgId` —
+    // which only this middleware sets — each of them answered 401. The console
+    // treats a 401 as a dead session, so opening the billing page signed the
+    // customer out.
+    //
+    // Bound to the controller, a route cannot be forgotten. The webhook is the
+    // one exception and is excluded by name: Razorpay authenticates by
+    // signature and carries no session, so the JWT middleware would reject
+    // every charge we are told about.
+    consumer
+      .apply(AuthMiddleware)
+      .exclude({ path: 'billing/webhook', method: RequestMethod.POST })
+      .forRoutes(BillingController);
   }
 }
