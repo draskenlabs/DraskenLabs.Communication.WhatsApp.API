@@ -55,10 +55,13 @@ INV-WAC-2627-0001
 | Our own gapless series, per financial year | ✅ Yes | — |
 | PDF, emailed on issue | ✅ Yes | — |
 | Listing and re-downloading in the console | ✅ Yes | — |
-| Tax line, worked back out of an inclusive price | ✅ Yes | Multiple tax components (CGST/SGST split) |
+| Tax line, worked back out of an inclusive price | ✅ Yes | — |
+| CGST + SGST / IGST, decided by place of supply | ✅ Yes | Cess, and any rate other than one flat figure |
+| A receipt beside every invoice, in its own series | ✅ Yes | — |
 | Backfilling invoices for payments taken before this shipped | ❌ No | Would number history out of order |
 | Credit notes and refunds | ❌ No | Handled manually in Razorpay |
-| Per-customer billing address, or a GSTIN from the customer | ❌ No | We hold no such field |
+| Per-customer billing address, GSTIN and state | ✅ Yes | Entered by the customer; snapshotted at issue |
+| Export of services, LUT, zero-rating | ❌ No | Out of scope by decision — India only for now |
 | A line per client on an agency's debit | ✅ Yes | — |
 | Multiple line items on a self-paid charge | ❌ No | One charge, one line: the add-on for extra numbers arrives inside the same total and is not broken out to us |
 
@@ -76,6 +79,15 @@ INV-WAC-2627-0001
 | GET | `/admin/invoices` | Admin | Every invoice raised, searchable, with the undelivered count |
 | GET | `/admin/invoices/:number/pdf` | Admin | Any document |
 | POST | `/admin/invoices/:number/resend` | Admin | Send it again, to the address on it |
+| GET | `/billing/receipts` | JWT | Every receipt issued to this organisation |
+| GET | `/billing/receipts/:number/pdf` | JWT | One of them |
+| GET | `/billing/tax-details` | JWT | The tax identity printed on its invoices |
+| PUT | `/billing/tax-details` | JWT | Set it — applies to invoices raised from now on |
+| GET | `/billing/gst-states` | JWT | The states a customer may choose from |
+
+Receipts are **not** listed for an agency's clients the way invoices are: a
+receipt acknowledges money that left one account, so a client an agency pays for
+has none of its own. Its agency holds them.
 
 `SubscriptionPaymentDto` also carries `invoiceNumber`, so the console's payment
 history can name and link the invoice for each debit.
@@ -194,12 +206,59 @@ line.
 | `INVOICE_TIMEZONE` | `Asia/Kolkata` | Which local midnight the financial year turns at |
 | `INVOICE_TAX_RATE_BPS` | `0` | Basis points — 1800 is 18% GST. Zero prints no tax line |
 | `INVOICE_TAX_LABEL` | `GST` | What the tax is called on the document |
-| `INVOICE_PLACE_OF_SUPPLY` | — | Printed under the customer's address |
+| `INVOICE_SAC_CODE` | `998314` | The classification the supply is made under |
 | `INVOICE_SELLER_NAME` | `Drasken Labs Private Limited` | Who the invoice is from |
 | `INVOICE_SELLER_ADDRESS` | — | Pipe-separated: one line per segment |
 | `INVOICE_SELLER_EMAIL` | `SES_REPLY_TO` | — |
 | `INVOICE_SELLER_WEBSITE` | — | — |
-| `INVOICE_SELLER_GSTIN` / `_PAN` / `_CIN` | — | Printed where set |
+| `INVOICE_SELLER_GSTIN` / `_PAN` / `_CIN` | — | Printed where set. **The GSTIN is load-bearing** — see below |
+
+`INVOICE_PLACE_OF_SUPPLY` is **retired**. A hard-coded place of supply is wrong
+for every customer outside it; the customer's own state answers the question.
+
+### The seller's state is not its own setting
+
+It is the first two characters of `INVOICE_SELLER_GSTIN`. A separate variable
+could only ever *disagree* with the registration, and a deployment where the two
+disagree charges the wrong heads of tax to every customer in its own state
+without anything failing.
+
+### Turning GST on, in order
+
+These arrive from the deployment's environment (a ConfigMap and a Secret in
+Kubernetes), not from the console and not from a migration. The order matters:
+
+1. `INVOICE_SELLER_GSTIN`, `INVOICE_SELLER_NAME`, `INVOICE_SELLER_ADDRESS`,
+   and the `_PAN` / `_CIN` the company has. **First** — the registration is
+   what makes the rate lawful to charge.
+2. `INVOICE_SAC_CODE`, if it is not the default `998314`.
+3. `INVOICE_TAX_RATE_BPS=1800`. **Last.**
+
+Set in that order, the boot check below stays quiet. Set in the other order,
+every invoice raised in between charges tax and states no registration.
+
+Turning the rate on is a **dated decision, not a toggle**: invoices raised
+before and after must not disagree, and an invoice already issued is never
+restated. Prices are separate — they are plan rows, authored in the admin
+console, and the price list is treated as tax-inclusive, so the figure on a
+plan is what the mandate debits.
+
+### The half-configured deployment
+
+The likeliest misconfiguration, and the quietest — likelier still when these
+arrive from a cluster's environment rather than a file somebody reads:
+
+> `INVOICE_TAX_RATE_BPS` is set and `INVOICE_SELLER_GSTIN` is not.
+
+Nothing throws. Every invoice charges tax, states no registration — which a tax
+invoice must carry — and, with no seller state to compare against, puts CGST and
+SGST on every customer including those in other states, whose credit is then
+refused.
+
+`InvoiceService.onModuleInit` logs this at **error** level at boot, and does the
+same for a GSTIN that fails its check digit. It logs rather than throws: money
+has to keep being collected, and an API that refuses to start over a document
+setting is a worse outage than a month of documents that need reissuing.
 
 ---
 
@@ -216,3 +275,72 @@ an agency's. This is what lets a client be shown the line that paid for its own
 month on a document addressed to somebody else.
 
 `InvoiceCounter` — one row per financial year, holding the next number.
+
+`Receipt` — what was received, as its own numbered document, one per invoice,
+written in the same transaction. An invoice says what is owed; a receipt says
+what was paid. On a prepaid subscription both are true at the same instant,
+which is exactly why they are two documents: a customer proving payment to a
+financier or an auditor needs the one that says *received*, and an invoice that
+also claims to be a receipt is neither.
+
+`ReceiptCounter` — deliberately **not** the invoice counter. A receipt must not
+be able to leave a gap in the invoice series, which is the one series an auditor
+reads for gaps.
+
+`OrganisationSettings` gains the customer's tax identity — `gstin`, `legalName`,
+`billingAddress`, `billingCity`, `billingPostalCode`, `stateCode` — all of it
+snapshotted onto the invoice at issue. A document states what was true when it
+was raised: a GSTIN entered next month must not appear on last month's, or the
+customer holds a claim their own return will not support.
+
+---
+
+## GST
+
+Two facts decide the tax half of the document, and both are about *place*.
+
+**Place of supply is the customer's state**, not ours. That is what the law
+asks, and it is why a customer's address is a billing input rather than a
+nicety.
+
+**Intra-state or inter-state.** A supply inside our own state is CGST plus SGST
+at half the rate each; to any other state it is IGST at the whole rate. The
+customer pays the same either way — 18% is 9+9 or 18 — so this changes how the
+tax is *presented*, not what it costs. Presented wrongly, though, the customer
+cannot claim it, which makes it their problem rather than a cosmetic one.
+
+| Situation | Result |
+|---|---|
+| Customer's state = ours | CGST + SGST, floored and remaindered so the two sum exactly |
+| Customer's state ≠ ours | IGST, whole |
+| Customer's state unknown | **Treated as ours** — see below |
+| No rate configured | No heads, no tax line, no SAC |
+
+### Why unknown falls back to local
+
+IGST wrongly charged on a local supply is the harder error to unwind: the
+customer's credit is refused and the fix is a credit note and a fresh invoice.
+The reverse at least leaves them holding a document they can act on.
+
+### The GSTIN check digit is validated
+
+Not just the shape. A regex accepts a transposed pair of characters, which is
+the mistake somebody actually makes copying fifteen characters off a
+registration certificate — and a wrong GSTIN on an *issued* invoice cannot be
+corrected by reissuing it. A GSTIN whose state disagrees with the state the
+customer selected is refused rather than one being silently preferred: one of
+the two is wrong, and guessing which puts the wrong heads of tax on every
+invoice from then on.
+
+---
+
+## The pair, in one email
+
+Both documents are attached to a single confirmation. Sending them separately
+would leave a customer filing two messages and wondering whether they had been
+charged twice. Both are stamped when SES accepts it — stamping only the invoice
+would leave the hourly sweep re-sending a receipt that had already arrived.
+
+An invoice raised before receipts existed still re-sends: the receipt is looked
+up rather than assumed, and its absence changes the wording of the mail rather
+than stopping it.

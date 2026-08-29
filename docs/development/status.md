@@ -53,6 +53,11 @@ Current overall status of the DraskenLabs WhatsApp Communication API.
 | Analytics | ✅ Complete | 100% | Overview, messages, templates, contacts, phone numbers, CSV export |
 | Search | ✅ Complete | 100% | One query across contacts, messages, templates, numbers and WABAs |
 | Inbox | ✅ Complete | 100% | Conversations, threads, unread state, replies gated by the 24-hour window, inbound media |
+| Plans | ✅ Complete | 100% | Price list, limits as columns, per-organisation negotiated tiers. Authored through the admin console |
+| Billing | ✅ Complete | 100% | Razorpay subscriptions per organisation, mandate, upgrades, add-ons, reconciliation sweep |
+| Agency | ✅ Complete | 100% | An agency pays per client on one mandate per plan; clients hold their own subscription and limits |
+| Invoicing | ✅ Complete | 100% | Numbered invoice and receipt per captured payment, GST split by place of supply, both emailed as PDFs |
+| Admin | ✅ Complete | 100% | Operator console API — organisations, users, agencies, subscriptions, plans, invoices, revenue and day-by-day analytics, audit log |
 
 ---
 
@@ -110,6 +115,20 @@ Current overall status of the DraskenLabs WhatsApp Communication API.
 | GET | `/search` | JWT | Contacts, messages, templates, numbers and WABAs in one query |
 | GET | `/plans` | None | The published price list — plans, prices and limits |
 | GET | `/plans/:code` | None | One plan by code |
+| GET | `/billing/invoices` | JWT | Every invoice that bought this organisation a month |
+| GET | `/billing/invoices/:number/pdf` | JWT | The document that was emailed |
+| GET | `/billing/receipts` | JWT | Every receipt issued to this organisation |
+| GET | `/billing/receipts/:number/pdf` | JWT | One of them |
+| GET | `/billing/tax-details` | JWT | The tax identity printed on its invoices |
+| PUT | `/billing/tax-details` | JWT | Set it — applies to invoices raised from now on |
+| GET | `/billing/gst-states` | JWT | The states a customer may choose from |
+| GET | `/agency/invoices` | JWT (agency) | The agency's own invoices, and its clients' |
+| GET | `/admin/overview` | Admin | Counts, revenue today/month/financial year, and what is at risk |
+| GET | `/admin/analytics` | Admin | Registrations, subscriptions and revenue by day |
+| GET | `/admin/users/directory` | Admin | Everybody, with the organisations we have seen them in |
+| GET | `/admin/agencies` | Admin | Every agency, and the clients under it |
+| GET | `/admin/invoices` | Admin | Every invoice raised, searchable |
+| POST | `/admin/invoices/:number/resend` | Admin | Send it again, to the address on it |
 
 ---
 

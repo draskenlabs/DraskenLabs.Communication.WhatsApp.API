@@ -93,6 +93,37 @@
   organisation gets nothing for a number it does not own, and the sweep
   resends.
 
+## Added since
+
+- **GST, properly divided.** `gst.ts` holds the state table, GSTIN validation
+  including the check digit, and the split, as pure functions. CGST + SGST
+  inside our own state, IGST across a state line, decided by comparing the
+  customer's state to the one on our own registration. An unknown customer
+  state falls back to local, because IGST wrongly charged on a local supply is
+  the harder error to unwind.
+- **The customer's tax identity.** GSTIN, registered name, address and state on
+  `OrganisationSettings`, entered in the console and snapshotted onto every
+  invoice at issue. A GSTIN and a state that disagree are refused rather than
+  one being silently preferred.
+- **Receipts.** `Receipt` and `ReceiptCounter`, in their own series
+  `RCT-WAC-2627-0001`, one per invoice, written in the same transaction so an
+  invoice can never exist without the document proving it was paid. Both travel
+  in one email as two attachments and are stamped together.
+- **A boot-time configuration check.** `InvoiceService.onModuleInit` logs at
+  error level when a rate is configured with no seller GSTIN, or with one that
+  fails its check digit — the half-configured deployment that charges tax it
+  cannot lawfully state, and that nothing else would surface.
+- **The renderer paginates.** It used to stop after a fixed number of rows and
+  print "and N more"; an agency cannot rebill from a document showing eight of
+  its twenty clients. The totals block is measured before the last sheet is
+  chosen, so a table that fills a page exactly pushes the totals onto one of
+  their own rather than printing over the footer — which is how that used to
+  fail: silently, with a document that still opened.
+- **`INVOICE_PLACE_OF_SUPPLY` retired.** A hard-coded place of supply was wrong
+  for every customer outside it.
+
+---
+
 ## Pending / not in scope
 
 - **No backfill.** Payments taken before this shipped have no invoice.
@@ -102,15 +133,17 @@
   is charged by Razorpay on the next invoice and arrives inside the same total;
   we do not receive it broken out, so the document does not break it out
   either. An agency's debit *is* itemised, because we know its composition.
-- **One tax line.** A CGST/SGST split — the same rate shown as two components
-  for an intra-state supply — is what a registered Indian seller will want
-  next, and is a rendering change plus two more columns rather than a rework.
 - **No credit notes.** A refund is done in Razorpay's dashboard and leaves the
   invoice standing.
-- **No customer billing address or GSTIN.** We hold neither, so a B2B customer
-  cannot claim input credit against these invoices. Collecting them is the
-  obvious next step, and would want them on the organisation rather than the
-  user.
+- **Plan rows are not seeded by this repo.** Tiers, their names and their
+  prices are authored through the admin console, and the seller's registration
+  and company details come from the deployment's environment. Neither is code:
+  a price list in a migration is a price list that needs a release to change.
+- **Cess, and rates other than one flat figure.** The split handles one rate in
+  two heads. A supply attracting cess, or a mixed-rate invoice, would need more
+  than a rendering change.
+- **Export of services.** LUT and zero-rating are out of scope by decision;
+  every customer is treated as Indian.
 - **`INVOICE_SERIES` is not enforced as immutable.** Changing it after invoices
   exist splits one statutory series in two; nothing stops a deployment doing
   that except the warning in `.env.example`.

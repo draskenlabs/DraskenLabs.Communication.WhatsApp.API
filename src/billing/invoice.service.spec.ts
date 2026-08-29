@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
@@ -778,6 +779,67 @@ describe('InvoiceService', () => {
 
       expect(pdf.toString('latin1').startsWith('%PDF-1.4')).toBe(true);
       expect(service.filename(row())).toBe('INV-WAC-2627-0001.pdf');
+    });
+  });
+
+  describe('at boot', () => {
+    let logged: { level: 'error' | 'log'; text: string }[] = [];
+
+    /** What the logger was told at a given level. */
+    const at = (level: 'error' | 'log'): string =>
+      logged
+        .filter((entry) => entry.level === level)
+        .map((entry) => entry.text)
+        .join(' ');
+
+    beforeEach(() => {
+      logged = [];
+      jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation((message: unknown) => {
+          logged.push({ level: 'error', text: String(message) });
+        });
+      jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation((message: unknown) => {
+          logged.push({ level: 'log', text: String(message) });
+        });
+    });
+
+    afterEach(() => jest.restoreAllMocks());
+
+    it('says nothing where the deployment charges no tax', () => {
+      service.onModuleInit();
+
+      expect(at('error')).toBe('');
+    });
+
+    it('shouts when tax is on and there is no registration to state it under', () => {
+      // The quiet failure: nothing throws, and every invoice is wrong.
+      settings.INVOICE_TAX_RATE_BPS = '1800';
+
+      service.onModuleInit();
+
+      expect(at('error')).toContain('INVOICE_SELLER_GSTIN is not set');
+    });
+
+    it('shouts when the registration cannot be read', () => {
+      settings.INVOICE_TAX_RATE_BPS = '1800';
+      settings.INVOICE_SELLER_GSTIN = 'NOT-A-GSTIN';
+
+      service.onModuleInit();
+
+      expect(at('error')).toContain('not a valid GSTIN');
+    });
+
+    it('is quiet, and says where it supplies from, when it is set up', () => {
+      settings.INVOICE_TAX_RATE_BPS = '1800';
+      settings.INVOICE_SELLER_GSTIN = '29AAPFU0939F1ZR';
+
+      service.onModuleInit();
+
+      expect(at('error')).toBe('');
+      expect(at('log')).toContain('Karnataka (29)');
     });
   });
 });

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Invoice, InvoiceLine, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -11,7 +11,7 @@ import {
   isInvoiceNumber,
 } from './invoice.number';
 import { InvoiceSeller, formatAmount, renderInvoicePdf } from './invoice.pdf';
-import { placeOfSupplyLabel, splitTax, stateCodeOfGstin } from './gst';
+import { isGstin, placeOfSupplyLabel, splitTax, stateCodeOfGstin } from './gst';
 import { InvoiceDto } from './dto/billing.dto';
 import { ReceiptService } from './receipt.service';
 
@@ -112,7 +112,7 @@ const DEFAULT_SAC_CODE = '998314';
  * Razorpay redeliver the charge instead.
  */
 @Injectable()
-export class InvoiceService {
+export class InvoiceService implements OnModuleInit {
   private readonly logger = new Logger(InvoiceService.name);
 
   constructor(
@@ -122,6 +122,51 @@ export class InvoiceService {
     private readonly mail: MailNotifications,
     private readonly receipts: ReceiptService,
   ) {}
+
+  /**
+   * Say so at boot if this deployment is configured to charge tax it cannot
+   * lawfully state.
+   *
+   * The failure this catches is the quiet one, and it is the likeliest one
+   * when the settings arrive from a cluster's environment rather than a file
+   * somebody reads: the rate is set and the registration is not. Nothing
+   * throws. Every invoice charges 18%, prints no GSTIN — which a tax invoice
+   * must carry — and, because there is no seller state to compare against,
+   * puts CGST and SGST on every customer including the ones in other states,
+   * whose credit is then refused.
+   *
+   * Logged rather than thrown: money has to keep being collected, and an API
+   * that refuses to start over a document setting is a worse outage than a
+   * month of documents that need reissuing. It is logged at error level
+   * because that is what it is.
+   */
+  onModuleInit(): void {
+    if (this.taxRateBps <= 0) return;
+
+    const gstin = this.config.get<string>('INVOICE_SELLER_GSTIN');
+    if (!gstin) {
+      this.logger.error(
+        `INVOICE_TAX_RATE_BPS is ${this.taxRateBps} but INVOICE_SELLER_GSTIN is not set. ` +
+          'Every invoice will charge tax, state no registration, and treat every ' +
+          'customer as being in our own state. Set the registration or set the rate to 0.',
+      );
+      return;
+    }
+
+    if (!isGstin(gstin)) {
+      this.logger.error(
+        `INVOICE_SELLER_GSTIN is not a valid GSTIN. Its state cannot be read, so every ` +
+          'customer will be treated as being in our own state and charged CGST and SGST. ' +
+          'Check it against the registration certificate.',
+      );
+      return;
+    }
+
+    this.logger.log(
+      `Invoicing as ${gstin} from ${placeOfSupplyLabel(stateCodeOfGstin(gstin))}, ` +
+        `tax ${this.taxRateBps / 100}% inclusive.`,
+    );
+  }
 
   /* ---------------------------------------------------------------- *
    * Raising                                                           *
