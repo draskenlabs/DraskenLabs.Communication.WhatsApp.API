@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { PlansService } from './plans.service';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { firstArg } from 'src/common/utils/mock-args';
 
@@ -34,15 +35,21 @@ const row = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/** Whatever the deployment has not configured falls back to a default. */
+let settings: Record<string, string> = {};
+const mockConfig = { get: jest.fn((key: string) => settings[key]) };
+
 describe('PlansService', () => {
   let service: PlansService;
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    settings = {};
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PlansService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: ConfigService, useValue: mockConfig },
       ],
     }).compile();
     service = module.get(PlansService);
@@ -180,6 +187,29 @@ describe('PlansService', () => {
       select: { features: { orderBy: unknown } };
     }>(mockPrisma.plan.findMany);
     expect(select.features.orderBy).toEqual({ sortOrder: 'asc' });
+  });
+
+  describe('tax on a published price', () => {
+    it('says what the price already contains, where a rate is configured', async () => {
+      // The price list is inclusive, so this is not something to add to the
+      // figure on the card — it is what the figure already has in it.
+      settings.INVOICE_TAX_RATE_BPS = '1800';
+      mockPrisma.plan.findMany.mockResolvedValue([row()]);
+
+      const [plan] = await service.findAll();
+
+      expect(plan.taxRateBps).toBe(1800);
+      expect(plan.taxLabel).toBe('GST');
+    });
+
+    it('says nothing where the deployment charges no tax', async () => {
+      mockPrisma.plan.findMany.mockResolvedValue([row()]);
+
+      const [plan] = await service.findAll();
+
+      expect(plan.taxRateBps).toBe(0);
+      expect(plan.taxLabel).toBeNull();
+    });
   });
 
   describe('findByCode', () => {

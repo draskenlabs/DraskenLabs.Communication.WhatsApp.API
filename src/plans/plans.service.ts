@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { PlanDto } from './dto/plan.dto';
 
@@ -40,7 +41,22 @@ interface PlanRow {
  */
 @Injectable()
 export class PlansService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
+
+  /**
+   * The tax already inside a published price, in basis points.
+   *
+   * The price list is inclusive, so this is what a card says the price already
+   * contains — not something to add to it. Read from the same setting the
+   * invoice uses, so a card and the document it leads to cannot disagree.
+   */
+  private get taxRateBps(): number {
+    const value = Number(this.config.get<string>('INVOICE_TAX_RATE_BPS') ?? 0);
+    return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+  }
 
   /** What the pricing page renders: active plans, in published order. */
   async findAll(ssoOrgId?: string): Promise<PlanDto[]> {
@@ -122,6 +138,11 @@ export class PlansService {
       priceLabel: plan.priceLabel,
       currency: plan.currency,
       unit: plan.unit,
+      taxRateBps: this.taxRateBps,
+      taxLabel:
+        this.taxRateBps > 0
+          ? (this.config.get<string>('INVOICE_TAX_LABEL') ?? 'GST')
+          : null,
       additionalNumberPrice: plan.additionalNumberPrice,
       additionalWabaPrice: plan.additionalWabaPrice,
       limits: {
