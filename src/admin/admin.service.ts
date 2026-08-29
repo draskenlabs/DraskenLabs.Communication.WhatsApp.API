@@ -776,7 +776,7 @@ export class AdminService {
       },
       {
         key: 'historyDays',
-        label: 'History kept',
+        label: 'History kept (days)',
         allowed: limits.historyDays,
         used: null,
         kind: 'retention',
