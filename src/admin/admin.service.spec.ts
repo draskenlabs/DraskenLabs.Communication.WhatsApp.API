@@ -2,6 +2,8 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AdminService } from './admin.service';
 import { AdminAuditService } from './admin-audit.service';
+import { ConfigService } from '@nestjs/config';
+import { firstArg } from 'src/common/utils/mock-args';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
@@ -38,7 +40,7 @@ const mockPrisma = {
   wabaPhoneNumber: { groupBy: jest.fn(), count: jest.fn() },
   webhookEndpoint: { groupBy: jest.fn(), count: jest.fn() },
   userApiKey: { groupBy: jest.fn(), count: jest.fn() },
-  organisationSettings: { findMany: jest.fn() },
+  organisationSettings: { findMany: jest.fn(), count: jest.fn() },
   contact: { count: jest.fn() },
   message: { count: jest.fn() },
   adminAuditLog: { findMany: jest.fn(), count: jest.fn() },
@@ -105,13 +107,21 @@ const plan = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/** Whatever the deployment has not configured falls back to a default. */
+let settings: Record<string, string> = {};
+const mockConfig = { get: jest.fn((key: string) => settings[key]) };
+
 describe('AdminService', () => {
   let service: AdminService;
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    settings = {};
 
     mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
+    mockPrisma.organisationSettings.count.mockResolvedValue(0);
+    mockPrisma.user.count.mockResolvedValue(0);
+    mockPrisma.subscriptionPayment.findMany.mockResolvedValue([]);
     mockPrisma.subscription.findMany.mockResolvedValue([]);
     mockPrisma.subscription.findFirst.mockResolvedValue(null);
     mockPrisma.subscription.groupBy.mockResolvedValue([]);
@@ -157,6 +167,7 @@ describe('AdminService', () => {
         { provide: AdminAuditService, useValue: mockAudit },
         { provide: RazorpayService, useValue: mockRazorpay },
         { provide: InvoiceService, useValue: mockInvoices },
+        { provide: ConfigService, useValue: mockConfig },
       ],
     }).compile();
     service = module.get(AdminService);
@@ -781,6 +792,346 @@ describe('AdminService', () => {
       const overview = await service.overview();
 
       expect(overview.mrr).toBe(99_900);
+    });
+  });
+
+  describe('revenue and analytics', () => {
+    /** 29 Aug 2026, 18:30 UTC — which is 00:00 on the 30th in Kolkata. */
+    const ACROSS_MIDNIGHT = new Date('2026-08-29T18:30:00.000Z');
+
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-30T09:00:00.000Z'));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('counts a payment by the day it fell on locally, not in UTC', async () => {
+      // 18:30 UTC on the 29th is 00:00 IST on the 30th. Counted from UTC it
+      // would be filed under yesterday and today's figure would be wrong.
+      mockPrisma.subscriptionPayment.findMany.mockResolvedValue([
+        {
+          amount: 117_882,
+          currency: 'INR',
+          paidAt: ACROSS_MIDNIGHT,
+          createdAt: ACROSS_MIDNIGHT,
+        },
+      ]);
+
+      const { revenue } = await service.overview();
+
+      expect(revenue.today).toBe(117_882);
+      expect(revenue.month).toBe(117_882);
+    });
+
+    it('counts the financial year from 1 April, not 1 January', async () => {
+      // "This year" to somebody reconciling revenue is the year they file for.
+      mockPrisma.subscriptionPayment.findMany.mockResolvedValue([
+        {
+          amount: 50_000,
+          currency: 'INR',
+          paidAt: new Date('2026-05-02T06:00:00.000Z'),
+          createdAt: new Date('2026-05-02T06:00:00.000Z'),
+        },
+      ]);
+
+      const { revenue } = await service.overview();
+
+      // In the year, but neither today nor this month.
+      expect(revenue.year).toBe(50_000);
+      expect(revenue.month).toBe(0);
+      expect(revenue.today).toBe(0);
+      // And the query asked for nothing before 1 April.
+      const { where } = firstArg<{
+        where: { OR: [{ paidAt: { gte: Date } }] };
+      }>(mockPrisma.subscriptionPayment.findMany);
+      expect(where.OR[0].paidAt.gte.toISOString()).toBe(
+        '2026-03-31T18:30:00.000Z',
+      );
+    });
+
+    it('falls back to when a payment was recorded if it has no paid date', async () => {
+      mockPrisma.subscriptionPayment.findMany.mockResolvedValue([
+        {
+          amount: 999,
+          currency: 'INR',
+          paidAt: null,
+          createdAt: ACROSS_MIDNIGHT,
+        },
+      ]);
+
+      expect((await service.overview()).revenue.today).toBe(999);
+    });
+
+    it('counts people and agencies', async () => {
+      mockPrisma.user.count.mockResolvedValue(42);
+      mockPrisma.organisationSettings.count.mockResolvedValue(3);
+
+      const overview = await service.overview();
+
+      expect(overview.users).toBe(42);
+      expect(overview.agencies).toBe(3);
+    });
+
+    it('returns every day in the range, including the empty ones', async () => {
+      // A series with gaps draws a chart that lies about its own shape.
+      mockPrisma.user.findMany.mockResolvedValue([]);
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+      mockPrisma.subscriptionPayment.findMany.mockResolvedValue([]);
+
+      const analytics = await service.analytics(7);
+
+      expect(analytics.days).toBe(7);
+      expect(analytics.registrations).toHaveLength(7);
+      expect(analytics.registrations.every((p) => p.value === 0)).toBe(true);
+      // Inclusive of today: seven days is today and the six before it.
+      expect(analytics.registrations.at(-1)?.date).toBe('2026-08-30');
+      expect(analytics.registrations[0].date).toBe('2026-08-24');
+    });
+
+    it('buckets registrations and money onto the right days', async () => {
+      mockPrisma.user.findMany.mockResolvedValue([
+        { createdAt: ACROSS_MIDNIGHT },
+        { createdAt: new Date('2026-08-28T10:00:00.000Z') },
+      ]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        { createdAt: ACROSS_MIDNIGHT },
+      ]);
+      mockPrisma.subscriptionPayment.findMany.mockResolvedValue([
+        {
+          amount: 500,
+          currency: 'INR',
+          paidAt: ACROSS_MIDNIGHT,
+          createdAt: ACROSS_MIDNIGHT,
+        },
+        {
+          amount: 250,
+          currency: 'INR',
+          paidAt: ACROSS_MIDNIGHT,
+          createdAt: ACROSS_MIDNIGHT,
+        },
+      ]);
+
+      const analytics = await service.analytics(7);
+      const on = (series: { date: string; value: number }[], date: string) =>
+        series.find((p) => p.date === date)?.value;
+
+      expect(on(analytics.registrations, '2026-08-30')).toBe(1);
+      expect(on(analytics.registrations, '2026-08-28')).toBe(1);
+      expect(on(analytics.subscriptions, '2026-08-30')).toBe(1);
+      // Summed, not counted.
+      expect(on(analytics.revenue, '2026-08-30')).toBe(750);
+    });
+
+    it('refuses a range that would ask for the whole database', async () => {
+      mockPrisma.user.findMany.mockResolvedValue([]);
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+      mockPrisma.subscriptionPayment.findMany.mockResolvedValue([]);
+
+      expect((await service.analytics(100_000)).days).toBe(365);
+      expect((await service.analytics(0)).days).toBe(1);
+    });
+  });
+
+  describe('the user directory', () => {
+    beforeEach(() => {
+      mockPrisma.user.count.mockResolvedValue(1);
+      mockPrisma.user.findMany.mockResolvedValue([
+        {
+          id: 7,
+          email: 'ada@example.com',
+          firstName: 'Ada',
+          lastName: 'Lovelace',
+          isAdmin: false,
+          createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        },
+      ]);
+      mockPrisma.organisationSettings.findMany.mockResolvedValue([]);
+    });
+
+    it('names the organisations a person has been seen in', async () => {
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        { userId: 7, ssoOrgId: 'org_1', orgName: 'Acme Retail' },
+      ]);
+
+      const { users } = await service.users({});
+
+      expect(users[0].email).toBe('ada@example.com');
+      expect(users[0].organisations).toEqual([
+        { ssoOrgId: 'org_1', name: 'Acme Retail', wabas: 1, isAgency: false },
+      ]);
+    });
+
+    it('counts accounts rather than listing an organisation twice', async () => {
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        { userId: 7, ssoOrgId: 'org_1', orgName: 'Acme Retail' },
+        { userId: 7, ssoOrgId: 'org_1', orgName: 'Acme Retail' },
+      ]);
+
+      const { users } = await service.users({});
+
+      expect(users[0].organisations).toHaveLength(1);
+      expect(users[0].organisations[0].wabas).toBe(2);
+    });
+
+    it('takes a name from a later row where an older one has none', async () => {
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        { userId: 7, ssoOrgId: 'org_1', orgName: null },
+        { userId: 7, ssoOrgId: 'org_1', orgName: 'Acme Retail' },
+      ]);
+
+      const { users } = await service.users({});
+
+      expect(users[0].organisations[0].name).toBe('Acme Retail');
+    });
+
+    it('marks an organisation that manages clients', async () => {
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        { userId: 7, ssoOrgId: 'org_agency', orgName: 'Northwind' },
+      ]);
+      mockPrisma.organisationSettings.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_agency' },
+      ]);
+
+      const { users } = await service.users({});
+
+      expect(users[0].organisations[0].isAgency).toBe(true);
+    });
+
+    it('leaves somebody who has connected nothing with no organisations', async () => {
+      // Rather than inventing a membership we have no record of.
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
+
+      const { users } = await service.users({});
+
+      expect(users[0].organisations).toEqual([]);
+    });
+
+    it('pages, and never asks for more than a page at a time', async () => {
+      mockPrisma.user.count.mockResolvedValue(120);
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
+
+      const page = await service.users({ page: 3 });
+
+      expect(page.total).toBe(120);
+      expect(page.page).toBe(3);
+      expect(page.totalPages).toBe(5);
+      const { skip, take } = firstArg<{ skip: number; take: number }>(
+        mockPrisma.user.findMany,
+      );
+      expect(skip).toBe(50);
+      expect(take).toBe(25);
+    });
+  });
+
+  describe('the agency list', () => {
+    beforeEach(() => {
+      mockPrisma.user.findMany.mockResolvedValue([]);
+      mockOrgDirectory.name.mockImplementation((id: string) =>
+        Promise.resolve(id === 'org_agency' ? 'Northwind Digital' : null),
+      );
+    });
+
+    it('lists an agency with the clients under it', async () => {
+      mockPrisma.organisationSettings.findMany
+        .mockResolvedValueOnce([
+          { ssoOrgId: 'org_agency', convertedBy: null, convertedAt: null },
+        ])
+        .mockResolvedValueOnce([
+          {
+            ssoOrgId: 'org_kettle',
+            agencyOrgId: 'org_agency',
+            clientName: 'Kettle Coffee',
+            createdAt: new Date('2026-08-01T00:00:00.000Z'),
+          },
+        ]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_kettle',
+          status: 'active',
+          plan: {
+            code: 'growth',
+            name: 'Growth',
+            price: 84_900,
+            currency: 'INR',
+          },
+        },
+      ]);
+
+      const [agency] = await service.agencies();
+
+      expect(agency.name).toBe('Northwind Digital');
+      expect(agency.clientCount).toBe(1);
+      expect(agency.monthly).toBe(84_900);
+      expect(agency.clients[0]).toMatchObject({
+        name: 'Kettle Coffee',
+        planName: 'Growth',
+        status: 'active',
+      });
+    });
+
+    it('counts a client on a quoted tier as nothing rather than inventing a price', async () => {
+      mockPrisma.organisationSettings.findMany
+        .mockResolvedValueOnce([
+          { ssoOrgId: 'org_agency', convertedBy: null, convertedAt: null },
+        ])
+        .mockResolvedValueOnce([
+          {
+            ssoOrgId: 'org_quoted',
+            agencyOrgId: 'org_agency',
+            clientName: 'Quoted Co',
+            createdAt: new Date(),
+          },
+        ]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_quoted',
+          status: 'active',
+          plan: {
+            code: 'custom',
+            name: 'Custom',
+            price: null,
+            currency: 'INR',
+          },
+        },
+      ]);
+
+      const [agency] = await service.agencies();
+
+      expect(agency.monthly).toBe(0);
+      expect(agency.clients[0].price).toBeNull();
+    });
+
+    it('shows a client with no subscription rather than dropping it', async () => {
+      // Taken on and not yet paid for is exactly what somebody is looking for.
+      mockPrisma.organisationSettings.findMany
+        .mockResolvedValueOnce([
+          { ssoOrgId: 'org_agency', convertedBy: null, convertedAt: null },
+        ])
+        .mockResolvedValueOnce([
+          {
+            ssoOrgId: 'org_new',
+            agencyOrgId: 'org_agency',
+            clientName: null,
+            createdAt: new Date(),
+          },
+        ]);
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+
+      const [agency] = await service.agencies();
+
+      expect(agency.clients).toHaveLength(1);
+      expect(agency.clients[0].status).toBeNull();
+      expect(agency.clients[0].planName).toBeNull();
+    });
+
+    it('says nothing at all where no organisation is an agency', async () => {
+      mockPrisma.organisationSettings.findMany.mockResolvedValueOnce([]);
+
+      expect(await service.agencies()).toEqual([]);
+      // And does not go looking for clients of nobody.
+      expect(mockPrisma.subscription.findMany).not.toHaveBeenCalled();
     });
   });
 });

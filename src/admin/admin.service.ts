@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
@@ -20,7 +21,13 @@ import type {
   AdminOrganisationDetailDto,
   AdminOrganisationPageDto,
   AdminOrganisationRowDto,
+  AdminAgencyRowDto,
+  AdminAnalyticsDto,
   AdminOverviewDto,
+  AdminUserOrgDto,
+  AdminUserPageDto,
+  AdminRevenueDto,
+  AdminSeriesPointDto,
   AdminPlanDto,
   AdminSubscriptionRowDto,
   AdminUserDto,
@@ -132,6 +139,7 @@ export class AdminService {
     private readonly razorpay: RazorpayService,
     // Underscored to keep the name free for the method that lists them.
     private readonly invoices_: InvoiceService,
+    private readonly config: ConfigService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -139,17 +147,26 @@ export class AdminService {
   // ---------------------------------------------------------------------------
 
   async overview(): Promise<AdminOverviewDto> {
-    const [byStatusRows, wabas, phoneNumbers, contacts, orgIds] =
-      await Promise.all([
-        this.prisma.subscription.groupBy({
-          by: ['status'],
-          _count: { _all: true },
-        }),
-        this.prisma.waba.count(),
-        this.prisma.wabaPhoneNumber.count(),
-        this.prisma.contact.count(),
-        this.organisationIds(),
-      ]);
+    const [
+      byStatusRows,
+      wabas,
+      phoneNumbers,
+      contacts,
+      orgIds,
+      users,
+      agencies,
+    ] = await Promise.all([
+      this.prisma.subscription.groupBy({
+        by: ['status'],
+        _count: { _all: true },
+      }),
+      this.prisma.waba.count(),
+      this.prisma.wabaPhoneNumber.count(),
+      this.prisma.contact.count(),
+      this.organisationIds(),
+      this.prisma.user.count(),
+      this.prisma.organisationSettings.count({ where: { isAgency: true } }),
+    ]);
 
     const byStatus: Record<string, number> = {};
     for (const row of byStatusRows) byStatus[row.status] = row._count._all;
@@ -180,7 +197,194 @@ export class AdminService {
         neverAuthorised:
           (byStatus.created ?? 0) + (byStatus.authenticated ?? 0),
       },
+      users,
+      agencies,
+      revenue: await this.revenue(),
     };
+  }
+
+  /**
+   * Money actually captured, over the three windows somebody actually asks
+   * about: today, this month, and the financial year.
+   *
+   * Not the same question as the MRR above. That is what the live
+   * subscriptions are worth if every one of them pays; this is what the bank
+   * moved. They differ by exactly the failures the at-risk block counts, which
+   * is why both are on the page.
+   *
+   * The boundaries are worked out in the billing time zone, not UTC. A payment
+   * captured at 03:00 IST on the 1st belongs to the new month, and counting it
+   * from UTC would file it in the one that had already closed.
+   */
+  private async revenue(): Promise<AdminRevenueDto> {
+    const now = new Date();
+    const [startOfDay, startOfMonth, startOfYear] = [
+      this.dayStart(now),
+      this.monthStart(now),
+      this.financialYearStart(now),
+    ];
+
+    // One query for the whole year, summed into the three windows in memory.
+    // Three queries would be three passes over the same rows for figures that
+    // are strictly nested.
+    const captured = await this.prisma.subscriptionPayment.findMany({
+      where: {
+        status: 'captured',
+        OR: [
+          { paidAt: { gte: startOfYear } },
+          // Captured with no paidAt recorded — rare, but it is still money.
+          { paidAt: null, createdAt: { gte: startOfYear } },
+        ],
+      },
+      select: { amount: true, currency: true, paidAt: true, createdAt: true },
+    });
+
+    let today = 0;
+    let month = 0;
+    let year = 0;
+    for (const payment of captured) {
+      const at = payment.paidAt ?? payment.createdAt;
+      year += payment.amount;
+      if (at >= startOfMonth) month += payment.amount;
+      if (at >= startOfDay) today += payment.amount;
+    }
+
+    return {
+      today,
+      month,
+      year,
+      currency: captured.find((p) => p.currency)?.currency ?? 'INR',
+    };
+  }
+
+  /**
+   * Registrations, subscriptions started and revenue, day by day.
+   *
+   * Bucketed in the billing zone for the same reason the windows above are:
+   * a sign-up at 03:00 IST belongs to that day, and bucketing from UTC would
+   * put it on the one before and make every daily figure quietly wrong.
+   *
+   * Every day in the range appears, including the ones with nothing in them.
+   * A series with gaps draws a chart that lies about its own shape.
+   */
+  async analytics(days = 30): Promise<AdminAnalyticsDto> {
+    const span = Math.min(365, Math.max(1, Math.round(days)));
+    const now = new Date();
+    // Inclusive of today, so 7 days means today and the six before it.
+    const from = new Date(
+      this.dayStart(now).getTime() - (span - 1) * 86_400_000,
+    );
+
+    const [users, subscriptions, payments] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { createdAt: { gte: from } },
+        select: { createdAt: true },
+      }),
+      this.prisma.subscription.findMany({
+        where: { createdAt: { gte: from } },
+        select: { createdAt: true },
+      }),
+      this.prisma.subscriptionPayment.findMany({
+        where: {
+          status: 'captured',
+          OR: [
+            { paidAt: { gte: from } },
+            { paidAt: null, createdAt: { gte: from } },
+          ],
+        },
+        select: { amount: true, currency: true, paidAt: true, createdAt: true },
+      }),
+    ]);
+
+    const buckets = this.emptyDays(from, span);
+    const tally = (into: Map<string, number>, at: Date, by = 1): void => {
+      const key = this.dayKey(at);
+      if (into.has(key)) into.set(key, (into.get(key) ?? 0) + by);
+    };
+
+    const registrations = new Map(buckets);
+    for (const user of users) tally(registrations, user.createdAt);
+
+    const started = new Map(buckets);
+    for (const sub of subscriptions) tally(started, sub.createdAt);
+
+    const money = new Map(buckets);
+    for (const payment of payments) {
+      tally(money, payment.paidAt ?? payment.createdAt, payment.amount);
+    }
+
+    const series = (from: Map<string, number>): AdminSeriesPointDto[] =>
+      [...from].map(([date, value]) => ({ date, value }));
+
+    return {
+      days: span,
+      registrations: series(registrations),
+      subscriptions: series(started),
+      revenue: series(money),
+      currency: payments.find((p) => p.currency)?.currency ?? 'INR',
+    };
+  }
+
+  /** Every day in the range, in order, at zero. */
+  private emptyDays(from: Date, span: number): Map<string, number> {
+    const days = new Map<string, number>();
+    for (let i = 0; i < span; i++) {
+      days.set(this.dayKey(new Date(from.getTime() + i * 86_400_000)), 0);
+    }
+    return days;
+  }
+
+  /** `2026-08-29`, in the billing zone rather than the pod's. */
+  private dayKey(at: Date): string {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: this.timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(at);
+  }
+
+  /** Midnight local to the billing zone, as an instant. */
+  private dayStart(at: Date): Date {
+    return this.zoned(this.dayKey(at));
+  }
+
+  private monthStart(at: Date): Date {
+    return this.zoned(`${this.dayKey(at).slice(0, 7)}-01`);
+  }
+
+  /**
+   * 1 April, which is where the Indian financial year turns.
+   *
+   * Deliberately not 1 January: "this year" to somebody reconciling revenue
+   * means the year they file a return for.
+   */
+  private financialYearStart(at: Date): Date {
+    const [year, month] = this.dayKey(at).split('-').map(Number);
+    const startYear = month >= 4 ? year : year - 1;
+    return this.zoned(`${startYear}-04-01`);
+  }
+
+  /**
+   * A local calendar date as the instant it begins at, in the billing zone.
+   *
+   * Worked out by measuring the zone's offset at that moment rather than
+   * assuming one: India does not observe daylight saving, but a deployment
+   * configured for a zone that does would otherwise be an hour out for half
+   * the year.
+   */
+  private zoned(date: string): Date {
+    const guess = new Date(`${date}T00:00:00Z`);
+    const local = new Date(
+      guess.toLocaleString('en-US', { timeZone: this.timeZone }),
+    );
+    const utc = new Date(guess.toLocaleString('en-US', { timeZone: 'UTC' }));
+    return new Date(guess.getTime() + (utc.getTime() - local.getTime()));
+  }
+
+  /** The zone days and money are counted in. Shared with invoicing. */
+  private get timeZone(): string {
+    return this.config.get<string>('INVOICE_TIMEZONE') ?? 'Asia/Kolkata';
   }
 
   // ---------------------------------------------------------------------------
@@ -928,6 +1132,200 @@ export class AdminService {
       },
     });
     return rows.map((u) => this.toUser(u));
+  }
+
+  /**
+   * Everybody with an account, and the organisations we have seen them in.
+   *
+   * "Seen them in" is the honest phrasing and the screen repeats it.
+   * Memberships live in the SSO; what we hold is who connected an account for
+   * which organisation, so somebody invited to an organisation who has
+   * connected nothing appears here with none. Presenting that as a roster
+   * would be presenting an absence as a fact.
+   */
+  async users(opts: {
+    search?: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<AdminUserPageDto> {
+    const page = Math.max(1, opts.page ?? 1);
+    const perPage = Math.min(100, Math.max(1, opts.perPage ?? 25));
+    const term = opts.search?.trim();
+
+    const where = term
+      ? {
+          OR: [
+            { email: { contains: term, mode: 'insensitive' as const } },
+            { firstName: { contains: term, mode: 'insensitive' as const } },
+            { lastName: { contains: term, mode: 'insensitive' as const } },
+          ],
+        }
+      : {};
+
+    const [total, rows] = await Promise.all([
+      this.prisma.user.count({ where }),
+      this.prisma.user.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * perPage,
+        take: perPage,
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          isAdmin: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    // One query for the whole page's memberships rather than one per user.
+    const links = await this.prisma.wabaOrganisation.findMany({
+      where: { userId: { in: rows.map((u) => u.id) } },
+      select: { userId: true, ssoOrgId: true, orgName: true },
+    });
+
+    const agencyIds = new Set(
+      (
+        await this.prisma.organisationSettings.findMany({
+          where: {
+            isAgency: true,
+            ssoOrgId: { in: [...new Set(links.map((l) => l.ssoOrgId))] },
+          },
+          select: { ssoOrgId: true },
+        })
+      ).map((row) => row.ssoOrgId),
+    );
+
+    const byUser = new Map<number, Map<string, AdminUserOrgDto>>();
+    for (const link of links) {
+      const orgs =
+        byUser.get(link.userId) ?? new Map<string, AdminUserOrgDto>();
+      const existing = orgs.get(link.ssoOrgId);
+      if (existing) {
+        existing.wabas += 1;
+        // A name copied at connect can be null on an older row; a later one
+        // that has it is the better answer.
+        existing.name ??= link.orgName;
+      } else {
+        orgs.set(link.ssoOrgId, {
+          ssoOrgId: link.ssoOrgId,
+          name: link.orgName,
+          wabas: 1,
+          isAgency: agencyIds.has(link.ssoOrgId),
+        });
+      }
+      byUser.set(link.userId, orgs);
+    }
+
+    return {
+      users: rows.map((user) => ({
+        ...this.toUser(user),
+        organisations: [...(byUser.get(user.id)?.values() ?? [])],
+      })),
+      total,
+      page,
+      totalPages: Math.max(1, Math.ceil(total / perPage)),
+    };
+  }
+
+  /**
+   * Every agency, and the clients under it.
+   *
+   * The clients come from the subscriptions the agency pays for rather than
+   * from the settings rows alone: a client is somebody an agency is being
+   * charged for, and that is the relationship an operator is asked about when
+   * a bill is queried.
+   */
+  async agencies(): Promise<AdminAgencyRowDto[]> {
+    const agencies = await this.prisma.organisationSettings.findMany({
+      where: { isAgency: true },
+      orderBy: { createdAt: 'asc' },
+      select: { ssoOrgId: true, convertedBy: true, convertedAt: true },
+    });
+    if (agencies.length === 0) return [];
+
+    const agencyIds = agencies.map((a) => a.ssoOrgId);
+
+    const [clients, subscriptions, converters] = await Promise.all([
+      this.prisma.organisationSettings.findMany({
+        where: { agencyOrgId: { in: agencyIds } },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          ssoOrgId: true,
+          agencyOrgId: true,
+          clientName: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.subscription.findMany({
+        where: { payerOrgId: { in: agencyIds } },
+        select: {
+          ssoOrgId: true,
+          status: true,
+          plan: {
+            select: { code: true, name: true, price: true, currency: true },
+          },
+        },
+      }),
+      this.prisma.user.findMany({
+        where: {
+          id: {
+            in: agencies
+              .map((a) => a.convertedBy)
+              .filter((id): id is number => id !== null),
+          },
+        },
+        select: { id: true, email: true },
+      }),
+    ]);
+
+    const byClient = new Map(subscriptions.map((s) => [s.ssoOrgId, s]));
+    const converterEmail = new Map(converters.map((u) => [u.id, u.email]));
+
+    return Promise.all(
+      agencies.map(async (agency) => {
+        const own = clients.filter((c) => c.agencyOrgId === agency.ssoOrgId);
+
+        const rows = await Promise.all(
+          own.map(async (client) => {
+            const sub = byClient.get(client.ssoOrgId);
+            return {
+              ssoOrgId: client.ssoOrgId,
+              // The agency's own label first: it is what they will recognise,
+              // and often the only name a client organisation has here.
+              name:
+                client.clientName ??
+                (await this.orgDirectory.name(client.ssoOrgId)),
+              planName: sub?.plan?.name ?? null,
+              planCode: sub?.plan?.code ?? null,
+              status: sub?.status ?? null,
+              price: sub?.plan?.price ?? null,
+              since: client.createdAt,
+            };
+          }),
+        );
+
+        return {
+          ssoOrgId: agency.ssoOrgId,
+          name: await this.orgDirectory.name(agency.ssoOrgId),
+          convertedBy: agency.convertedBy
+            ? (converterEmail.get(agency.convertedBy) ?? null)
+            : null,
+          convertedAt: agency.convertedAt,
+          clientCount: rows.length,
+          // Quoted tiers carry no price and count for nothing — understating
+          // is better than inventing a number.
+          monthly: rows.reduce((sum, row) => sum + (row.price ?? 0), 0),
+          currency:
+            own
+              .map((c) => byClient.get(c.ssoOrgId)?.plan?.currency)
+              .find(Boolean) ?? 'INR',
+          clients: rows,
+        };
+      }),
+    );
   }
 
   /** Somebody to grant it to. Searched, never listed — this is not a directory. */

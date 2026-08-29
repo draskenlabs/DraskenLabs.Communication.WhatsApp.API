@@ -31,7 +31,10 @@ import {
   AdminOverviewDto,
   AdminPlanDto,
   AdminSubscriptionRowDto,
+  AdminAgencyRowDto,
+  AdminAnalyticsDto,
   AdminUserDto,
+  AdminUserPageDto,
   AttachClientDto,
   ConvertOrgDto,
   CreatePlanDto,
@@ -207,9 +210,59 @@ export class AdminController {
     return this.admin.admins();
   }
 
+  /**
+   * The grant picker's search. Deliberately not a listing: it answers "who is
+   * this person I am about to grant access to", and refuses a term short
+   * enough to fish with.
+   */
   @Get('users')
   findUsers(@Query('search') search?: string): Promise<AdminUserDto[]> {
     return this.admin.findUsers(search ?? '');
+  }
+
+  @Get('users/directory')
+  @ApiOperation({
+    summary:
+      'Everybody with an account, and the organisations we have seen them in',
+    description:
+      'Memberships live in the SSO, so the organisations here are the ones ' +
+      'this person connected an account for — not an authoritative roster. ' +
+      'Somebody invited to an organisation who has connected nothing shows ' +
+      'with none.',
+  })
+  directory(
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+  ): Promise<AdminUserPageDto> {
+    return this.admin.users({
+      search,
+      page: page ? Number(page) : 1,
+    });
+  }
+
+  @Get('agencies')
+  @ApiOperation({
+    summary: 'Every agency, and the clients under it',
+    description:
+      'The clients are the organisations the agency is being charged for, ' +
+      'which is the relationship somebody is asked about when a bill is ' +
+      'queried.',
+  })
+  agencies(): Promise<AdminAgencyRowDto[]> {
+    return this.admin.agencies();
+  }
+
+  @Get('analytics')
+  @ApiOperation({
+    summary: 'Registrations, subscriptions and revenue, day by day',
+    description:
+      'Bucketed in the billing time zone rather than UTC, so a sign-up at ' +
+      '03:00 IST belongs to that day. Every day in the range appears, ' +
+      'including the empty ones — a series with gaps draws a chart that lies ' +
+      'about its own shape.',
+  })
+  analytics(@Query('days') days?: string): Promise<AdminAnalyticsDto> {
+    return this.admin.analytics(days ? Number(days) : 30);
   }
 
   @Patch('users/:id/admin')

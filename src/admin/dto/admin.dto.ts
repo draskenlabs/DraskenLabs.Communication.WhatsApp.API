@@ -39,6 +39,54 @@ export class AdminAtRiskDto {
   neverAuthorised: number;
 }
 
+/** One day's figure in a series. */
+export class AdminSeriesPointDto {
+  @ApiProperty({ description: 'The day, as YYYY-MM-DD in the billing zone' })
+  date: string;
+
+  @ApiProperty() value: number;
+}
+
+/** Revenue over the three windows an operator actually asks about. */
+export class AdminRevenueDto {
+  @ApiProperty({ description: 'Captured today, in the smallest unit' })
+  today: number;
+
+  @ApiProperty({ description: 'Captured since the 1st of this month' })
+  month: number;
+
+  @ApiProperty({ description: 'Captured since 1 April — the financial year' })
+  year: number;
+
+  @ApiProperty({ description: 'The same window a year’s worth of days covers' })
+  currency: string;
+}
+
+/**
+ * The overview's time series.
+ *
+ * Days are bucketed in the billing time zone rather than UTC: a sign-up at
+ * 03:00 IST belongs to that day, and bucketing from UTC would file it under
+ * the one before and make every daily figure quietly wrong.
+ */
+export class AdminAnalyticsDto {
+  @ApiProperty({ description: 'Days covered' }) days: number;
+
+  @ApiProperty({ type: [AdminSeriesPointDto] })
+  registrations: AdminSeriesPointDto[];
+
+  @ApiProperty({ type: [AdminSeriesPointDto] })
+  subscriptions: AdminSeriesPointDto[];
+
+  @ApiProperty({
+    type: [AdminSeriesPointDto],
+    description: 'Captured payments each day, in the smallest currency unit',
+  })
+  revenue: AdminSeriesPointDto[];
+
+  @ApiProperty() currency: string;
+}
+
 /** One line of the estate, for the overview. */
 export class AdminOverviewDto {
   @ApiProperty({ description: 'Organisations we have ever seen' })
@@ -78,6 +126,19 @@ export class AdminOverviewDto {
       'mandates that stopped, and tiers chosen but never authorised.',
   })
   atRisk: AdminAtRiskDto;
+
+  @ApiProperty({ description: 'People with an account on this deployment' })
+  users: number;
+
+  @ApiProperty({ description: 'Organisations marked as agencies' })
+  agencies: number;
+
+  @ApiProperty({
+    description:
+      'Money actually captured, as opposed to the MRR above — which is what ' +
+      'the live subscriptions are worth if every one of them pays.',
+  })
+  revenue: AdminRevenueDto;
 }
 
 /** One organisation, as the index lists it. */
@@ -494,6 +555,99 @@ export class AdminUserDto {
   @ApiProperty({ nullable: true }) name: string | null;
   @ApiProperty() isAdmin: boolean;
   @ApiProperty() createdAt: Date;
+}
+
+/**
+ * One organisation a user has been seen acting in.
+ *
+ * Memberships live in the SSO, so this is what *we* have recorded rather than
+ * an authoritative roster: an organisation appears here because this person
+ * connected an account for it. Somebody invited to an organisation who has
+ * connected nothing will not show up, which is why the screen says so rather
+ * than presenting this as the whole truth.
+ */
+export class AdminUserOrgDto {
+  @ApiProperty() ssoOrgId: string;
+  @ApiProperty({ nullable: true }) name: string | null;
+  @ApiProperty({ description: 'Accounts this person connected for it' })
+  wabas: number;
+  @ApiProperty({ description: 'Whether that organisation manages clients' })
+  isAgency: boolean;
+}
+
+/** A user, with the organisations we have seen them in. */
+export class AdminUserRowDto {
+  @ApiProperty() id: number;
+  @ApiProperty({ nullable: true }) email: string | null;
+  @ApiProperty({ nullable: true }) name: string | null;
+  @ApiProperty() isAdmin: boolean;
+  @ApiProperty() createdAt: Date;
+
+  @ApiProperty({ type: [AdminUserOrgDto] })
+  organisations: AdminUserOrgDto[];
+}
+
+export class AdminUserPageDto {
+  @ApiProperty({ type: [AdminUserRowDto] }) users: AdminUserRowDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() totalPages: number;
+}
+
+/** One client an agency manages. */
+export class AdminAgencyClientDto {
+  @ApiProperty() ssoOrgId: string;
+  @ApiProperty({
+    nullable: true,
+    description: 'What the agency calls it, falling back to its own name',
+  })
+  name: string | null;
+
+  @ApiProperty({ nullable: true, description: 'The tier it is on' })
+  planName: string | null;
+
+  @ApiProperty({ nullable: true }) planCode: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Its subscription status, or null where it has none',
+  })
+  status: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What the agency pays for it a month, in the smallest unit',
+  })
+  price: number | null;
+
+  @ApiProperty({ description: 'When the agency took it on' })
+  since: Date;
+}
+
+/** An agency, and the clients under it. */
+export class AdminAgencyRowDto {
+  @ApiProperty() ssoOrgId: string;
+  @ApiProperty({ nullable: true }) name: string | null;
+
+  @ApiProperty({ nullable: true, description: 'Who marked it an agency' })
+  convertedBy: string | null;
+
+  @ApiProperty({ nullable: true }) convertedAt: Date | null;
+
+  @ApiProperty({ description: 'How many clients it manages' })
+  clientCount: number;
+
+  @ApiProperty({
+    description:
+      'What it pays a month across every client, in the smallest currency ' +
+      'unit. Clients on a quoted tier carry no price and count for nothing.',
+  })
+  monthly: number;
+
+  @ApiProperty() currency: string;
+
+  @ApiProperty({ type: [AdminAgencyClientDto] })
+  clients: AdminAgencyClientDto[];
 }
 
 export class SetAdminDto {
