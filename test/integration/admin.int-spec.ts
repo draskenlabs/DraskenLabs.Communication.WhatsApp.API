@@ -274,4 +274,52 @@ describe('Admin console (integration)', () => {
       expect(still?.isAdmin).toBe(true);
     });
   });
+
+  describe('the user directory and one user', () => {
+    it('does not let /users/:id swallow /users/directory', async () => {
+      // Both are two segments under /admin/users. Declared the other way round,
+      // ':id' matches the literal "directory" and the list 400s on a
+      // ParseIntPipe — which reads as a broken page, not a routing mistake.
+      const token = await signedIn(true);
+
+      const res = await http()
+        .get('/admin/users/directory')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(Array.isArray(data<{ users: unknown[] }>(res).users)).toBe(true);
+    });
+
+    it('opens one user by id', async () => {
+      const token = await signedIn(true);
+      const me = await h.prisma.user.findFirstOrThrow({
+        where: { isAdmin: true },
+      });
+
+      const res = await http()
+        .get(`/admin/users/${me.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(data<{ id: number }>(res).id).toBe(me.id);
+    });
+
+    it('404s for a user who does not exist', async () => {
+      const token = await signedIn(true);
+
+      await http()
+        .get('/admin/users/999999')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+    });
+
+    it('is not found to a customer, like the rest of the console', async () => {
+      const token = await signedIn(false);
+
+      await http()
+        .get('/admin/users/directory')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+    });
+  });
 });
