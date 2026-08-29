@@ -1,38 +1,42 @@
 /**
- * The invoice as a PDF, written by hand.
+ * The invoice, as a PDF.
  *
- * An invoice that only exists as a row in our database is not an invoice; it
- * has to arrive as a file the customer can file, forward to an accountant and
- * still open in seven years. That argues for a real document rather than an
- * HTML email, and for the one format every operating system opens without
- * asking.
+ * A solid brand masthead over a ledger body: the green appears twice on the
+ * page and nowhere else — the head, and the figure the reader came for —
+ * and everything between them is type and rules. A document is read once,
+ * filed, and printed by somebody's accounts team, so it is built for a
+ * monochrome laser as much as for a screen.
  *
- * No dependency, because none is needed: this draws text and rules on a single
- * A4 page using the base-14 fonts every PDF reader carries, which is the whole
- * of what an invoice is. A layout engine would be a large amount of new supply
- * chain for a document that is a header, a table and three totals.
- *
- * Two consequences of the base-14 fonts, both deliberate:
- *   - Text is encoded as WinAnsi, so amounts are written `INR 499.00` rather
- *     than with a rupee sign — U+20B9 is not in that encoding, and a currency
- *     symbol that renders as a box on somebody's reader is worse than the ISO
- *     code an accountant reads anyway.
- *   - Anything outside Latin-1 in a name is transliterated where it can be and
- *     dropped where it cannot, rather than corrupting the stream.
+ * Light regardless of the reader's theme, and no external dependency: the
+ * layout is content-stream operators over the shared engine, so a document
+ * can never fail to render because a transitive dependency changed.
  */
+import {
+  AMOUNT_RIGHT,
+  BOLD,
+  BRAND,
+  CONTENT_WIDTH,
+  Colour,
+  FAINT,
+  GREY,
+  MARGIN,
+  PAD,
+  PAGE_HEIGHT,
+  PAGE_WIDTH,
+  Page,
+  REGULAR,
+  WHITE,
+  assemble,
+  formatAmount,
+  formatDate,
+  formatPeriod,
+  formatRate,
+  rupeesInWords,
+  truncate,
+} from './document.pdf';
 
-/** A4, in points, which is the only unit PDF has. */
-const PAGE_WIDTH = 595.28;
-const PAGE_HEIGHT = 841.89;
-const MARGIN = 48;
-const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
+export { formatAmount, formatRate, measure, toWinAnsi } from './document.pdf';
 
-/** Font names as the page resources declare them. */
-type Font = 'F1' | 'F2';
-const REGULAR: Font = 'F1';
-const BOLD: Font = 'F2';
-
-/** One thing charged for, and what it cost. */
 export interface InvoiceDocumentLine {
   description: string;
   /** A second, quieter line under it — a period, or who it was for. */
@@ -67,6 +71,10 @@ export interface InvoiceDocument {
   billedToName: string | null;
   billedToEmail: string | null;
   organisationName: string | null;
+  /** The customer's registration, as stated at issue. */
+  billedToGstin?: string | null;
+  /** Their address, newline-separated, as they entered it. */
+  billedToAddress?: string | null;
   /** What the money bought, in a few words: "Growth", "3 client plans". */
   summary: string | null;
 
@@ -86,6 +94,15 @@ export interface InvoiceDocument {
   taxAmount: number;
   taxRateBps: number;
   taxLabel: string | null;
+  /**
+   * How the tax divides. Inside our own state it is CGST and SGST at half the
+   * rate each; across a state line it is IGST at the whole rate. Exactly one
+   * of the two shapes is ever non-zero.
+   */
+  cgstAmount?: number;
+  sgstAmount?: number;
+  igstAmount?: number;
+
   total: number;
   currency: string;
 
@@ -93,7 +110,17 @@ export interface InvoiceDocument {
   paymentMethod: string | null;
   /** Razorpay's payment id, so a query can be traced to their dashboard. */
   paymentReference: string | null;
+  /** The state the supply was made to, printed as "Karnataka (29)". */
   placeOfSupply?: string | null;
+  /** Service classification, printed against every line: 998314. */
+  sacCode?: string | null;
+}
+
+/** One row of the tax summary. */
+interface TaxRow {
+  label: string;
+  rateBps: number;
+  amount: number;
 }
 
 /* -------------------------------------------------------------------- *
@@ -104,587 +131,621 @@ export function renderInvoicePdf(
   invoice: InvoiceDocument,
   seller: InvoiceSeller,
 ): Buffer {
-  const page = new Page();
-  let y = PAGE_HEIGHT - MARGIN;
+  const taxes = taxRows(invoice);
+  const sheets: Page[] = [];
 
-  y = drawHeader(page, invoice, seller, y);
-  y = drawParties(page, invoice, seller, y);
-  y = drawLineItems(page, invoice, y);
-  drawTotals(page, invoice, y);
-  // The footer anchors itself to the bottom of the page, so it needs no `y`.
-  drawPaymentAndFooter(page, invoice);
+  /** A fresh sheet, under a slim continuation head rather than the full one. */
+  const continuation = (): { page: Page; y: number } => {
+    const page = new Page();
+    sheets.push(page);
+    return { page, y: continuationHead(page, invoice, seller) };
+  };
 
-  return assemble(page.stream());
+  let page = new Page();
+  sheets.push(page);
+
+  let y = masthead(page, invoice, seller, taxes);
+  y = parties(page, invoice, seller);
+  y = facts(page, invoice, y);
+
+  // The table may run onto further sheets. What sits below it — the totals
+  // block and the amount in words — is a known height, so the last sheet is
+  // told to keep room for it, and a table that fills a sheet exactly pushes
+  // the totals onto one of their own rather than printing over the footer.
+  const placed = table(page, invoice, y, reserve(invoice, taxes), continuation);
+  page = placed.page;
+  y = placed.y;
+
+  y = totals(page, invoice, taxes, y);
+  words(page, invoice, y);
+
+  // Every sheet is a page of the same document and has to say so on its own:
+  // one sheet of three, separated from the rest, must still be identifiable.
+  sheets.forEach((sheet, index) => {
+    footer(sheet, invoice, index + 1, sheets.length);
+  });
+
+  return assemble(sheets.map((sheet) => sheet.stream()));
+}
+
+/**
+ * The tax summary, as rows.
+ *
+ * Derived rather than stored as text: the split was decided once, when the
+ * invoice was raised, and this only decides how to say it. CGST and SGST are
+ * each half the rate — 18% GST is 9 and 9 — which is why the rate on a row is
+ * not simply the invoice's rate.
+ */
+function taxRows(invoice: InvoiceDocument): TaxRow[] {
+  const { taxRateBps, taxLabel } = invoice;
+  if (taxRateBps <= 0 || invoice.taxAmount <= 0) return [];
+
+  const igst = invoice.igstAmount ?? 0;
+  if (igst > 0) {
+    return [{ label: 'IGST', rateBps: taxRateBps, amount: igst }];
+  }
+
+  const cgst = invoice.cgstAmount ?? 0;
+  const sgst = invoice.sgstAmount ?? 0;
+  if (cgst > 0 || sgst > 0) {
+    const half = taxRateBps / 2;
+    return [
+      { label: 'CGST', rateBps: half, amount: cgst },
+      { label: 'SGST', rateBps: half, amount: sgst },
+    ];
+  }
+
+  // A rate with no split — an invoice raised before the split existed, or a
+  // deployment taxing outside India. Still stated, under whatever it is called.
+  return [
+    {
+      label: taxLabel ?? 'Tax',
+      rateBps: taxRateBps,
+      amount: invoice.taxAmount,
+    },
+  ];
 }
 
 /* -------------------------------------------------------------------- *
- * Sections                                                              *
+ * Masthead                                                              *
  * -------------------------------------------------------------------- */
 
-function drawHeader(
+/** White at `amount`, over the brand green. */
+function tint(amount: number): Colour {
+  return [
+    BRAND[0] + (1 - BRAND[0]) * amount,
+    BRAND[1] + (1 - BRAND[1]) * amount,
+    BRAND[2] + (1 - BRAND[2]) * amount,
+  ];
+}
+
+/** A solid brand block, reversed out, carrying the mark and the title. */
+function masthead(
   page: Page,
   invoice: InvoiceDocument,
   seller: InvoiceSeller,
-  top: number,
+  taxes: TaxRow[],
 ): number {
-  let y = top;
+  const height = 104;
+  const top = PAGE_HEIGHT;
+  page.fillRect(0, top - height, PAGE_WIDTH, height, BRAND);
 
-  page.text(MARGIN, y, seller.name, BOLD, 15);
-  // The title sits on the same line as the seller's name, hard right: it is
-  // the first thing a person scanning a stack of documents looks for.
-  const title = invoice.taxRateBps > 0 ? 'TAX INVOICE' : 'INVOICE';
-  page.textRight(PAGE_WIDTH - MARGIN, y, title, BOLD, 15);
-  y -= 18;
+  const centre = top - 52;
+  // A white tile on green, inverting the console's own sidebar mark.
+  page.roundedRect(MARGIN, centre - 15, 30, 30, 9, WHITE);
+  page.roundedRect(MARGIN + 7, centre - 7, 16, 13, 5, BRAND);
+  page.fillRect(MARGIN + 10, centre - 10, 4, 4, BRAND);
 
-  const sellerLines = [
+  page.text(MARGIN + 42, centre + 3, seller.name, BOLD, 14, WHITE);
+  page.text(
+    MARGIN + 42,
+    centre - 10,
+    'WhatsApp Business Platform',
+    REGULAR,
+    9,
+    tint(0.85),
+  );
+
+  // "Tax invoice" is a claim, not a decoration: a document calling itself one
+  // while charging no tax is wrong, and one that charged tax and does not say
+  // so is not the document the customer's accountant needs.
+  const title = taxes.length > 0 ? 'TAX INVOICE' : 'INVOICE';
+  page.textRight(PAGE_WIDTH - MARGIN, centre + 4, title, BOLD, 16, WHITE);
+  page.textRight(
+    PAGE_WIDTH - MARGIN,
+    centre - 11,
+    invoice.number,
+    REGULAR,
+    10,
+    tint(0.85),
+  );
+
+  return top - height - 26;
+}
+
+/**
+ * The head of a second or later sheet.
+ *
+ * A slim band rather than the full masthead: the letterhead has been stated,
+ * and repeating it would push the rows it exists to make room for onto yet
+ * another sheet. It still names the document, because a sheet separated from
+ * the rest has to be identifiable on its own.
+ */
+function continuationHead(
+  page: Page,
+  invoice: InvoiceDocument,
+  seller: InvoiceSeller,
+): number {
+  const height = 54;
+  page.fillRect(0, PAGE_HEIGHT - height, PAGE_WIDTH, height, BRAND);
+
+  const baseline = PAGE_HEIGHT - 32;
+  page.text(MARGIN, baseline, seller.name, BOLD, 11, WHITE);
+  page.textRight(
+    PAGE_WIDTH - MARGIN,
+    baseline,
+    `${invoice.number} — continued`,
+    REGULAR,
+    9.5,
+    tint(0.85),
+  );
+
+  return PAGE_HEIGHT - height - 34;
+}
+
+/* -------------------------------------------------------------------- *
+ * Who                                                                   *
+ * -------------------------------------------------------------------- */
+
+function parties(
+  page: Page,
+  invoice: InvoiceDocument,
+  seller: InvoiceSeller,
+): number {
+  const gap = 16;
+  const colWidth = (CONTENT_WIDTH - gap) / 2;
+  const top = PAGE_HEIGHT - 104 - 26;
+
+  const from = [
     ...seller.addressLines,
-    ...(seller.gstin ? [`GSTIN: ${seller.gstin}`] : []),
-    ...(seller.pan ? [`PAN: ${seller.pan}`] : []),
-    ...(seller.registrationNumber ? [`CIN: ${seller.registrationNumber}`] : []),
+    ...(seller.gstin ? [`GSTIN  ${seller.gstin}`] : []),
+    ...(seller.pan ? [`PAN  ${seller.pan}`] : []),
     ...(seller.email ? [seller.email] : []),
-    ...(seller.website ? [seller.website] : []),
   ];
 
-  // The two columns are drawn together so the block ends below whichever ran
-  // longer — a seller with a five-line address must not run into the table.
-  const facts: [string, string][] = [
-    ['Invoice number', invoice.number],
-    ['Invoice date', formatDate(invoice.issuedAt)],
-    ['Financial year', invoice.financialYearLabel],
-  ];
-
-  let leftY = y;
-  for (const line of sellerLines) {
-    page.text(MARGIN, leftY, line, REGULAR, 9, GREY);
-    leftY -= 12;
-  }
-
-  let rightY = y;
-  for (const [label, value] of facts) {
-    page.textRight(
-      PAGE_WIDTH - MARGIN - 150,
-      rightY,
-      `${label}`,
-      REGULAR,
-      9,
-      GREY,
-    );
-    page.textRight(PAGE_WIDTH - MARGIN, rightY, value, BOLD, 9);
-    rightY -= 13;
-  }
-
-  y = Math.min(leftY, rightY) - 12;
-  page.rule(MARGIN, y, PAGE_WIDTH - MARGIN);
-  return y - 24;
-}
-
-function drawParties(
-  page: Page,
-  invoice: InvoiceDocument,
-  seller: InvoiceSeller,
-  top: number,
-): number {
-  let y = top;
-
-  page.text(MARGIN, y, 'BILLED TO', BOLD, 8, GREY);
-  page.text(MARGIN + 280, y, 'FOR', BOLD, 8, GREY);
-  y -= 15;
-
-  const billed = [
-    invoice.organisationName ?? invoice.billedToName ?? 'Customer',
-    ...(invoice.organisationName && invoice.billedToName
-      ? [invoice.billedToName]
+  const to = [
+    ...(invoice.billedToAddress
+      ? invoice.billedToAddress.split('\n').filter(Boolean)
       : []),
+    ...(invoice.billedToName ? [invoice.billedToName] : []),
     ...(invoice.billedToEmail ? [invoice.billedToEmail] : []),
-    ...(invoice.placeOfSupply
-      ? [`Place of supply: ${invoice.placeOfSupply}`]
-      : []),
+    // Said either way. A customer who has not given one needs to know that is
+    // why they cannot claim the tax, rather than finding out at their return.
+    invoice.billedToGstin
+      ? `GSTIN  ${invoice.billedToGstin}`
+      : 'GSTIN  Not provided — no input credit',
   ];
 
-  const forLines = [
-    invoice.summary ?? 'WhatsApp Business Platform',
-    ...(invoice.paymentReference ? [`Ref: ${invoice.paymentReference}`] : []),
-  ];
+  const rows = Math.max(from.length, to.length);
+  const height = PAD + 10 + 16 + rows * 12 + PAD - 4;
 
-  let leftY = y;
-  billed.forEach((line, index) => {
-    page.text(
-      MARGIN,
-      leftY,
-      line,
-      index === 0 ? BOLD : REGULAR,
-      10,
-      index === 0 ? INK : GREY,
-    );
-    leftY -= 13;
-  });
-
-  let rightY = y;
-  forLines.forEach((line, index) => {
-    page.text(
-      MARGIN + 280,
-      rightY,
-      line,
-      index === 0 ? BOLD : REGULAR,
-      10,
-      index === 0 ? INK : GREY,
-    );
-    rightY -= 13;
-  });
-
-  // `seller` is not printed again here; it is in the header. The parameter is
-  // kept so the section signature matches the others and a future "supplier
-  // address" block has somewhere obvious to go.
-  void seller;
-
-  return Math.min(leftY, rightY) - 18;
-}
-
-/** Lines that will not fit on one page, kept off it rather than overflowing. */
-const MAX_PRINTED_LINES = 22;
-
-function drawLineItems(
-  page: Page,
-  invoice: InvoiceDocument,
-  top: number,
-): number {
-  let y = top;
-  const amountX = PAGE_WIDTH - MARGIN;
-  const qtyX = amountX - 190;
-  const unitX = amountX - 90;
-
-  // The quantity and unit columns only earn their space when something is
-  // actually charged more than once — an ordinary monthly plan is one of one.
-  const itemised = invoice.lines.some((line) => line.quantity > 1);
-
-  page.fillRect(MARGIN, y - 6, CONTENT_WIDTH, 22, BAND);
-  page.text(MARGIN + 8, y, 'DESCRIPTION', BOLD, 8, GREY);
-  if (itemised) {
-    page.textRight(qtyX, y, 'QTY', BOLD, 8, GREY);
-    page.textRight(unitX, y, 'RATE', BOLD, 8, GREY);
-  }
-  page.textRight(amountX - 8, y, 'AMOUNT', BOLD, 8, GREY);
-  y -= 26;
-
-  // One page, so a very long roster is summarised rather than silently cut:
-  // a document that stops mid-table without saying so is worse than one that
-  // says how much it is not showing.
-  const printed = invoice.lines.slice(0, MAX_PRINTED_LINES);
-  const hidden = invoice.lines.length - printed.length;
-
-  for (const line of printed) {
-    page.text(MARGIN + 8, y, line.description, REGULAR, 10);
-    if (itemised) {
-      page.textRight(qtyX, y, String(line.quantity), REGULAR, 10, GREY);
-      page.textRight(
-        unitX,
-        y,
-        formatAmount(line.unitAmount, invoice.currency),
+  const column = (x: number, label: string, name: string, lines: string[]) => {
+    let ly = top - PAD - 4;
+    page.tracked(x, ly, label, 7, FAINT);
+    ly -= 16;
+    page.text(x, ly, truncate(name, BOLD, 11, colWidth), BOLD, 11);
+    ly -= 15;
+    for (const line of lines) {
+      page.text(
+        x,
+        ly,
+        truncate(line, REGULAR, 8.5, colWidth),
         REGULAR,
-        10,
+        8.5,
         GREY,
       );
+      ly -= 12;
     }
+  };
+
+  column(MARGIN, 'FROM', seller.name, from);
+  column(
+    MARGIN + colWidth + gap,
+    'BILLED TO',
+    invoice.organisationName ?? invoice.billedToName ?? 'Customer',
+    to,
+  );
+
+  const bottom = top - height + 6;
+  page.rule(MARGIN, bottom, PAGE_WIDTH - MARGIN);
+  return bottom - 22;
+}
+
+/* -------------------------------------------------------------------- *
+ * The document's own facts                                              *
+ * -------------------------------------------------------------------- */
+
+function facts(page: Page, invoice: InvoiceDocument, top: number): number {
+  const cells: [string, string][] = [
+    ['INVOICE NUMBER', invoice.number],
+    ['INVOICE DATE', formatDate(invoice.issuedAt)],
+    ['FINANCIAL YEAR', invoice.financialYearLabel],
+    ...(invoice.placeOfSupply
+      ? ([['PLACE OF SUPPLY', invoice.placeOfSupply]] as [string, string][])
+      : []),
+  ];
+
+  const height = 44;
+  const cell = CONTENT_WIDTH / cells.length;
+  cells.forEach(([label, value], index) => {
+    const x = MARGIN + index * cell;
+    page.tracked(x, top - 17, label, 6.5, FAINT);
+    page.text(x, top - 31, truncate(value, BOLD, 9.5, cell - PAD), BOLD, 9.5);
+  });
+
+  page.rule(MARGIN, top - height + 6, PAGE_WIDTH - MARGIN);
+  return top - height - 14;
+}
+
+/* -------------------------------------------------------------------- *
+ * What the money bought                                                 *
+ * -------------------------------------------------------------------- */
+
+/** The footer's rule. Nothing in the body may cross it. */
+const FOOTER_TOP = MARGIN + 46 + 24;
+/** Clear air between the last row of the table and that rule. */
+const GAP = 24;
+/** Clear air between the amount in words and that rule. Tighter: it is the
+ * last line of the document, and the rule is what separates it from the
+ * footer rather than something it has to avoid. */
+const TAIL_GAP = 8;
+
+/** Height of one row of the totals panel, and of its emphasised total. */
+const TOTALS_ROW = 17;
+const TOTALS_BAND = 34;
+
+/**
+ * How much room the totals block and the amount in words will need.
+ *
+ * Computed rather than guessed, because it varies: an intra-state supply has
+ * two tax rows where an inter-state one has a single IGST row, and a document
+ * in a currency other than rupees prints no words at all.
+ */
+function reserve(invoice: InvoiceDocument, taxes: TaxRow[]): number {
+  const rows = 1 + taxes.length;
+  const totals = PAD - 2 + rows * TOTALS_ROW + TOTALS_BAND + 8;
+  // The words block hangs 20 below the totals panel and is itself 14 tall.
+  const words = invoice.currency === 'INR' ? 20 + 14 : 0;
+  return totals + words;
+}
+
+/**
+ * The table's vertical rhythm, named rather than sprinkled as bare numbers.
+ *
+ * A separator looks centred when the space above it is a little smaller than
+ * the space below: under the rule the next row's cap-height eats ~7pt before
+ * any ink appears, so equal gaps read as a rule sitting too low. 10 above and
+ * 18 below is what makes the row pitch look even.
+ */
+const ROW_DETAIL = 13;
+const ROW_PAD = 10;
+const ROW_LEAD = 18;
+
+/** The column geometry, shared by the header and every row under it. */
+interface Columns {
+  itemised: boolean;
+  qtyRight: number;
+  rateRight: number;
+  sacRight: number;
+  sac: string | null;
+  room: number;
+}
+
+function columnsFor(invoice: InvoiceDocument): Columns {
+  const itemised = invoice.lines.some((line) => line.quantity > 1);
+  const qtyRight = AMOUNT_RIGHT - 168;
+  const rateRight = AMOUNT_RIGHT - 84;
+  const sacRight = AMOUNT_RIGHT - (itemised ? 240 : 150);
+  const sac = invoice.sacCode ?? null;
+  const rightmost = sac ? sacRight : itemised ? qtyRight : AMOUNT_RIGHT;
+  return {
+    itemised,
+    qtyRight,
+    rateRight,
+    sacRight,
+    sac,
+    room: rightmost - MARGIN - PAD - 12,
+  };
+}
+
+/** The column headings and the rule under them. Repeated on every sheet. */
+function tableHead(page: Page, y: number, columns: Columns): number {
+  page.tracked(MARGIN + PAD, y, 'DESCRIPTION', 6.5, GREY);
+  if (columns.sac) {
+    page.textRight(columns.sacRight + 34, y, 'SAC', BOLD, 6.5, GREY);
+  }
+  if (columns.itemised) {
+    page.textRight(columns.qtyRight, y, 'QTY', BOLD, 6.5, GREY);
+    page.textRight(columns.rateRight, y, 'RATE', BOLD, 6.5, GREY);
+  }
+  page.textRight(AMOUNT_RIGHT, y, 'AMOUNT', BOLD, 6.5, GREY);
+
+  const next = y - ROW_PAD;
+  page.rule(MARGIN + PAD, next, PAGE_WIDTH - MARGIN - PAD);
+  return next - ROW_LEAD;
+}
+
+/**
+ * One row, on the baseline it was given. Returns the baseline of whatever the
+ * row's last line turned out to be — a row with a sub-caption is two lines
+ * tall, and the separator has to hang off the bottom of the block rather than
+ * off the description, or the pitch goes ragged wherever one row has a caption
+ * and its neighbour does not.
+ */
+function tableRow(
+  page: Page,
+  invoice: InvoiceDocument,
+  line: InvoiceDocumentLine,
+  y: number,
+  columns: Columns,
+): number {
+  page.text(
+    MARGIN + PAD,
+    y,
+    truncate(line.description, REGULAR, 10, columns.room),
+    REGULAR,
+    10,
+  );
+  if (columns.sac) {
+    page.textRight(columns.sacRight + 34, y, columns.sac, REGULAR, 8.5, GREY);
+  }
+  if (columns.itemised) {
     page.textRight(
-      amountX - 8,
+      columns.qtyRight,
       y,
-      formatAmount(line.amount, invoice.currency),
+      String(line.quantity),
       REGULAR,
       10,
-    );
-    y -= 13;
-
-    if (line.detail) {
-      page.text(MARGIN + 8, y, line.detail, REGULAR, 9, GREY);
-      y -= 13;
-    }
-  }
-
-  if (hidden > 0) {
-    page.text(
-      MARGIN + 8,
-      y,
-      `and ${hidden} more, listed in your console`,
-      REGULAR,
-      9,
       GREY,
     );
-    y -= 13;
+    page.textRight(
+      columns.rateRight,
+      y,
+      formatAmount(line.unitAmount, invoice.currency),
+      REGULAR,
+      10,
+      GREY,
+    );
   }
+  page.textRight(
+    AMOUNT_RIGHT,
+    y,
+    formatAmount(line.amount, invoice.currency),
+    REGULAR,
+    10,
+  );
+
+  if (line.detail) {
+    const detailY = y - ROW_DETAIL;
+    page.text(MARGIN + PAD, detailY, line.detail, REGULAR, 8.5, FAINT);
+    return detailY;
+  }
+  return y;
+}
+
+/**
+ * The line items, across as many sheets as they need.
+ *
+ * Every client on an agency's mandate gets a row: the agency cannot rebill
+ * from a document that shows eight of its twenty clients, so the table runs
+ * onto another sheet rather than truncating. The rows are placed greedily
+ * against the footer, and only the sheet that ends up last has to keep room
+ * for the totals — which is why the check for that comes after the loop.
+ */
+function table(
+  page: Page,
+  invoice: InvoiceDocument,
+  top: number,
+  needed: number,
+  continuation: () => { page: Page; y: number },
+): { page: Page; y: number } {
+  const columns = columnsFor(invoice);
+  const rowHeight = ROW_PAD + ROW_LEAD;
+  const floor = FOOTER_TOP + GAP;
+
+  let sheet = page;
+  let y = tableHead(sheet, top, columns);
+
+  invoice.lines.forEach((line, index) => {
+    // What this row will actually occupy: the baseline, the separator and the
+    // lead under it, plus a second line where it carries a sub-caption. A row
+    // measured as if it had none would be placed with room for one line and
+    // then draw two.
+    const height = rowHeight + (line.detail ? ROW_DETAIL : 0);
+    if (y - height < floor) {
+      const next = continuation();
+      sheet = next.page;
+      y = tableHead(sheet, next.y, columns);
+    }
+
+    y = tableRow(sheet, invoice, line, y, columns);
+
+    if (index < invoice.lines.length - 1) {
+      y -= ROW_PAD;
+      sheet.rule(MARGIN + PAD, y, PAGE_WIDTH - MARGIN - PAD);
+      y -= ROW_LEAD;
+    } else {
+      y -= ROW_DETAIL;
+    }
+  });
 
   const period = formatPeriod(invoice.periodStart, invoice.periodEnd);
   if (period) {
-    page.text(MARGIN + 8, y, period, REGULAR, 9, GREY);
-    y -= 13;
+    if (y - ROW_DETAIL < floor) {
+      const next = continuation();
+      sheet = next.page;
+      y = next.y;
+    }
+    sheet.text(MARGIN + PAD, y, period, REGULAR, 8.5, GREY);
+    y -= ROW_DETAIL;
   }
 
-  y -= 6;
-  page.rule(MARGIN, y, PAGE_WIDTH - MARGIN);
-  return y - 20;
+  // The rule that closes the table sits the same distance below the last line
+  // as the separators do below theirs.
+  y -= ROW_PAD - ROW_DETAIL + 6;
+  sheet.rule(MARGIN, y, PAGE_WIDTH - MARGIN);
+  y -= 26;
+
+  // Only now is it known which sheet is last. If the totals will not fit on
+  // it, they get one of their own rather than printing over the footer.
+  if (y - needed < FOOTER_TOP + TAIL_GAP) {
+    const next = continuation();
+    sheet = next.page;
+    y = next.y;
+  }
+  return { page: sheet, y };
 }
 
-function drawTotals(page: Page, invoice: InvoiceDocument, top: number): void {
-  let y = top;
-  const labelX = PAGE_WIDTH - MARGIN - 130;
-  const valueX = PAGE_WIDTH - MARGIN;
+/* -------------------------------------------------------------------- *
+ * How much                                                              *
+ * -------------------------------------------------------------------- */
+
+function totals(
+  page: Page,
+  invoice: InvoiceDocument,
+  taxes: TaxRow[],
+  top: number,
+): number {
+  // The panel's right edge is the page's right edge, so the amounts inside it
+  // land on `AMOUNT_RIGHT` — the same column the line items use.
+  const width = 268;
+  const x = PAGE_WIDTH - MARGIN - width;
+  const labelX = x + PAD;
 
   const rows: [string, string][] = [
-    ['Subtotal', formatAmount(invoice.subtotal, invoice.currency)],
+    ['Taxable value', formatAmount(invoice.subtotal, invoice.currency)],
+    ...taxes.map(
+      (tax) =>
+        [
+          `${tax.label} @ ${formatRate(tax.rateBps)}`,
+          formatAmount(tax.amount, invoice.currency),
+        ] as [string, string],
+    ),
   ];
 
-  if (invoice.taxRateBps > 0) {
-    const label = `${invoice.taxLabel ?? 'Tax'} @ ${formatRate(invoice.taxRateBps)}`;
-    rows.push([label, formatAmount(invoice.taxAmount, invoice.currency)]);
-  }
+  const rowHeight = 17;
+  const totalHeight = 34;
+  const height = PAD - 2 + rows.length * rowHeight + totalHeight + 8;
 
+  let y = top - PAD - 4;
   for (const [label, value] of rows) {
-    page.textRight(labelX, y, label, REGULAR, 10, GREY);
-    page.textRight(valueX, y, value, REGULAR, 10);
-    y -= 16;
+    page.text(labelX, y, label, REGULAR, 9.5, GREY);
+    page.textRight(AMOUNT_RIGHT, y, value, REGULAR, 9.5);
+    y -= rowHeight;
   }
 
-  y -= 2;
-  page.rule(labelX - 60, y + 8, valueX);
-  y -= 8;
+  // Both halves of the total row sit on one baseline computed from the box,
+  // rather than each being nudged into place separately.
+  const bandTop = y + 6;
+  const baseline = bandTop - totalHeight / 2 - 4;
 
-  page.textRight(labelX, y, 'Total paid', BOLD, 11);
+  page.rule(labelX, bandTop, AMOUNT_RIGHT);
+  page.text(labelX, baseline, 'Total paid', BOLD, 11);
   page.textRight(
-    valueX,
-    y,
+    AMOUNT_RIGHT,
+    baseline,
     formatAmount(invoice.total, invoice.currency),
     BOLD,
-    11,
+    14,
+    // Under a brand masthead the page would otherwise be green at the top and
+    // monochrome everywhere else. One accent, on the figure the reader came
+    // for, ties the two halves of the page together.
+    BRAND,
   );
-  y -= 20;
 
-  if (invoice.taxRateBps > 0) {
-    // Stated rather than left to arithmetic: "was the price inclusive" is the
-    // single most common question an invoice with tax on it gets asked.
-    page.textRight(
-      valueX,
-      y,
-      `The price charged is inclusive of ${invoice.taxLabel ?? 'tax'}.`,
-      REGULAR,
-      8,
-      GREY,
-    );
-    y -= 14;
+  // The declarations sit opposite the panel, on the same top line.
+  let noteY = top - PAD - 4;
+  if (taxes.length > 0) {
+    // "inclusive of CGST" is wrong on a split supply — the price is inclusive
+    // of the whole of GST, of which CGST is one half.
+    const name = taxes.length === 1 ? taxes[0].label : 'GST';
+    for (const note of [
+      `The price charged is inclusive of ${name}.`,
+      'Tax payable under reverse charge: No.',
+    ]) {
+      page.text(MARGIN, noteY, note, REGULAR, 8.5, GREY);
+      noteY -= 13;
+    }
   }
+
+  return Math.min(top - height, noteY) - 20;
 }
 
-function drawPaymentAndFooter(page: Page, invoice: InvoiceDocument): void {
-  // Anchored to the bottom of the page rather than flowing after the totals:
-  // the payment block is a footer, and a one-line invoice should not leave it
-  // floating in the middle of an empty page.
-  let y = MARGIN + 96;
+/** The total in words, which an Indian tax invoice is expected to carry. */
+function words(page: Page, invoice: InvoiceDocument, top: number): void {
+  if (invoice.currency !== 'INR') return;
+  page.tracked(MARGIN, top, 'AMOUNT IN WORDS', 6.5, FAINT);
+  page.text(MARGIN, top - 14, rupeesInWords(invoice.total), BOLD, 9.5);
+}
 
+/* -------------------------------------------------------------------- *
+ * Footer                                                                *
+ * -------------------------------------------------------------------- */
+
+function footer(
+  page: Page,
+  invoice: InvoiceDocument,
+  sheet: number,
+  sheets: number,
+): void {
+  const y = MARGIN + 46;
   page.rule(MARGIN, y + 24, PAGE_WIDTH - MARGIN);
 
-  const paid = invoice.paidAt
-    ? `Paid on ${formatDate(invoice.paidAt)}`
-    : 'Paid';
-  const method = invoice.paymentMethod ? ` by ${invoice.paymentMethod}` : '';
-  page.text(
-    MARGIN,
-    y,
-    `${paid}${method}. No amount is outstanding.`,
-    REGULAR,
-    9,
-    GREY,
-  );
-  y -= 13;
+  const paid = [
+    invoice.paidAt ? `Paid on ${formatDate(invoice.paidAt)}` : null,
+    invoice.paymentMethod ? `by ${invoice.paymentMethod}` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
 
-  if (invoice.paymentReference) {
-    page.text(
-      MARGIN,
-      y,
-      `Payment reference ${invoice.paymentReference}.`,
-      REGULAR,
-      9,
-      GREY,
-    );
-    y -= 13;
-  }
+  const left = [
+    paid ? `${paid}. No amount is outstanding.` : null,
+    invoice.paymentReference ? `Reference ${invoice.paymentReference}` : null,
+  ].filter(Boolean) as string[];
 
-  y -= 8;
-  page.text(
-    MARGIN,
-    y,
+  const right = [
     'This is a computer-generated invoice and needs no signature.',
-    REGULAR,
-    8,
-    FAINT,
-  );
-  y -= 11;
-  page.text(
-    MARGIN,
-    y,
-    'WhatsApp is a trademark of Meta Platforms, Inc. Drasken Labs is an independent Tech',
-    REGULAR,
-    8,
-    FAINT,
-  );
-  y -= 10;
-  page.text(
-    MARGIN,
-    y,
-    'Provider and is not affiliated with or endorsed by Meta.',
-    REGULAR,
-    8,
-    FAINT,
-  );
-}
-
-/* -------------------------------------------------------------------- *
- * Formatting                                                            *
- * -------------------------------------------------------------------- */
-
-/**
- * Minor units to a printed amount: 49900 paise is `INR 499.00`.
- *
- * Two decimal places for every currency Razorpay charges in, and the ISO code
- * rather than a symbol — see the note at the top of the file.
- */
-export function formatAmount(minor: number, currency: string): string {
-  const negative = minor < 0;
-  const units = Math.abs(minor) / 100;
-  const [whole, fraction] = units.toFixed(2).split('.');
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${negative ? '-' : ''}${currency.toUpperCase()} ${grouped}.${fraction}`;
-}
-
-/** Basis points as a percentage: 1800 is "18%", 1250 is "12.5%". */
-export function formatRate(bps: number): string {
-  const percent = bps / 100;
-  return `${Number.isInteger(percent) ? percent : percent.toFixed(2).replace(/0+$/, '')}%`;
-}
-
-/** A date the way a customer would write it, not an ISO string. */
-function formatDate(date: Date): string {
-  return date.toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-}
-
-function formatPeriod(start: Date | null, end: Date | null): string | null {
-  if (!start && !end) return null;
-  if (start && end)
-    return `Service period ${formatDate(start)} to ${formatDate(end)}`;
-  return `Service period from ${formatDate((start ?? end) as Date)}`;
-}
-
-/* -------------------------------------------------------------------- *
- * The page                                                              *
- * -------------------------------------------------------------------- */
-
-type Colour = [number, number, number];
-const INK: Colour = [0.06, 0.09, 0.16];
-const GREY: Colour = [0.4, 0.45, 0.5];
-const FAINT: Colour = [0.6, 0.64, 0.69];
-const BAND: Colour = [0.96, 0.97, 0.96];
-const RULE: Colour = [0.89, 0.91, 0.93];
-
-/** A content stream, built one operator at a time. */
-class Page {
-  private readonly ops: string[] = [];
-
-  text(
-    x: number,
-    y: number,
-    value: string,
-    font: Font = REGULAR,
-    size = 10,
-    colour: Colour = INK,
-  ): void {
-    const encoded = escapeText(value);
-    this.ops.push(
-      `${fill(colour)} BT /${font} ${size} Tf 1 0 0 1 ${round(x)} ${round(y)} Tm (${encoded}) Tj ET`,
-    );
-  }
-
-  /** Draw `value` so that it ends at `x`. Needs the font metrics to know where to start. */
-  textRight(
-    x: number,
-    y: number,
-    value: string,
-    font: Font = REGULAR,
-    size = 10,
-    colour: Colour = INK,
-  ): void {
-    this.text(x - measure(value, font, size), y, value, font, size, colour);
-  }
-
-  rule(x1: number, y: number, x2: number): void {
-    this.ops.push(
-      `${stroke(RULE)} 0.7 w ${round(x1)} ${round(y)} m ${round(x2)} ${round(y)} l S`,
-    );
-  }
-
-  fillRect(
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    colour: Colour,
-  ): void {
-    this.ops.push(
-      `${fill(colour)} ${round(x)} ${round(y)} ${round(width)} ${round(height)} re f`,
-    );
-  }
-
-  stream(): string {
-    return this.ops.join('\n');
-  }
-}
-
-function fill([r, g, b]: Colour): string {
-  return `${r} ${g} ${b} rg`;
-}
-
-function stroke([r, g, b]: Colour): string {
-  return `${r} ${g} ${b} RG`;
-}
-
-function round(value: number): string {
-  return value.toFixed(2);
-}
-
-/* -------------------------------------------------------------------- *
- * Text encoding and metrics                                             *
- * -------------------------------------------------------------------- */
-
-/** Characters a copy-writer or a customer name is likely to carry in. */
-const TRANSLITERATE: Record<string, string> = {
-  '‘': "'",
-  '’': "'",
-  '“': '"',
-  '”': '"',
-  '–': '-',
-  '—': '-',
-  '…': '...',
-  ' ': ' ',
-  '₹': 'INR ',
-  '•': '-',
-  '·': '-',
-};
-
-/**
- * A string as the base-14 fonts can carry it.
- *
- * Anything outside Latin-1 is dropped rather than written raw: a stray byte
- * above 255 does not survive the stream, and a corrupt PDF is a worse outcome
- * than a name missing an accent it never had in our database anyway.
- */
-export function toWinAnsi(value: string): string {
-  let out = '';
-  for (const char of value) {
-    const replacement = TRANSLITERATE[char];
-    if (replacement !== undefined) {
-      out += replacement;
-      continue;
-    }
-    const code = char.codePointAt(0) ?? 0;
-    if (code >= 32 && code <= 255) out += char;
-    else if (code === 9) out += ' ';
-  }
-  return out;
-}
-
-/** Escapes what PDF's string syntax treats as structure. */
-function escapeText(value: string): string {
-  return toWinAnsi(value)
-    .replace(/\\/g, '\\\\')
-    .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)');
-}
-
-/**
- * Helvetica and Helvetica-Bold advance widths, in 1/1000 em, for the printable
- * ASCII range. Straight out of the Adobe font metrics.
- *
- * Needed only so an amount column can be right-aligned: without real widths
- * every total would be a guess, and a column of guesses is what makes a
- * generated document look generated.
- */
-const HELVETICA_WIDTHS: Record<Font, number[]> = {
-  F1: [
-    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278,
-    278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584,
-    584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556,
-    833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278,
-    278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222,
-    500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500,
-    500, 334, 260, 334, 584,
-  ],
-  F2: [
-    278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278,
-    278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584,
-    584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611,
-    833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333,
-    278, 333, 584, 556, 333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278,
-    556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556,
-    500, 389, 280, 389, 584,
-  ],
-};
-
-/** Width of a character not in the table — an accented letter, mostly. */
-const FALLBACK_WIDTH = 556;
-
-/** How wide `value` renders, in points. */
-export function measure(value: string, font: Font, size: number): number {
-  const widths = HELVETICA_WIDTHS[font];
-  let total = 0;
-  for (const char of toWinAnsi(value)) {
-    const code = char.charCodeAt(0);
-    const width =
-      code >= 32 && code <= 126 ? widths[code - 32] : FALLBACK_WIDTH;
-    total += width;
-  }
-  return (total * size) / 1000;
-}
-
-/* -------------------------------------------------------------------- *
- * The file                                                              *
- * -------------------------------------------------------------------- */
-
-/**
- * Wrap a content stream in the smallest valid PDF that can hold it: a catalog,
- * one page, the stream and the two fonts, followed by the cross-reference table
- * that says where each of them starts.
- */
-function assemble(content: string): Buffer {
-  const objects = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] ` +
-      '/Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>',
-    `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}\nendstream`,
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>',
+    'WhatsApp is a trademark of Meta Platforms, Inc. Drasken Labs is an',
+    'independent Tech Provider, not affiliated with or endorsed by Meta.',
   ];
 
-  let body = '%PDF-1.4\n';
-  const offsets: number[] = [];
-
-  objects.forEach((object, index) => {
-    offsets.push(Buffer.byteLength(body, 'latin1'));
-    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
-  });
-
-  const xrefOffset = Buffer.byteLength(body, 'latin1');
-  // Entry 0 is always the free-list head; the rest are 10-digit byte offsets,
-  // and a reader that cannot trust them cannot open the file at all.
-  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (const offset of offsets) {
-    xref += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  // Only where there is more than one. "Page 1 of 1" is noise on a document
+  // that is obviously whole.
+  if (sheets > 1) {
+    page.textRight(
+      PAGE_WIDTH - MARGIN,
+      y + 32,
+      `Page ${sheet} of ${sheets}`,
+      REGULAR,
+      8,
+      FAINT,
+    );
   }
 
-  const trailer =
-    `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n` +
-    `startxref\n${xrefOffset}\n%%EOF\n`;
-
-  return Buffer.from(body + xref + trailer, 'latin1');
+  // One leading for both columns, so the two halves of the footer sit on the
+  // same lines rather than drifting apart down the page.
+  const leading = 11;
+  left.forEach((line, i) => {
+    page.text(MARGIN, y - i * leading, line, REGULAR, 8.5, GREY);
+  });
+  right.forEach((line, i) => {
+    page.textRight(
+      PAGE_WIDTH - MARGIN,
+      y - i * leading,
+      line,
+      REGULAR,
+      7.5,
+      FAINT,
+    );
+  });
 }

@@ -144,22 +144,48 @@ describe('renderInvoicePdf', () => {
     expect(text).toContain('Harbour Fitness');
   });
 
-  it('says how much of a long roster it is not showing', () => {
-    // A table that stops mid-way without saying so reads as a corrupt
-    // document; one that says "and 8 more" reads as a summary.
-    const line = {
-      description: 'Growth',
+  it('runs a long roster onto further sheets rather than dropping any of it', () => {
+    // An agency cannot rebill from a document that shows eight of its twenty
+    // clients, so the table paginates. Every client billed for must appear.
+    const lines = Array.from({ length: 30 }, (_, i) => ({
+      description: `Growth plan for client ${i + 1}`,
       detail: null,
       quantity: 1,
       unitAmount: 99_900,
       amount: 99_900,
-    };
-    const pdf = renderInvoicePdf(
-      { ...INVOICE, lines: Array.from({ length: 30 }, () => ({ ...line })) },
-      SELLER,
-    );
+    }));
+    const text = asText(renderInvoicePdf({ ...INVOICE, lines }, SELLER));
 
-    expect(asText(pdf)).toContain('and 8 more');
+    for (const line of lines) {
+      expect(text).toContain(line.description);
+    }
+    // And the reader is told which sheet of how many they are holding.
+    expect(text).toContain('Page 1 of ');
+  });
+
+  it('keeps the totals and the footer off the line items', () => {
+    // The failure this guards against is silent: a table long enough to reach
+    // the footer used to print over it, so the document still opened and was
+    // simply wrong.
+    const lines = Array.from({ length: 40 }, (_, i) => ({
+      description: `Growth plan for client ${i + 1}`,
+      detail: 'Monthly plan',
+      quantity: 1,
+      unitAmount: 99_900,
+      amount: 99_900,
+    }));
+    const pdf = renderInvoicePdf({ ...INVOICE, lines }, SELLER);
+    const text = asText(pdf);
+
+    // Nothing is drawn below the page margin, on any sheet.
+    const baselines = [...text.matchAll(/1 0 0 1 [\d.]+ ([\d.]+) Tm/g)].map((m) =>
+      Number(m[1]),
+    );
+    expect(Math.min(...baselines)).toBeGreaterThanOrEqual(46);
+
+    // And the document still ends with what it is for.
+    expect(text).toContain('Total paid');
+    expect(text).toContain('Rupees');
   });
 
   it('prints a rate column only when something is charged more than once', () => {

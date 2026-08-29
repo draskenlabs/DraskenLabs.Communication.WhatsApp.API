@@ -24,7 +24,7 @@ const mockPrisma = {
     update: jest.fn(),
   },
   subscription: { findMany: jest.fn() },
-  organisationSettings: { findMany: jest.fn() },
+  organisationSettings: { findMany: jest.fn(), findUnique: jest.fn() },
   user: { findUnique: jest.fn() },
   $transaction: jest.fn((cb: (tx: typeof mockTx) => unknown): unknown =>
     cb(mockTx),
@@ -112,6 +112,14 @@ const written = (): {
   taxAmount: number;
   taxRateBps: number;
   taxLabel: string | null;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  placeOfSupply: string | null;
+  placeOfSupplyCode: string | null;
+  billedToGstin: string | null;
+  billedToAddress: string | null;
+  sacCode: string | null;
   total: number;
   summary: string | null;
   ssoOrgId: string;
@@ -130,6 +138,9 @@ describe('InvoiceService', () => {
     mockPrisma.invoice.findMany.mockResolvedValue([]);
     mockPrisma.subscription.findMany.mockResolvedValue([]);
     mockPrisma.organisationSettings.findMany.mockResolvedValue([]);
+    // No tax identity on file unless a test puts one there: the default
+    // customer is unregistered and has entered no address.
+    mockPrisma.organisationSettings.findUnique.mockResolvedValue(null);
     mockPrisma.user.findUnique.mockResolvedValue({
       email: 'ada@example.com',
       firstName: 'Ada',
@@ -382,6 +393,94 @@ describe('InvoiceService', () => {
       expect(invoice.taxRateBps).toBe(0);
       expect(invoice.taxLabel).toBeNull();
       expect(invoice.subtotal).toBe(invoice.total);
+    });
+
+    it('splits it into CGST and SGST for a customer in our own state', async () => {
+      settings.INVOICE_TAX_RATE_BPS = '1800';
+      settings.INVOICE_SELLER_GSTIN = '29AAPFU0939F1ZR';
+      mockPrisma.organisationSettings.findUnique.mockResolvedValue({
+        gstin: '29AAGCB7383J1Z1',
+        legalName: 'Acme Retail Private Limited',
+        billingAddress: '12 Residency Road',
+        billingCity: 'Bengaluru',
+        billingPostalCode: '560025',
+        stateCode: '29',
+      });
+
+      await service.issueFor(REQUEST);
+
+      const invoice = written();
+      expect(invoice.cgstAmount + invoice.sgstAmount).toBe(invoice.taxAmount);
+      expect(invoice.igstAmount).toBe(0);
+      expect(invoice.placeOfSupply).toBe('Karnataka (29)');
+      expect(invoice.placeOfSupplyCode).toBe('29');
+      expect(invoice.billedToGstin).toBe('29AAGCB7383J1Z1');
+      expect(invoice.sacCode).toBe('998314');
+    });
+
+    it('charges IGST whole for a customer in another state', async () => {
+      settings.INVOICE_TAX_RATE_BPS = '1800';
+      settings.INVOICE_SELLER_GSTIN = '29AAPFU0939F1ZR';
+      mockPrisma.organisationSettings.findUnique.mockResolvedValue({
+        gstin: null,
+        legalName: null,
+        billingAddress: null,
+        billingCity: 'Mumbai',
+        billingPostalCode: '400050',
+        stateCode: '27',
+      });
+
+      await service.issueFor(REQUEST);
+
+      const invoice = written();
+      expect(invoice.igstAmount).toBe(invoice.taxAmount);
+      expect(invoice.cgstAmount).toBe(0);
+      expect(invoice.sgstAmount).toBe(0);
+      expect(invoice.placeOfSupply).toBe('Maharashtra (27)');
+    });
+
+    it('reads the state off the customer’s registration where they gave no state', async () => {
+      settings.INVOICE_TAX_RATE_BPS = '1800';
+      settings.INVOICE_SELLER_GSTIN = '29AAPFU0939F1ZR';
+      mockPrisma.organisationSettings.findUnique.mockResolvedValue({
+        gstin: '27AAPFU0939F1ZV',
+        legalName: null,
+        billingAddress: null,
+        billingCity: null,
+        billingPostalCode: null,
+        stateCode: null,
+      });
+
+      await service.issueFor(REQUEST);
+
+      expect(written().placeOfSupplyCode).toBe('27');
+      expect(written().igstAmount).toBeGreaterThan(0);
+    });
+
+    it('treats a customer of unknown state as local rather than guessing', async () => {
+      // IGST wrongly charged on a local supply is the harder error to unwind:
+      // the customer’s credit is refused and it takes a credit note to fix.
+      settings.INVOICE_TAX_RATE_BPS = '1800';
+      settings.INVOICE_SELLER_GSTIN = '29AAPFU0939F1ZR';
+
+      await service.issueFor(REQUEST);
+
+      const invoice = written();
+      expect(invoice.igstAmount).toBe(0);
+      expect(invoice.cgstAmount + invoice.sgstAmount).toBe(invoice.taxAmount);
+      expect(invoice.placeOfSupply).toBeNull();
+    });
+
+    it('names no tax heads at all where the deployment charges no tax', async () => {
+      settings.INVOICE_SELLER_GSTIN = '29AAPFU0939F1ZR';
+
+      await service.issueFor(REQUEST);
+
+      const invoice = written();
+      expect(invoice.cgstAmount).toBe(0);
+      expect(invoice.sgstAmount).toBe(0);
+      expect(invoice.igstAmount).toBe(0);
+      expect(invoice.sacCode).toBeNull();
     });
   });
 

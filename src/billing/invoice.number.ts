@@ -1,5 +1,5 @@
 /**
- * The invoice series: `INV-WAC-2627-0001`.
+ * The document series: `INV-WAC-2627-0001`, `RCT-WAC-2627-0001`.
  *
  * Four parts, and each one is load-bearing:
  *
@@ -42,29 +42,64 @@ export function financialYearLabel(financialYear: string): string {
 }
 
 /**
- * The printed number.
+ * The printed number, for any kind of document.
  *
  * Zero-padded to four digits, and allowed to grow past them rather than
  * wrapping: the ten-thousandth invoice of a year is `10000`, which sorts and
  * reads fine, where a truncated `0000` would collide with the first.
  */
+export function documentNumber(
+  kind: string,
+  series: string,
+  financialYear: string,
+  sequence: number,
+): string {
+  const position = String(sequence).padStart(SEQUENCE_WIDTH, '0');
+  return `${kind}-${series}-${financialYear}-${position}`;
+}
+
+/** `INV-WAC-2627-0001` — what is owed. */
 export function invoiceNumber(
   series: string,
   financialYear: string,
   sequence: number,
 ): string {
-  return `INV-${series}-${financialYear}-${String(sequence).padStart(SEQUENCE_WIDTH, '0')}`;
+  return documentNumber('INV', series, financialYear, sequence);
 }
 
 /**
- * Whether a string is one of our numbers.
+ * `RCT-WAC-2627-0001` — what was received.
+ *
+ * Its own kind and its own counter. An invoice and the receipt acknowledging
+ * it are raised together and share every fact on them, but never a number:
+ * one series is the statutory one, and a document withdrawn from the other
+ * must not leave a gap in it.
+ */
+export function receiptNumber(
+  series: string,
+  financialYear: string,
+  sequence: number,
+): string {
+  return documentNumber('RCT', series, financialYear, sequence);
+}
+
+/**
+ * Whether a string is one of our numbers, of a given kind.
  *
  * Used on the route parameter, so a lookup by number cannot be turned into a
  * search: the parameter either matches the series or the request never reaches
  * the database.
  */
+function isDocumentNumber(kind: string, value: string): boolean {
+  return new RegExp(`^${kind}-[A-Z0-9]{2,8}-\\d{4}-\\d{4,}$`).test(value);
+}
+
 export function isInvoiceNumber(value: string): boolean {
-  return /^INV-[A-Z0-9]{2,8}-\d{4}-\d{4,}$/.test(value);
+  return isDocumentNumber('INV', value);
+}
+
+export function isReceiptNumber(value: string): boolean {
+  return isDocumentNumber('RCT', value);
 }
 
 /** Year and 1-indexed month of an instant, in a named time zone. */

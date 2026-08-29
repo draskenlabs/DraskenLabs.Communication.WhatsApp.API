@@ -563,6 +563,48 @@ export class InvoiceDto {
   @ApiProperty({ nullable: true, example: 'GST' }) taxLabel: string | null;
 
   @ApiProperty({
+    description:
+      'Central GST, on a supply inside our own state. Half the rate; the ' +
+      'other half is sgstAmount. Zero on an inter-state supply.',
+    example: 3806,
+  })
+  cgstAmount: number;
+
+  @ApiProperty({ description: 'State GST — see cgstAmount', example: 3806 })
+  sgstAmount: number;
+
+  @ApiProperty({
+    description:
+      'Integrated GST, on a supply to another state. The whole rate, and ' +
+      'zero whenever cgstAmount and sgstAmount are not.',
+    example: 0,
+  })
+  igstAmount: number;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The state the supply was made to, which is what decided the split ' +
+      'above. Absent on an extract — it is the payer’s, not the reader’s.',
+    example: 'Karnataka (29)',
+  })
+  placeOfSupply: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'The customer’s registration, as stated on the document',
+    example: '29AAPFU0939F1ZR',
+  })
+  billedToGstin: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Service classification the charge was made under',
+    example: '998314',
+  })
+  sacCode: string | null;
+
+  @ApiProperty({
     description: 'What was actually taken. Not derived — this is what moved.',
     example: 49900,
   })

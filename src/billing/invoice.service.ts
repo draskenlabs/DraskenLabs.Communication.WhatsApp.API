@@ -11,6 +11,7 @@ import {
   isInvoiceNumber,
 } from './invoice.number';
 import { InvoiceSeller, formatAmount, renderInvoicePdf } from './invoice.pdf';
+import { placeOfSupplyLabel, splitTax, stateCodeOfGstin } from './gst';
 import { InvoiceDto } from './dto/billing.dto';
 
 /** An invoice with the lines that make it up, which is the only useful shape. */
@@ -73,6 +74,11 @@ interface DraftLine {
 const DEFAULT_SERIES = 'WAC';
 const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 const DEFAULT_TAX_LABEL = 'GST';
+/**
+ * Information technology infrastructure and network management services —
+ * what this product is, in the classification a GST return is filed against.
+ */
+const DEFAULT_SAC_CODE = '998314';
 
 /**
  * Invoices.
@@ -163,7 +169,13 @@ export class InvoiceService {
       [user?.firstName, user?.lastName].filter(Boolean).join(' ') || null;
     const organisationName = await this.orgDirectory.name(request.ssoOrgId);
 
+    // Read once, snapshotted onto the document. A GSTIN entered next month
+    // cannot appear on this invoice, and must not: the customer would be
+    // holding a document claiming a credit their own return will not support.
+    const buyer = await this.taxIdentity(request.ssoOrgId);
+
     const { subtotal, taxAmount, taxRateBps } = this.divide(request.amount);
+    const split = splitTax(taxAmount, this.sellerStateCode, buyer.stateCode);
     const drafts = await this.drafts(request);
     const lines = this.apportion(drafts, subtotal);
 
@@ -191,6 +203,14 @@ export class InvoiceService {
             taxAmount,
             taxRateBps,
             taxLabel: taxRateBps > 0 ? this.taxLabel : null,
+            cgstAmount: split.cgstAmount,
+            sgstAmount: split.sgstAmount,
+            igstAmount: split.igstAmount,
+            billedToGstin: buyer.gstin,
+            billedToAddress: buyer.address,
+            placeOfSupply: placeOfSupplyLabel(buyer.stateCode),
+            placeOfSupplyCode: buyer.stateCode,
+            sacCode: taxRateBps > 0 ? this.sacCode : null,
             total: request.amount,
             currency: request.currency,
             issuedAt,
@@ -369,6 +389,58 @@ export class InvoiceService {
       throw new Error(`Invoice counter returned nothing for ${year}`);
     }
     return sequence;
+  }
+
+  /**
+   * The customer's tax identity, as the document must state it.
+   *
+   * The state is the load-bearing part: it is the place of supply, and it is
+   * what decides whether the tax divides into CGST and SGST or stands as IGST.
+   * A customer who has entered a GSTIN has told us their state twice, so the
+   * explicit field wins and the registration is the fallback — they agree in
+   * every ordinary case, and where they do not, the one the customer typed
+   * deliberately is the better guess.
+   *
+   * All of it is optional. A deployment with no tax configured, or a customer
+   * who has entered nothing, still gets an invoice; it simply says less.
+   */
+  private async taxIdentity(ssoOrgId: string): Promise<{
+    gstin: string | null;
+    address: string | null;
+    stateCode: string | null;
+  }> {
+    const settings = await this.prisma.organisationSettings.findUnique({
+      where: { ssoOrgId },
+      select: {
+        gstin: true,
+        legalName: true,
+        billingAddress: true,
+        billingCity: true,
+        billingPostalCode: true,
+        stateCode: true,
+      },
+    });
+    if (!settings) return { gstin: null, address: null, stateCode: null };
+
+    const stateCode =
+      settings.stateCode ?? stateCodeOfGstin(settings.gstin) ?? null;
+
+    // One block, in the order an envelope is written, skipping what is not
+    // there rather than printing an empty line for it.
+    const address = [
+      settings.legalName,
+      settings.billingAddress,
+      [settings.billingCity, settings.billingPostalCode]
+        .filter(Boolean)
+        .join(' '),
+      placeOfSupplyLabel(stateCode),
+    ]
+      .flatMap((part) => (part ? part.split('\n') : []))
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join('\n');
+
+    return { gstin: settings.gstin, address: address || null, stateCode };
   }
 
   /**
@@ -615,6 +687,13 @@ export class InvoiceService {
       taxAmount: 0,
       taxRateBps: 0,
       taxLabel: null,
+      cgstAmount: 0,
+      sgstAmount: 0,
+      igstAmount: 0,
+      // The registration and the place of supply are the payer's, and naming
+      // them on somebody else's share would read as this reader's own.
+      placeOfSupply: null,
+      billedToGstin: null,
       total,
       // Whose document this actually is stays visible: "paid by Northwind" is
       // the useful half of showing it at all.
@@ -651,6 +730,12 @@ export class InvoiceService {
       taxAmount: invoice.taxAmount,
       taxRateBps: invoice.taxRateBps,
       taxLabel: invoice.taxLabel,
+      cgstAmount: invoice.cgstAmount,
+      sgstAmount: invoice.sgstAmount,
+      igstAmount: invoice.igstAmount,
+      placeOfSupply: invoice.placeOfSupply,
+      billedToGstin: invoice.billedToGstin,
+      sacCode: invoice.sacCode,
       total: invoice.total,
       currency: invoice.currency,
       paymentMethod: invoice.paymentMethod,
@@ -687,12 +772,17 @@ export class InvoiceService {
         taxAmount: invoice.taxAmount,
         taxRateBps: invoice.taxRateBps,
         taxLabel: invoice.taxLabel,
+        cgstAmount: invoice.cgstAmount,
+        sgstAmount: invoice.sgstAmount,
+        igstAmount: invoice.igstAmount,
         total: invoice.total,
         currency: invoice.currency,
         paymentMethod: invoice.paymentMethod,
         paymentReference: invoice.razorpayPaymentId,
-        placeOfSupply:
-          this.config.get<string>('INVOICE_PLACE_OF_SUPPLY') ?? null,
+        billedToGstin: invoice.billedToGstin,
+        billedToAddress: invoice.billedToAddress,
+        placeOfSupply: invoice.placeOfSupply,
+        sacCode: invoice.sacCode,
       },
       this.seller,
     );
@@ -736,6 +826,23 @@ export class InvoiceService {
 
   private get taxLabel(): string {
     return this.config.get<string>('INVOICE_TAX_LABEL') ?? DEFAULT_TAX_LABEL;
+  }
+
+  /**
+   * Which state we supply *from*, read off our own registration.
+   *
+   * Deliberately not its own environment variable. The state is the first two
+   * characters of the GSTIN, so a separate setting could only ever disagree
+   * with it — and a deployment where the two disagree charges the wrong heads
+   * of tax to every customer in its own state without anything failing.
+   */
+  private get sellerStateCode(): string | null {
+    return stateCodeOfGstin(this.config.get<string>('INVOICE_SELLER_GSTIN'));
+  }
+
+  /** The classification the supply is made under, printed beside the lines. */
+  private get sacCode(): string {
+    return this.config.get<string>('INVOICE_SAC_CODE') ?? DEFAULT_SAC_CODE;
   }
 
   /** Who the invoice is from. All optional; a missing line is simply not printed. */

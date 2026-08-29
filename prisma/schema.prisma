@@ -317,6 +317,27 @@ model OrganisationSettings {
   convertedBy Int?
   convertedAt DateTime?
 
+  /// The customer's own tax identity, as it must appear on their invoices.
+  ///
+  /// Held here rather than in the SSO because it is a fact about how this
+  /// product bills them, and because it has to be *snapshotted* onto every
+  /// document — an invoice states what was true when it was issued, and a
+  /// GSTIN entered next month cannot retrospectively appear on last month's.
+  ///
+  /// `stateCode` is the GST state code, and it is the load-bearing one: it is
+  /// the place of supply, which decides whether a charge is CGST+SGST or IGST.
+  /// It is kept separately from `gstin` because an unregistered customer still
+  /// has a state, and the split still depends on it.
+  gstin             String?
+  /// The registered name, where it differs from what the organisation is
+  /// called day to day. An invoice has to name the legal entity.
+  legalName         String?
+  /// Free-form, one line per newline, as the customer typed it.
+  billingAddress    String?
+  billingCity       String?
+  billingPostalCode String?
+  stateCode         String?
+
   /// Bumped whenever the payer changes or their subscription does.
   ///
   /// Access is cached per organisation *and* account, so one agency's payment
@@ -655,6 +676,28 @@ model Invoice {
   total      Int
   currency   String  @default("INR")
 
+  /// How `taxAmount` divides into its heads. The three always sum to it.
+  ///
+  /// Which pair is used is decided once, at issue, by comparing the customer's
+  /// state to ours: inside our state a supply is CGST plus SGST at half the
+  /// rate each, outside it is IGST at the whole rate. Stored rather than
+  /// recomputed because it follows from an address that can change, and the
+  /// document may not.
+  cgstAmount Int @default(0)
+  sgstAmount Int @default(0)
+  igstAmount Int @default(0)
+
+  /// The customer's tax identity, frozen at issue — see OrganisationSettings.
+  ///
+  /// `placeOfSupplyCode` is the state the supply was made to, and the reason
+  /// the split above came out the way it did. Printed as "Karnataka (29)".
+  billedToGstin     String?
+  billedToAddress   String?
+  placeOfSupply     String?
+  placeOfSupplyCode String?
+  /// The service classification the charge was made under, e.g. 998314.
+  sacCode           String?
+
   /// How it was paid, in the same words the payment row uses: "Visa ···· 4242",
   /// a UPI handle, a bank. Snapshotted like everything else — the card a
   /// customer replaces next year did not pay this invoice.
@@ -670,6 +713,7 @@ model Invoice {
 
   payment SubscriptionPayment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
   lines   InvoiceLine[]
+  receipt Receipt?
 
   @@unique([financialYear, sequence])
   @@index([ssoOrgId, issuedAt])
@@ -725,6 +769,77 @@ model InvoiceLine {
 /// `MAX(sequence)` would hand the same number to two webhooks arriving in the
 /// same second.
 model InvoiceCounter {
+  financialYear String   @id
+  nextSequence  Int      @default(1)
+  updatedAt     DateTime @updatedAt
+}
+
+/// The money acknowledged, as its own document.
+///
+/// An invoice says what is owed and a receipt says what was received. On a
+/// prepaid subscription both are true at the same instant, which is exactly why
+/// they are two documents rather than one: an invoice that also claims to be a
+/// receipt is neither, and a customer who needs to prove payment — to a
+/// financier, an auditor, their own accounts team — needs the document that
+/// says *received*, in its own series, with its own number.
+///
+/// One per invoice, raised in the same transaction. Everything on it is
+/// snapshotted from the invoice rather than joined, so the pair cannot drift.
+model Receipt {
+  id Int @id @default(autoincrement())
+
+  /// The whole number, as printed: `RCT-WAC-2627-0001`.
+  number String @unique
+
+  /// Its own series, running alongside the invoice series and never sharing
+  /// its counter. A cancelled document must not punch a hole in the invoice
+  /// book, which is the one series an auditor reads for gaps.
+  financialYear String
+  sequence      Int
+
+  /// The invoice this acknowledges. One each, always.
+  invoiceId Int @unique
+
+  /// Razorpay's payment id, so a replayed webhook cannot raise a second
+  /// receipt any more than it can raise a second invoice.
+  razorpayPaymentId String @unique
+
+  /// The organisation whose bank moved — the payer, as on the invoice.
+  ssoOrgId String
+
+  /// Frozen at issue, like the invoice's own snapshot.
+  billedToName     String?
+  billedToEmail    String?
+  organisationName String?
+  /// What the payment settled, in a few words.
+  summary          String?
+
+  /// What was received. Not divided into tax: a receipt acknowledges money,
+  /// and the tax on it is stated on the invoice it points at.
+  amount   Int
+  currency String @default("INR")
+
+  /// How it was paid and the provider's reference, so a query can be traced.
+  paymentMethod    String?
+  paymentReference String?
+
+  issuedAt   DateTime  @default(now())
+  receivedAt DateTime?
+
+  /// When the message carrying it was accepted, and where it went. Stamped
+  /// together with the invoice: the two travel in one email.
+  emailedAt DateTime?
+  emailedTo String?
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([financialYear, sequence])
+  @@index([ssoOrgId, issuedAt])
+}
+
+/// The receipt series' counter. Deliberately a separate table from
+/// `InvoiceCounter` — see `Receipt.financialYear`.
+model ReceiptCounter {
   financialYear String   @id
   nextSequence  Int      @default(1)
   updatedAt     DateTime @updatedAt
