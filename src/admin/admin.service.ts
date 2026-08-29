@@ -8,7 +8,10 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
-import { PlanLimitsService } from 'src/plans/plan-limits.service';
+import {
+  EffectiveLimits,
+  PlanLimitsService,
+} from 'src/plans/plan-limits.service';
 import { AgencyService } from 'src/agency/agency.service';
 import { RazorpayService } from 'src/billing/razorpay.service';
 import { InvoiceService, InvoiceWithLines } from 'src/billing/invoice.service';
@@ -22,8 +25,10 @@ import type {
   AdminOrganisationPageDto,
   AdminOrganisationRowDto,
   AdminAgencyRowDto,
+  AdminAllowanceDto,
   AdminAnalyticsDto,
   AdminOverviewDto,
+  AdminUserDetailDto,
   AdminUserOrgDto,
   AdminUserPageDto,
   AdminRevenueDto,
@@ -598,6 +603,12 @@ export class AdminService {
     const endpointsBy = tally(endpoints);
     const keysBy = tally(keys);
 
+    /** The busiest single account, for the limits that are set per account. */
+    const busiest = (by: Map<string, number>): number | null =>
+      wabaIds.length === 0
+        ? null
+        : Math.max(...wabaIds.map((id) => by.get(id) ?? 0));
+
     return {
       ...row,
       razorpaySubscriptionId: subscription?.razorpaySubscriptionId ?? null,
@@ -622,6 +633,16 @@ export class AdminService {
       })),
       clients: clientNames,
       limits: { ...limits },
+      allowances: this.allowances({
+        limits,
+        wabas: wabas.length,
+        contacts: row.contacts,
+        webhookEndpoints,
+        clients: clients.length,
+        isAgency: clients.length > 0 || row.isAgency,
+        numbersOnBusiestWaba: busiest(numbersBy),
+        keysOnBusiestWaba: busiest(keysBy),
+      }),
       apiKeys,
       webhookEndpoints,
       messagesLast30Days: messages,
@@ -659,6 +680,130 @@ export class AdminService {
     if (sub.status === 'superseded') return false;
     if (!sub.currentEnd) return false;
     return sub.currentEnd.getTime() > Date.now();
+  }
+
+  /**
+   * Every number a plan sets, paired with what is being used against it.
+   *
+   * The pairing is the whole point: `limits` on its own says what is allowed
+   * and nothing about whether the organisation is anywhere near it, which is
+   * the question somebody opens this page to answer.
+   *
+   * Three kinds, and they are not interchangeable. An **inclusion** is what
+   * the price covers — past it the customer is billed and refused nothing, so
+   * being over it is a fact about the invoice rather than a problem. A
+   * **ceiling** refuses. Showing both the same way would have an operator
+   * chasing a customer who is simply paying for what they use.
+   *
+   * `used` is null where we genuinely do not hold the number. Team seats live
+   * in the SSO; a send rate is a ceiling on a moment rather than a total; a
+   * retention window is not a quantity at all. Null says "not known here",
+   * which is the honest answer and a different thing from zero.
+   */
+  private allowances(input: {
+    limits: EffectiveLimits;
+    wabas: number;
+    contacts: number;
+    webhookEndpoints: number;
+    clients: number;
+    isAgency: boolean;
+    /** Numbers and keys are allowed per account, so the busiest one decides. */
+    numbersOnBusiestWaba: number | null;
+    keysOnBusiestWaba: number | null;
+  }): AdminAllowanceDto[] {
+    const { limits } = input;
+
+    const rows: Omit<AdminAllowanceDto, 'atLimit'>[] = [
+      {
+        key: 'wabas',
+        label: 'WhatsApp accounts',
+        allowed: limits.includedWabas,
+        used: input.wabas,
+        kind: 'inclusion',
+        overagePrice: limits.additionalWabaPrice,
+      },
+      {
+        key: 'phoneNumbersPerWaba',
+        // Named for what it measures: the comparison is against one account,
+        // not the total across them, so a total here would be nonsense.
+        label: 'Numbers on the busiest account',
+        allowed: limits.includedPhoneNumbersPerWaba,
+        used: input.numbersOnBusiestWaba,
+        kind: 'inclusion',
+        overagePrice: limits.additionalNumberPrice,
+      },
+      {
+        key: 'contacts',
+        label: 'Contacts',
+        allowed: limits.contacts,
+        used: input.contacts,
+        kind: 'ceiling',
+        overagePrice: null,
+      },
+      {
+        key: 'webhookEndpoints',
+        label: 'Webhook endpoints',
+        allowed: limits.webhookEndpoints,
+        used: input.webhookEndpoints,
+        kind: 'ceiling',
+        overagePrice: null,
+      },
+      {
+        key: 'apiKeysPerWaba',
+        label: 'API keys on the busiest account',
+        allowed: limits.apiKeysPerWaba,
+        used: input.keysOnBusiestWaba,
+        kind: 'ceiling',
+        overagePrice: null,
+      },
+      {
+        key: 'teamMembers',
+        label: 'Team members',
+        allowed: limits.teamMembers,
+        // Seats live in the SSO, which this service does not read.
+        used: null,
+        kind: 'ceiling',
+        overagePrice: null,
+      },
+      {
+        key: 'messagesPerMinute',
+        label: 'Messages a minute, per API key',
+        allowed: limits.messagesPerMinute,
+        // A rate is a ceiling on a moment; there is no running total to show.
+        used: null,
+        kind: 'ceiling',
+        overagePrice: null,
+      },
+      {
+        key: 'historyDays',
+        label: 'History kept',
+        allowed: limits.historyDays,
+        used: null,
+        kind: 'retention',
+        overagePrice: null,
+      },
+    ];
+
+    // Only where it means something. Every other plan has no clients to count,
+    // and a row reading "0 of —" on an ordinary customer is noise.
+    if (input.isAgency || limits.includedClients !== null) {
+      rows.splice(2, 0, {
+        key: 'clients',
+        label: 'Client organisations',
+        allowed: limits.includedClients,
+        used: input.clients,
+        // It sits with the inclusions in the plan but currently refuses, since
+        // there is no per-client price to charge beyond it.
+        kind: 'ceiling',
+        overagePrice: null,
+      });
+    }
+
+    return rows.map((row) => ({
+      ...row,
+      atLimit:
+        row.allowed !== null && row.used !== null && row.used >= row.allowed,
+    }));
   }
 
   // ---------------------------------------------------------------------------
@@ -1326,6 +1471,93 @@ export class AdminService {
         };
       }),
     );
+  }
+
+  /**
+   * One person, and every organisation we have seen them in.
+   *
+   * Each organisation carries what it is on and who pays for it, because the
+   * reason to open a user is almost always to get to one of them — and an
+   * operator following somebody from a support ticket should not have to open
+   * three organisations to find the one the ticket is about.
+   */
+  async user(id: number): Promise<AdminUserDetailDto> {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        ssoId: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        isAdmin: true,
+        createdAt: true,
+      },
+    });
+    if (!user) throw new NotFoundException(`No user ${id}`);
+
+    const links = await this.prisma.wabaOrganisation.findMany({
+      where: { userId: id },
+      select: { ssoOrgId: true, orgName: true, createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const ids = [...new Set(links.map((l) => l.ssoOrgId))];
+    const [settings, subscriptions] = await Promise.all([
+      this.prisma.organisationSettings.findMany({
+        where: { ssoOrgId: { in: ids } },
+        select: { ssoOrgId: true, isAgency: true, agencyOrgId: true },
+      }),
+      this.prisma.subscription.findMany({
+        where: { ssoOrgId: { in: ids }, wabaId: null },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          ssoOrgId: true,
+          status: true,
+          payerOrgId: true,
+          plan: { select: { name: true } },
+        },
+      }),
+    ]);
+
+    const settingOf = new Map(settings.map((row) => [row.ssoOrgId, row]));
+    // Newest first above, so the first one seen for an organisation is its
+    // current subscription and any older row is history.
+    const subOf = new Map<string, (typeof subscriptions)[number]>();
+    for (const sub of subscriptions) {
+      if (!subOf.has(sub.ssoOrgId)) subOf.set(sub.ssoOrgId, sub);
+    }
+
+    const organisations = await Promise.all(
+      ids.map(async (ssoOrgId) => {
+        const own = links.filter((l) => l.ssoOrgId === ssoOrgId);
+        const sub = subOf.get(ssoOrgId);
+        const payer = sub?.payerOrgId ?? null;
+
+        return {
+          ssoOrgId,
+          name:
+            own.find((l) => l.orgName)?.orgName ??
+            (await this.orgDirectory.name(ssoOrgId)),
+          wabas: own.length,
+          isAgency: settingOf.get(ssoOrgId)?.isAgency ?? false,
+          planName: sub?.plan?.name ?? null,
+          status: sub?.status ?? null,
+          // Only where it is somebody else. "Paid by itself" is noise.
+          payerName:
+            payer && payer !== ssoOrgId
+              ? await this.orgDirectory.name(payer)
+              : null,
+          since: own[0]?.createdAt,
+        };
+      }),
+    );
+
+    return {
+      ...this.toUser(user),
+      ssoId: user.ssoId,
+      organisations,
+    };
   }
 
   /** Somebody to grant it to. Searched, never listed — this is not a directory. */

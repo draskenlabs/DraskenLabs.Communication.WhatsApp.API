@@ -33,6 +33,7 @@ import {
   AdminSubscriptionRowDto,
   AdminAgencyRowDto,
   AdminAnalyticsDto,
+  AdminUserDetailDto,
   AdminUserDto,
   AdminUserPageDto,
   AttachClientDto,
@@ -238,6 +239,18 @@ export class AdminController {
       search,
       page: page ? Number(page) : 1,
     });
+  }
+
+  @Get('users/:id')
+  @ApiOperation({
+    summary: 'One person, and the organisations we have seen them in',
+    description:
+      'Each organisation carries what it is on and who pays for it — an ' +
+      'operator following somebody from a support ticket should not have to ' +
+      'open three of them to find the one the ticket is about.',
+  })
+  user(@Param('id', ParseIntPipe) id: number): Promise<AdminUserDetailDto> {
+    return this.admin.user(id);
   }
 
   @Get('agencies')

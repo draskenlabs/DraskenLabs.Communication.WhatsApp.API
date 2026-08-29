@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AdminService } from './admin.service';
 import { AdminAuditService } from './admin-audit.service';
 import { ConfigService } from '@nestjs/config';
+import { AdminAllowanceDto } from './dto/admin.dto';
 import { firstArg } from 'src/common/utils/mock-args';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
@@ -1132,6 +1133,254 @@ describe('AdminService', () => {
       expect(await service.agencies()).toEqual([]);
       // And does not go looking for clients of nobody.
       expect(mockPrisma.subscription.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('what a plan allows, against what is used', () => {
+    /** A plan with a number in every column, so each row has something to say. */
+    const limits = (over: Record<string, unknown> = {}) => ({
+      planCode: 'growth',
+      planName: 'Growth',
+      includedWabas: 3,
+      includedPhoneNumbersPerWaba: 1,
+      includedClients: null,
+      additionalWabaPrice: 29_900,
+      additionalNumberPrice: 19_900,
+      teamMembers: 5,
+      webhookEndpoints: 5,
+      apiKeysPerWaba: 5,
+      contacts: 10_000,
+      messagesPerMinute: 500,
+      historyDays: 90,
+      ...over,
+    });
+
+    /** One organisation with two accounts, so the per-account rows have data. */
+    async function detail(over: Record<string, unknown> = {}) {
+      mockPlanLimits.forOrg.mockResolvedValue(limits(over));
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_1', wabaId: 'waba_a', createdAt: new Date() },
+        { ssoOrgId: 'org_1', wabaId: 'waba_b', createdAt: new Date() },
+      ]);
+      mockPrisma.contact.count.mockResolvedValue(9_999);
+      mockPrisma.webhookEndpoint.count.mockResolvedValue(2);
+      mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([
+        { wabaId: 'waba_a', _count: { _all: 1 } },
+        // The busier one. This is the number the per-account row must use.
+        { wabaId: 'waba_b', _count: { _all: 4 } },
+      ]);
+      mockPrisma.userApiKey.groupBy.mockResolvedValue([
+        { wabaId: 'waba_a', _count: { _all: 2 } },
+      ]);
+      return service.organisation('org_1');
+    }
+
+    const row = (rows: AdminAllowanceDto[], key: string) =>
+      rows.find((r) => r.key === key);
+
+    it('pairs each limit with what is used against it', async () => {
+      const { allowances } = await detail();
+
+      expect(row(allowances, 'contacts')).toMatchObject({
+        allowed: 10_000,
+        used: 9_999,
+        kind: 'ceiling',
+      });
+      expect(row(allowances, 'webhookEndpoints')).toMatchObject({
+        allowed: 5,
+        used: 2,
+      });
+    });
+
+    it('measures a per-account limit against the busiest account', async () => {
+      // Totalling numbers across accounts and comparing that to a per-account
+      // allowance would report every multi-account customer as over.
+      const { allowances } = await detail();
+
+      expect(row(allowances, 'phoneNumbersPerWaba')).toMatchObject({
+        allowed: 1,
+        used: 4,
+      });
+      expect(row(allowances, 'apiKeysPerWaba')).toMatchObject({ used: 2 });
+    });
+
+    it('separates what bills from what refuses', async () => {
+      // Two accounts on a plan including three is not a problem; it is what
+      // the customer pays for. The screen must not read it as one.
+      const { allowances } = await detail();
+
+      expect(row(allowances, 'wabas')).toMatchObject({
+        kind: 'inclusion',
+        overagePrice: 29_900,
+      });
+      expect(row(allowances, 'contacts')?.kind).toBe('ceiling');
+      expect(row(allowances, 'historyDays')?.kind).toBe('retention');
+    });
+
+    it('flags a limit that has been reached', async () => {
+      const { allowances } = await detail({ contacts: 9_999 });
+
+      expect(row(allowances, 'contacts')?.atLimit).toBe(true);
+      expect(row(allowances, 'webhookEndpoints')?.atLimit).toBe(false);
+    });
+
+    it('says nothing is at a limit the plan does not set', async () => {
+      // A quoted plan with no number in a column is unlimited there, not zero.
+      const { allowances } = await detail({ contacts: null });
+
+      expect(row(allowances, 'contacts')).toMatchObject({
+        allowed: null,
+        atLimit: false,
+      });
+    });
+
+    it('leaves usage unknown where we genuinely do not hold it', async () => {
+      // Null is not zero. Seats live in the SSO; a send rate is a ceiling on
+      // a moment rather than a running total.
+      const { allowances } = await detail();
+
+      expect(row(allowances, 'teamMembers')?.used).toBeNull();
+      expect(row(allowances, 'messagesPerMinute')?.used).toBeNull();
+      expect(row(allowances, 'teamMembers')?.atLimit).toBe(false);
+    });
+
+    it('counts clients only where an organisation has any', async () => {
+      // A "0 of —" row on an ordinary customer is noise.
+      const plain = await detail();
+      expect(row(plain.allowances, 'clients')).toBeUndefined();
+
+      mockOrgSettings.clientsOf.mockResolvedValue(['org_a', 'org_b']);
+      const agency = await detail({ includedClients: 5 });
+
+      expect(row(agency.allowances, 'clients')).toMatchObject({
+        allowed: 5,
+        used: 2,
+      });
+    });
+  });
+
+  describe('one user, in full', () => {
+    beforeEach(() => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 7,
+        ssoId: 'sso_ada',
+        email: 'ada@example.com',
+        firstName: 'Ada',
+        lastName: 'Lovelace',
+        isAdmin: false,
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      });
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_kettle',
+          orgName: 'Kettle Coffee',
+          createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        },
+      ]);
+      mockPrisma.organisationSettings.findMany.mockResolvedValue([]);
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+    });
+
+    it('404s for somebody who does not exist', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(service.user(999)).rejects.toThrow(NotFoundException);
+    });
+
+    it('names the person and the organisations they were seen in', async () => {
+      const user = await service.user(7);
+
+      expect(user.email).toBe('ada@example.com');
+      expect(user.ssoId).toBe('sso_ada');
+      expect(user.organisations).toHaveLength(1);
+      expect(user.organisations[0].name).toBe('Kettle Coffee');
+    });
+
+    it('says what each organisation is on', async () => {
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_kettle',
+          status: 'active',
+          payerOrgId: null,
+          plan: { name: 'Growth' },
+        },
+      ]);
+
+      const user = await service.user(7);
+
+      expect(user.organisations[0]).toMatchObject({
+        planName: 'Growth',
+        status: 'active',
+      });
+    });
+
+    it('names a payer only where it is somebody else', async () => {
+      // "Paid by itself" on every ordinary customer is noise.
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_kettle',
+          status: 'active',
+          payerOrgId: 'org_kettle',
+          plan: { name: 'Growth' },
+        },
+      ]);
+
+      expect((await service.user(7)).organisations[0].payerName).toBeNull();
+
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_kettle',
+          status: 'active',
+          payerOrgId: 'org_agency',
+          plan: { name: 'Growth' },
+        },
+      ]);
+      mockOrgDirectory.name.mockResolvedValue('Northwind Digital');
+
+      expect((await service.user(7)).organisations[0].payerName).toBe(
+        'Northwind Digital',
+      );
+    });
+
+    it('takes the current subscription, not an old one', async () => {
+      // Ordered newest first, so the first row seen for an organisation is the
+      // live one and anything behind it is history.
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_kettle',
+          status: 'active',
+          payerOrgId: null,
+          plan: { name: 'Business' },
+        },
+        {
+          ssoOrgId: 'org_kettle',
+          status: 'cancelled',
+          payerOrgId: null,
+          plan: { name: 'Starter' },
+        },
+      ]);
+
+      expect((await service.user(7)).organisations[0].planName).toBe(
+        'Business',
+      );
+    });
+
+    it('lists an organisation once however many accounts were connected', async () => {
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_kettle', orgName: null, createdAt: new Date() },
+        {
+          ssoOrgId: 'org_kettle',
+          orgName: 'Kettle Coffee',
+          createdAt: new Date(),
+        },
+      ]);
+
+      const user = await service.user(7);
+
+      expect(user.organisations).toHaveLength(1);
+      expect(user.organisations[0].wabas).toBe(2);
+      // A name from a later row where the older one has none.
+      expect(user.organisations[0].name).toBe('Kettle Coffee');
     });
   });
 });

@@ -226,6 +226,62 @@ export class AdminClientDto {
 }
 
 /** Everything we hold about one organisation. */
+/**
+ * One of a plan's numbers, with what the organisation is actually doing
+ * against it.
+ *
+ * `kind` is the load-bearing field and the reason this is not a flat table of
+ * numbers. An **inclusion** is what the price covers; going past it bills the
+ * customer and refuses nobody. A **ceiling** refuses. Showing both as "8 / 5"
+ * in the same red would have an operator chasing a customer who is simply
+ * paying for what they use.
+ */
+export class AdminAllowanceDto {
+  @ApiProperty({ example: 'contacts' }) key: string;
+
+  @ApiProperty({ example: 'Contacts' }) label: string;
+
+  @ApiProperty({
+    description: 'What the plan gives. Null means the plan sets no number.',
+    nullable: true,
+    example: 10000,
+  })
+  allowed: number | null;
+
+  @ApiProperty({
+    description:
+      'What is in use. Null where usage is not a count this deployment ' +
+      'holds — a send rate is a ceiling on a moment, not a total.',
+    nullable: true,
+    example: 812,
+  })
+  used: number | null;
+
+  @ApiProperty({
+    enum: ['inclusion', 'ceiling', 'retention'],
+    description:
+      'inclusion — past it the customer is billed, not refused. ' +
+      'ceiling — past it the request is refused. ' +
+      'retention — a window, not a quantity.',
+  })
+  kind: 'inclusion' | 'ceiling' | 'retention';
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What each one past the inclusion costs, where it is sold',
+    example: 29900,
+  })
+  overagePrice: number | null;
+
+  @ApiProperty({
+    description:
+      'Whether usage has reached what the plan allows. On a ceiling that ' +
+      'means the next request is refused; on an inclusion it means the next ' +
+      'one bills.',
+  })
+  atLimit: boolean;
+}
+
 export class AdminOrganisationDetailDto extends AdminOrganisationRowDto {
   @ApiProperty({
     nullable: true,
@@ -249,6 +305,15 @@ export class AdminOrganisationDetailDto extends AdminOrganisationRowDto {
 
   @ApiProperty({ description: 'What its plan allows', type: Object })
   limits: Record<string, number | string | null>;
+
+  @ApiProperty({
+    type: [AdminAllowanceDto],
+    description:
+      'Every number the plan sets, paired with what is being used against ' +
+      'it. The pairing is the point: `limits` alone says what is allowed and ' +
+      'says nothing about whether it is close.',
+  })
+  allowances: AdminAllowanceDto[];
 
   @ApiProperty({ description: 'Team seats, or null when the SSO has none' })
   apiKeys: number;
@@ -573,6 +638,27 @@ export class AdminUserOrgDto {
   wabas: number;
   @ApiProperty({ description: 'Whether that organisation manages clients' })
   isAgency: boolean;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'The tier it is on. Only on the detail view.',
+  })
+  planName?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Its subscription status, or null where it has none',
+  })
+  status?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Who pays for it, where that is somebody else',
+  })
+  payerName?: string | null;
+
+  @ApiPropertyOptional({ description: 'When this person first connected one' })
+  since?: Date;
 }
 
 /** A user, with the organisations we have seen them in. */
@@ -584,6 +670,35 @@ export class AdminUserRowDto {
   @ApiProperty() createdAt: Date;
 
   @ApiProperty({ type: [AdminUserOrgDto] })
+  organisations: AdminUserOrgDto[];
+}
+
+/**
+ * One user, in full: who they are and every organisation we have seen them in.
+ *
+ * The organisations carry enough to be worth landing on — what each is paying
+ * and how big it is — so an operator following somebody from a support ticket
+ * does not have to open three of them to find the one that matters.
+ */
+export class AdminUserDetailDto {
+  @ApiProperty() id: number;
+  @ApiProperty({ nullable: true }) email: string | null;
+  @ApiProperty({ nullable: true }) name: string | null;
+  @ApiProperty() isAdmin: boolean;
+  @ApiProperty() createdAt: Date;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'The SSO identity behind the account',
+  })
+  ssoId: string | null;
+
+  @ApiProperty({
+    type: [AdminUserOrgDto],
+    description:
+      'Organisations this person connected an account for. Membership lives ' +
+      'in the SSO, so somebody invited who has connected nothing has none.',
+  })
   organisations: AdminUserOrgDto[];
 }
 

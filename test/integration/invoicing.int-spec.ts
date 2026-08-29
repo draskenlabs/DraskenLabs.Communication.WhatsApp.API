@@ -173,10 +173,7 @@ describe('Invoicing (integration)', () => {
 
       const sent = mail.find((m) => m.options.template === 'billing.invoice');
       const names = (sent?.options.attachments ?? []).map((a) => a.filename);
-      expect(names).toEqual([
-        'INV-WAC-2627-0001.pdf',
-        'RCT-WAC-2627-0001.pdf',
-      ]);
+      expect(names).toEqual(['INV-WAC-2627-0001.pdf', 'RCT-WAC-2627-0001.pdf']);
 
       const receiptPdf = sent?.options.attachments?.[1];
       expect(
@@ -199,8 +196,16 @@ describe('Invoicing (integration)', () => {
     it('is not raised twice for a replayed charge', async () => {
       const sub = await selfPaid();
 
-      await charge({ subscriptionId: sub, paymentId: 'pay_1', eventId: 'evt_a' });
-      await charge({ subscriptionId: sub, paymentId: 'pay_1', eventId: 'evt_b' });
+      await charge({
+        subscriptionId: sub,
+        paymentId: 'pay_1',
+        eventId: 'evt_a',
+      });
+      await charge({
+        subscriptionId: sub,
+        paymentId: 'pay_1',
+        eventId: 'evt_b',
+      });
 
       expect(await h.prisma.receipt.count()).toBe(1);
     });
