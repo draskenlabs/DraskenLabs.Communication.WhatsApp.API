@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 /** What the subscription costs, read from the Razorpay plan. */
 export class SubscriptionPlanDto {
@@ -62,6 +62,15 @@ export class SubscriptionPaymentDto {
 
   @ApiProperty({ nullable: true })
   paidAt: Date | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The invoice raised for this debit. Null for a payment taken before ' +
+      'invoicing shipped, and for one that was never captured.',
+    example: 'INV-WAC-2627-0001',
+  })
+  invoiceNumber: string | null;
 }
 
 /** One account the organisation's subscription pays for. */
@@ -236,6 +245,21 @@ export class SubscriptionStateDto {
 
   @ApiProperty({ type: SubscriptionUsageDto })
   usage: SubscriptionUsageDto;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The organisation paying for this one, when it is not itself. Set for ' +
+      'an agency’s client: the console shows what the plan is and who pays ' +
+      'for it, instead of offering a checkout that would be refused.',
+  })
+  payerOrgId: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What that organisation is called, where we know it',
+  })
+  payerName: string | null;
 
   @ApiProperty({
     nullable: true,
@@ -447,4 +471,304 @@ export class ConfirmSubscriptionDto {
   @IsString()
   @IsNotEmpty()
   razorpaySignature: string;
+}
+
+/** One thing an invoice charged for. */
+export class InvoiceLineDto {
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The organisation this line bought for. A client of the agency being ' +
+      'charged, on an agency’s invoice.',
+  })
+  ssoOrgId: string | null;
+
+  @ApiProperty({ example: 'Growth — Kettle Coffee' })
+  description: string;
+
+  @ApiProperty({ nullable: true }) detail: string | null;
+  @ApiProperty({ nullable: true }) planCode: string | null;
+  @ApiProperty({ nullable: true }) planName: string | null;
+
+  @ApiProperty({ example: 1 }) quantity: number;
+
+  @ApiProperty({ description: 'Per unit, smallest currency unit' })
+  unitAmount: number;
+
+  @ApiProperty({ description: 'quantity × unitAmount' })
+  amount: number;
+}
+
+/** The customer's own tax identity, as the console reads and writes it. */
+export class TaxDetailsDto {
+  @ApiProperty({
+    nullable: true,
+    example: '29AAPFU0939F1ZR',
+    description:
+      'The customer’s GST registration. Required for input tax credit, and ' +
+      'the first two characters name the state it is registered in.',
+  })
+  gstin: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'The registered name, where it differs from the trading one',
+  })
+  legalName: string | null;
+
+  @ApiProperty({ nullable: true, description: 'One line per newline' })
+  billingAddress: string | null;
+
+  @ApiProperty({ nullable: true }) billingCity: string | null;
+
+  @ApiProperty({ nullable: true }) billingPostalCode: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    example: '29',
+    description:
+      'GST state code. This is the place of supply, and it decides whether ' +
+      'a charge is CGST plus SGST or IGST.',
+  })
+  stateCode: string | null;
+
+  @ApiProperty({ nullable: true, example: 'Karnataka' })
+  stateName: string | null;
+}
+
+/** One state a customer may choose from. */
+export class GstStateDto {
+  @ApiProperty({ example: '29' }) code: string;
+  @ApiProperty({ example: 'Karnataka' }) name: string;
+}
+
+export class UpdateTaxDetailsDto {
+  @ApiPropertyOptional({ example: '29AAPFU0939F1ZR' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(15)
+  gstin?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  legalName?: string | null;
+
+  @ApiPropertyOptional({ description: 'One line per newline' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  billingAddress?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  billingCity?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  billingPostalCode?: string | null;
+
+  @ApiPropertyOptional({ example: '29' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  stateCode?: string | null;
+}
+
+/**
+ * A receipt, as the console shows it.
+ *
+ * Deliberately thinner than an invoice: a receipt acknowledges money and
+ * points at the document that explains it, so it carries no lines and no tax
+ * split. `invoiceNumber` is how a reader gets from one to the other.
+ */
+export class ReceiptDto {
+  @ApiProperty({ example: 'RCT-WAC-2627-0001' }) number: string;
+
+  @ApiProperty({ example: '2627' }) financialYear: string;
+
+  @ApiProperty() issuedAt: Date;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'When the money actually arrived',
+  })
+  receivedAt: Date | null;
+
+  @ApiProperty({
+    nullable: true,
+    example: 'INV-WAC-2627-0001',
+    description: 'The invoice this settles',
+  })
+  invoiceNumber: string | null;
+
+  @ApiProperty() ssoOrgId: string;
+
+  @ApiProperty({ nullable: true }) organisationName: string | null;
+
+  @ApiProperty({ nullable: true, example: 'Growth' }) summary: string | null;
+
+  @ApiProperty({
+    description: 'What was received, in the smallest currency unit',
+    example: 117882,
+  })
+  amount: number;
+
+  @ApiProperty({ example: 'INR' }) currency: string;
+
+  @ApiProperty({ nullable: true, example: 'Visa ···· 4242' })
+  paymentMethod: string | null;
+
+  @ApiProperty({ nullable: true }) emailedAt: Date | null;
+
+  @ApiProperty({ example: 'pay_29QQoUBi66xm2f' }) razorpayPaymentId: string;
+}
+
+/**
+ * An invoice as the console shows it.
+ *
+ * Everything here is the snapshot taken when the document was raised, not a
+ * live read: a plan renamed or a client released next month cannot restate an
+ * invoice already sent.
+ */
+export class InvoiceDto {
+  @ApiProperty({
+    description: 'The number as printed, and the id every other route uses',
+    example: 'INV-WAC-2627-0001',
+  })
+  number: string;
+
+  @ApiProperty({
+    description: 'The Indian financial year it was raised in',
+    example: '2627',
+  })
+  financialYear: string;
+
+  @ApiProperty() issuedAt: Date;
+  @ApiProperty({ nullable: true }) paidAt: Date | null;
+
+  @ApiProperty({ description: 'The organisation charged — whose bank moved' })
+  ssoOrgId: string;
+
+  @ApiProperty({ nullable: true }) organisationName: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What the money bought, in a few words',
+    example: '3 client plans — Growth',
+  })
+  summary: string | null;
+
+  @ApiProperty({ type: [InvoiceLineDto] })
+  lines: InvoiceLineDto[];
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Start of the cycle charged for',
+  })
+  periodStart: Date | null;
+
+  @ApiProperty({ nullable: true }) periodEnd: Date | null;
+
+  @ApiProperty({
+    description: 'Taxable value in the smallest currency unit',
+    example: 42288,
+  })
+  subtotal: number;
+
+  @ApiProperty({
+    description: 'Tax in the smallest currency unit',
+    example: 7612,
+  })
+  taxAmount: number;
+
+  @ApiProperty({ description: 'Basis points, so 18% is 1800', example: 1800 })
+  taxRateBps: number;
+
+  @ApiProperty({ nullable: true, example: 'GST' }) taxLabel: string | null;
+
+  @ApiProperty({
+    description:
+      'Central GST, on a supply inside our own state. Half the rate; the ' +
+      'other half is sgstAmount. Zero on an inter-state supply.',
+    example: 3806,
+  })
+  cgstAmount: number;
+
+  @ApiProperty({ description: 'State GST — see cgstAmount', example: 3806 })
+  sgstAmount: number;
+
+  @ApiProperty({
+    description:
+      'Integrated GST, on a supply to another state. The whole rate, and ' +
+      'zero whenever cgstAmount and sgstAmount are not.',
+    example: 0,
+  })
+  igstAmount: number;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The state the supply was made to, which is what decided the split ' +
+      'above. Absent on an extract — it is the payer’s, not the reader’s.',
+    example: 'Karnataka (29)',
+  })
+  placeOfSupply: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'The customer’s registration, as stated on the document',
+    example: '29AAPFU0939F1ZR',
+  })
+  billedToGstin: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Service classification the charge was made under',
+    example: '998314',
+  })
+  sacCode: string | null;
+
+  @ApiProperty({
+    description: 'What was actually taken. Not derived — this is what moved.',
+    example: 49900,
+  })
+  total: number;
+
+  @ApiProperty({ example: 'INR' }) currency: string;
+
+  @ApiProperty({ nullable: true, example: 'Visa ···· 4242' })
+  paymentMethod: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'When the email carrying it went',
+  })
+  emailedAt: Date | null;
+
+  @ApiProperty({ nullable: true }) emailedTo: string | null;
+
+  @ApiProperty({ example: 'pay_29QQoUBi66xm2f' })
+  razorpayPaymentId: string;
+
+  @ApiProperty({
+    description:
+      'True when this is somebody else’s document seen from a line on it — ' +
+      'an agency’s invoice, as one of its clients sees it. The lines and ' +
+      'total are then this organisation’s share, not the whole debit, and ' +
+      'the tax is absent because it divides the whole.',
+  })
+  extract: boolean;
+
+  @ApiProperty({
+    description:
+      'Whether the PDF is on offer. False for an extract: the document is ' +
+      'the payer’s entire debit and names its other clients.',
+  })
+  downloadable: boolean;
 }

@@ -126,28 +126,48 @@ export class PlanLimitsService {
     private readonly orgSettings: OrganisationSettingsService,
   ) {}
 
-  /** Organisation-wide limits: the best tier the payer is subscribed on. */
+  /**
+   * Organisation-wide limits: the best tier this organisation is on.
+   *
+   * **Its own subscription answers first.** An agency that buys a plan for each
+   * client gives that client a subscription of its own, and the client is held
+   * to what was bought for it — not to whatever the agency happens to hold.
+   *
+   * Falling back to the payer keeps the older arrangement working: a client
+   * attached before per-client subscriptions existed has none of its own and
+   * inherits the agency's, exactly as it did. Both shapes are live at once
+   * during the move, which is the point of looking in this order.
+   */
   async forOrg(ssoOrgId: string): Promise<EffectiveLimits> {
-    const payer = await this.orgSettings.billingOrgFor(ssoOrgId);
+    const own = await this.subscribedPlans(ssoOrgId);
+    if (own.length > 0) return this.best(own);
 
+    const payer = await this.orgSettings.billingOrgFor(ssoOrgId);
+    const plans = payer === ssoOrgId ? [] : await this.subscribedPlans(payer);
+    if (plans.length === 0) return this.entryLimits();
+
+    return this.best(plans);
+  }
+
+  /** The plans an organisation is paying for right now, in no order. */
+  private async subscribedPlans(ssoOrgId: string): Promise<PlanRow[]> {
     const subs = await this.prisma.subscription.findMany({
       where: {
-        ssoOrgId: payer,
+        ssoOrgId,
         status: { in: [...LIVE_STATUSES] },
         planRefId: { not: null },
       },
       select: { plan: { select: PLAN_SELECT } },
     });
+    return subs.map((s) => s.plan).filter((p): p is PlanRow => p !== null);
+  }
 
-    const plans = subs
-      .map((s) => s.plan)
-      .filter((p): p is PlanRow => p !== null);
-    if (plans.length === 0) return this.entryLimits();
-
-    // Best by rank, so a quoted plan — which has no price to compare — is not
-    // treated as the cheapest thing the organisation holds.
-    const best = plans.sort((a, b) => b.rank - a.rank)[0];
-    return this.toLimits(best);
+  /**
+   * Best by rank, so a quoted plan — which has no price to compare — is not
+   * treated as the cheapest thing the organisation holds.
+   */
+  private best(plans: PlanRow[]): EffectiveLimits {
+    return this.toLimits([...plans].sort((a, b) => b.rank - a.rank)[0]);
   }
 
   /**

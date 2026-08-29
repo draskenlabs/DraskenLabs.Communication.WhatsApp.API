@@ -242,12 +242,13 @@ model Plan {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  inherits      Plan?          @relation("PlanInheritance", fields: [inheritsPlanId], references: [id], onDelete: Restrict)
-  inheritedBy   Plan[]         @relation("PlanInheritance")
+  inherits      Plan?                @relation("PlanInheritance", fields: [inheritsPlanId], references: [id], onDelete: Restrict)
+  inheritedBy   Plan[]               @relation("PlanInheritance")
   features      PlanFeature[]
-  subscriptions Subscription[] @relation("SubscriptionPlan")
+  subscriptions Subscription[]       @relation("SubscriptionPlan")
+  billingGroups AgencyBillingGroup[] @relation("BillingGroupPlan")
   /// Subscriptions that move onto this plan at their next renewal.
-  pendingFor    Subscription[] @relation("SubscriptionPendingPlan")
+  pendingFor    Subscription[]       @relation("SubscriptionPendingPlan")
 
   @@index([active, sortOrder])
   @@index([ssoOrgId])
@@ -316,6 +317,27 @@ model OrganisationSettings {
   convertedBy Int?
   convertedAt DateTime?
 
+  /// The customer's own tax identity, as it must appear on their invoices.
+  ///
+  /// Held here rather than in the SSO because it is a fact about how this
+  /// product bills them, and because it has to be *snapshotted* onto every
+  /// document — an invoice states what was true when it was issued, and a
+  /// GSTIN entered next month cannot retrospectively appear on last month's.
+  ///
+  /// `stateCode` is the GST state code, and it is the load-bearing one: it is
+  /// the place of supply, which decides whether a charge is CGST+SGST or IGST.
+  /// It is kept separately from `gstin` because an unregistered customer still
+  /// has a state, and the split still depends on it.
+  gstin             String?
+  /// The registered name, where it differs from what the organisation is
+  /// called day to day. An invoice has to name the legal entity.
+  legalName         String?
+  /// Free-form, one line per newline, as the customer typed it.
+  billingAddress    String?
+  billingCity       String?
+  billingPostalCode String?
+  stateCode         String?
+
   /// Bumped whenever the payer changes or their subscription does.
   ///
   /// Access is cached per organisation *and* account, so one agency's payment
@@ -383,7 +405,13 @@ model Subscription {
   ssoOrgId String
 
   razorpayCustomerId     String?
-  razorpaySubscriptionId String  @unique
+  /// The provider subscription this is charged on, when it has one of its own.
+  ///
+  /// Null for a client an agency pays for: those are charged through a shared
+  /// subscription with a quantity, held on `billingGroup`. Postgres treats
+  /// NULLs as distinct in a unique index, so the constraint still holds for
+  /// every row that does name one.
+  razorpaySubscriptionId String? @unique
   /// The Razorpay plan charged, recorded per subscription so a later price
   /// change cannot rewrite what an existing customer agreed to.
   planId                 String
@@ -433,16 +461,31 @@ model Subscription {
   /// That subscription's hosted authorisation page, as Checkout's fallback.
   pendingShortUrl               String?
 
+  /// The organisation paying for this, when it is not the one using it.
+  ///
+  /// Null means self-paid, which every subscription was until agencies could
+  /// buy for their clients. `ssoOrgId` is who it entitles; this is who is
+  /// charged, and the two are only ever different for an agency's client.
+  payerOrgId String?
+
+  /// The shared provider subscription this client is a quantity on.
+  ///
+  /// An agency pays for its clients as one subscription per plan with a
+  /// quantity, because a subscription per client would be an authorisation per
+  /// client. Null for anything self-paid.
+  billingGroupId Int?
+
   /// Who registered it — the person the billing emails go to.
   createdByUserId Int
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  waba        Waba?                 @relation(fields: [wabaId], references: [wabaId])
-  plan        Plan?                 @relation("SubscriptionPlan", fields: [planRefId], references: [id], onDelete: Restrict)
-  pendingPlan Plan?                 @relation("SubscriptionPendingPlan", fields: [pendingPlanRefId], references: [id], onDelete: Restrict)
-  payments    SubscriptionPayment[]
+  waba         Waba?                 @relation(fields: [wabaId], references: [wabaId])
+  plan         Plan?                 @relation("SubscriptionPlan", fields: [planRefId], references: [id], onDelete: Restrict)
+  pendingPlan  Plan?                 @relation("SubscriptionPendingPlan", fields: [pendingPlanRefId], references: [id], onDelete: Restrict)
+  payments     SubscriptionPayment[]
+  billingGroup AgencyBillingGroup?   @relation(fields: [billingGroupId], references: [id], onDelete: SetNull)
 
   // An organisation has at most one subscription that is not tied to a single
   // account. `@@unique([wabaId, ssoOrgId])` cannot say that — Postgres treats
@@ -456,6 +499,64 @@ model Subscription {
   @@index([pendingPlanRefId])
   @@index([ssoOrgId])
   @@index([status])
+  @@index([payerOrgId])
+  @@index([billingGroupId])
+}
+
+/// One mandate an agency holds, for one plan, covering several clients.
+///
+/// A subscription per client would mean an authorisation per client, which
+/// nobody would sit through. Instead an agency holds one provider subscription
+/// per plan it uses, and the quantity is how many of its clients are on that
+/// plan: six on Growth and two on Business is two mandates, at quantity six and
+/// two.
+///
+/// The client's own `Subscription` row is still what every limit and paywall
+/// check reads. This is only how the money is taken.
+model AgencyBillingGroup {
+  id Int @id @default(autoincrement())
+
+  /// The agency being charged.
+  agencyOrgId String
+  /// The plan its clients on this group are on.
+  planRefId   Int
+
+  razorpayCustomerId     String?
+  razorpaySubscriptionId String  @unique
+  /// The provider plan charged, recorded per group so a later price change
+  /// cannot rewrite what this agency agreed to.
+  planId                 String
+
+  /// How many clients this is charging for. Kept here rather than counted
+  /// from the subscriptions each time: it is what was last sent to the
+  /// provider, and a disagreement with the row count is a bug worth seeing.
+  quantity Int @default(0)
+
+  status SubscriptionStatus @default(created)
+
+  currentStart DateTime?
+  currentEnd   DateTime?
+
+  cancelAtCycleEnd Boolean   @default(false)
+  cancelledAt      DateTime?
+
+  /// The hosted authorisation page, until the mandate is registered.
+  shortUrl String?
+
+  createdByUserId Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan          Plan                  @relation("BillingGroupPlan", fields: [planRefId], references: [id], onDelete: Restrict)
+  subscriptions Subscription[]
+  payments      SubscriptionPayment[]
+
+  /// One group per agency and plan. A second would be a second mandate for
+  /// the same thing.
+  @@unique([agencyOrgId, planRefId])
+  @@index([agencyOrgId])
+  @@index([status])
 }
 
 /// What was actually taken, and how.
@@ -464,8 +565,15 @@ model Subscription {
 /// round trip to their API on every page load, and the answer to "what was I
 /// charged, when, on which card" once a payment scrolls out of their dashboard.
 model SubscriptionPayment {
-  id             Int @id @default(autoincrement())
-  subscriptionId Int
+  id Int @id @default(autoincrement())
+
+  /// The subscription charged, for anything self-paid.
+  ///
+  /// Null where the debit was an agency's group: one payment covers several
+  /// clients, so it belongs to the group rather than to any one of them.
+  subscriptionId Int?
+  /// The agency's group charged, when it was one of those instead.
+  billingGroupId Int?
 
   /// Razorpay's payment id. Unique because their webhooks retry, and a
   /// replayed `subscription.charged` must not become a second row.
@@ -491,9 +599,250 @@ model SubscriptionPayment {
   paidAt    DateTime?
   createdAt DateTime  @default(now())
 
-  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  subscription Subscription?       @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  billingGroup AgencyBillingGroup? @relation(fields: [billingGroupId], references: [id], onDelete: Cascade)
+  invoice      Invoice?
 
   @@index([subscriptionId])
+  @@index([billingGroupId])
+}
+
+/// The document a payment leaves behind.
+///
+/// A customer who paid us had a row in Razorpay's dashboard and an email
+/// quoting `pay_29QQoUBi66xm2f`. That is a receipt: it carries a gateway's
+/// identifier rather than a document number, it is their series rather than
+/// ours, and it lives only as long as a Razorpay account does — which is
+/// shorter than the seven or eight years tax law expects an invoice to be
+/// produceable for.
+model Invoice {
+  id Int @id @default(autoincrement())
+
+  /// The whole number, as printed: `INV-WAC-2627-0001`.
+  number String @unique
+
+  /// The Indian financial year it was raised in, the way the number spells it:
+  /// `2627` is 1 April 2026 to 31 March 2027.
+  financialYear String
+  /// Position within that financial year. Starts again at 1 each 1 April.
+  sequence      Int
+
+  /// Razorpay's payment id, and the reason a replayed `subscription.charged`
+  /// cannot raise a second invoice for the same debit. Held here as well as on
+  /// the payment row because it has to survive that row being deleted.
+  razorpayPaymentId String  @unique
+  razorpayInvoiceId String?
+
+  /// The stored debit, while there is one. Nulled rather than cascaded when a
+  /// subscription goes: an invoice outlives what it invoiced.
+  paymentId Int? @unique
+
+  /// The organisation actually charged — whose bank moved.
+  ///
+  /// For an agency this is the agency, not the client: one mandate covers
+  /// several clients, and the money left one account. `InvoiceLine.ssoOrgId`
+  /// is what says which clients it bought for.
+  ssoOrgId String
+
+  /// The agency group charged, when the debit was one of those rather than a
+  /// single organisation's own subscription.
+  billingGroupId Int?
+
+  /// Everything the document says, frozen at issue. An invoice is a record of
+  /// what was stated at the time, so a plan renamed, an organisation renamed
+  /// or a client released next month cannot rewrite one already sent.
+  billedToName     String?
+  billedToEmail    String?
+  organisationName String?
+  /// What the money bought, in a few words: "Growth", "3 client plans".
+  summary          String?
+  /// The period the charge bought, as printed under the line items.
+  periodStart      DateTime?
+  periodEnd        DateTime?
+
+  /// In the smallest currency unit, like every other amount here.
+  ///
+  /// `total` is what was actually taken — it is not derived, it is what the
+  /// bank moved. `subtotal` and `taxAmount` are how that total divides at the
+  /// rate configured when the invoice was raised, so a rate changed next year
+  /// cannot restate an invoice already issued. With no rate configured the
+  /// subtotal is the total and the tax is zero.
+  subtotal   Int
+  taxAmount  Int     @default(0)
+  /// Basis points, so 18% is 1800 and no percentage is held in a float.
+  taxRateBps Int     @default(0)
+  /// What the tax is called on the document: "GST", "IGST", "VAT".
+  taxLabel   String?
+  total      Int
+  currency   String  @default("INR")
+
+  /// How `taxAmount` divides into its heads. The three always sum to it.
+  ///
+  /// Which pair is used is decided once, at issue, by comparing the customer's
+  /// state to ours: inside our state a supply is CGST plus SGST at half the
+  /// rate each, outside it is IGST at the whole rate. Stored rather than
+  /// recomputed because it follows from an address that can change, and the
+  /// document may not.
+  cgstAmount Int @default(0)
+  sgstAmount Int @default(0)
+  igstAmount Int @default(0)
+
+  /// The customer's tax identity, frozen at issue — see OrganisationSettings.
+  ///
+  /// `placeOfSupplyCode` is the state the supply was made to, and the reason
+  /// the split above came out the way it did. Printed as "Karnataka (29)".
+  billedToGstin     String?
+  billedToAddress   String?
+  placeOfSupply     String?
+  placeOfSupplyCode String?
+  /// The service classification the charge was made under, e.g. 998314.
+  sacCode           String?
+
+  /// How it was paid, in the same words the payment row uses: "Visa ···· 4242",
+  /// a UPI handle, a bank. Snapshotted like everything else — the card a
+  /// customer replaces next year did not pay this invoice.
+  paymentMethod String?
+
+  issuedAt DateTime  @default(now())
+  paidAt   DateTime?
+
+  /// When SES accepted the message carrying it, and where it went. Null while
+  /// it has not been sent — a mail outage must not lose the invoice itself.
+  emailedAt DateTime?
+  emailedTo String?
+
+  payment SubscriptionPayment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  lines   InvoiceLine[]
+  receipt Receipt?
+
+  @@unique([financialYear, sequence])
+  @@index([ssoOrgId, issuedAt])
+  @@index([billingGroupId])
+}
+
+/// One thing charged for on an invoice.
+///
+/// A list rather than a single description, because an agency's debit covers
+/// several clients at once — one mandate, one payment, N subscriptions. Without
+/// lines the agency cannot tell what it paid for, and a client cannot be shown
+/// the line that bought its own month.
+model InvoiceLine {
+  id        Int @id @default(autoincrement())
+  invoiceId Int
+
+  /// The organisation this line bought for. The same as the invoice's own for
+  /// anything self-paid; a client of it for an agency's group debit.
+  ssoOrgId String?
+
+  /// As printed: "Growth — Kettle Coffee".
+  description String
+  /// The quieter second line under it, where there is one.
+  detail      String?
+
+  /// Snapshotted so a client renamed or a plan repriced cannot rewrite a
+  /// document already sent.
+  planCode String?
+  planName String?
+
+  quantity   Int @default(1)
+  /// Per unit, in the smallest currency unit.
+  unitAmount Int
+  /// `quantity * unitAmount`, stored rather than derived so the printed
+  /// document and the row can never disagree.
+  amount     Int
+
+  /// Where it sits on the page. Not the id, which is an insertion order that
+  /// says nothing about how the document reads.
+  position Int @default(0)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, position])
+  @@index([ssoOrgId])
+}
+
+/// The next number in each financial year's series.
+///
+/// One row per financial year, incremented in the same transaction that writes
+/// the invoice, because the whole point of a statutory series is that no two
+/// invoices share a number and no number is skipped. A counter derived from
+/// `MAX(sequence)` would hand the same number to two webhooks arriving in the
+/// same second.
+model InvoiceCounter {
+  financialYear String   @id
+  nextSequence  Int      @default(1)
+  updatedAt     DateTime @updatedAt
+}
+
+/// The money acknowledged, as its own document.
+///
+/// An invoice says what is owed and a receipt says what was received. On a
+/// prepaid subscription both are true at the same instant, which is exactly why
+/// they are two documents rather than one: an invoice that also claims to be a
+/// receipt is neither, and a customer who needs to prove payment — to a
+/// financier, an auditor, their own accounts team — needs the document that
+/// says *received*, in its own series, with its own number.
+///
+/// One per invoice, raised in the same transaction. Everything on it is
+/// snapshotted from the invoice rather than joined, so the pair cannot drift.
+model Receipt {
+  id Int @id @default(autoincrement())
+
+  /// The whole number, as printed: `RCT-WAC-2627-0001`.
+  number String @unique
+
+  /// Its own series, running alongside the invoice series and never sharing
+  /// its counter. A cancelled document must not punch a hole in the invoice
+  /// book, which is the one series an auditor reads for gaps.
+  financialYear String
+  sequence      Int
+
+  /// The invoice this acknowledges. One each, always.
+  invoiceId Int @unique
+
+  /// Razorpay's payment id, so a replayed webhook cannot raise a second
+  /// receipt any more than it can raise a second invoice.
+  razorpayPaymentId String @unique
+
+  /// The organisation whose bank moved — the payer, as on the invoice.
+  ssoOrgId String
+
+  /// Frozen at issue, like the invoice's own snapshot.
+  billedToName     String?
+  billedToEmail    String?
+  organisationName String?
+  /// What the payment settled, in a few words.
+  summary          String?
+
+  /// What was received. Not divided into tax: a receipt acknowledges money,
+  /// and the tax on it is stated on the invoice it points at.
+  amount   Int
+  currency String @default("INR")
+
+  /// How it was paid and the provider's reference, so a query can be traced.
+  paymentMethod    String?
+  paymentReference String?
+
+  issuedAt   DateTime  @default(now())
+  receivedAt DateTime?
+
+  /// When the message carrying it was accepted, and where it went. Stamped
+  /// together with the invoice: the two travel in one email.
+  emailedAt DateTime?
+  emailedTo String?
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([financialYear, sequence])
+  @@index([ssoOrgId, issuedAt])
+}
+
+/// The receipt series' counter. Deliberately a separate table from
+/// `InvoiceCounter` — see `Receipt.financialYear`.
+model ReceiptCounter {
+  financialYear String   @id
+  nextSequence  Int      @default(1)
+  updatedAt     DateTime @updatedAt
 }
 
 /// Every Razorpay webhook, kept for idempotency and for answering "what did

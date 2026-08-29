@@ -26,6 +26,24 @@ import Redis from 'ioredis';
  *   REDIS_URL_TEST     optional, defaults to a local Redis
  */
 
+/** A message the app tried to send, as the double recorded it. */
+export interface SentMail {
+  to: string;
+  options: {
+    template?: string;
+    subject?: string;
+    attachments?: { filename: string; contentType: string; content: string }[];
+  };
+}
+
+/**
+ * Everything the app tried to send this test.
+ *
+ * Cleared by `reset()`, like the tables — mail left over from a previous test
+ * is the same class of bug as a row left over from one.
+ */
+export const mail: SentMail[] = [];
+
 export const KEY_ID = 'rzp_test_integration';
 export const KEY_SECRET = 'rzp_test_secret';
 export const WEBHOOK_SECRET = 'whsec_integration';
@@ -55,12 +73,27 @@ export interface Harness {
 
 /** Tables the suite writes to. `Plan`/`PlanFeature` are seeded by a migration. */
 const MUTABLE_TABLES = [
+  // Invoices and their lines. They outlive the subscription they invoiced, so
+  // CASCADE from `Subscription` would not take them — they have to be named.
+  // Receipts cascade from their invoice, but are named anyway: the order here
+  // is the order they are truncated in, and a receipt outlives nothing.
+  'Receipt',
+  'InvoiceLine',
+  'Invoice',
+  // The series counters. Left behind and the next suite's first invoice is
+  // numbered 4, which every assertion about a number would then have to know.
+  'InvoiceCounter',
+  'ReceiptCounter',
   'WebhookDelivery',
   'WebhookEndpoint',
   'WebhookEvent',
   'SubscriptionPayment',
   'SubscriptionEvent',
   'Subscription',
+  // An agency's mandates. Left out and they survive a reset while the
+  // provider stand-in reuses its ids, so the next test collides with a group
+  // it never created.
+  'AgencyBillingGroup',
   'Conversation',
   'InboundMessage',
   'Message',
@@ -131,7 +164,13 @@ export async function startHarness(): Promise<Harness> {
       enabled: false,
       sendTo: () => Promise.resolve(false),
       sendToAll: () => Promise.resolve(0),
-      sendRaw: () => Promise.resolve(false),
+      // Recorded rather than dropped, and answered `true`: an invoice is
+      // stamped as delivered on the strength of this answer, so a double that
+      // always failed would make "the document went out" untestable.
+      sendRaw: (to: string, options: SentMail['options']) => {
+        mail.push({ to, options });
+        return Promise.resolve(true);
+      },
       recipientsByIds: () => Promise.resolve([]),
       retryFailed: () => Promise.resolve({ retried: 0, sent: 0, abandoned: 0 }),
     })
@@ -178,6 +217,7 @@ export async function startHarness(): Promise<Harness> {
       await prisma.$executeRawUnsafe(
         `TRUNCATE TABLE ${MUTABLE_TABLES.map((t) => `"${t}"`).join(', ')} RESTART IDENTITY CASCADE`,
       );
+      mail.length = 0;
       // The price list survives; only what a deployment configures is reset.
       await prisma.plan.updateMany({
         where: { code: 'starter' },

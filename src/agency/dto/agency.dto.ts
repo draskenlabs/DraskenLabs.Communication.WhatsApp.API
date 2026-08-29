@@ -69,6 +69,23 @@ export class ClientSummaryDto {
   @ApiProperty({ description: 'Messages sent since the first of this month' })
   messagesThisMonth: number;
   @ApiProperty() addedAt: Date;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'The plan bought for this client, when it has one',
+  })
+  planCode: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  planName: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Status of the mandate covering it — `created` while the agency has ' +
+      'still to authorise the plan it is the first client on.',
+  })
+  status: string | null;
 }
 
 export class AgencyUsageDto {
@@ -98,4 +115,61 @@ export class AgencyRosterDto {
 
   @ApiProperty({ type: AgencyUsageDto })
   totals: AgencyUsageDto;
+}
+
+/** An agency taking on a client it creates itself. */
+export class CreateClientDto {
+  @ApiProperty({ description: 'What the client organisation is called' })
+  @IsString()
+  @MaxLength(120)
+  name: string;
+
+  @ApiProperty({
+    description:
+      'The plan to put it on. A published tier, or one written privately ' +
+      'for this agency.',
+  })
+  @IsString()
+  @MaxLength(60)
+  planCode: string;
+}
+
+/** What an agency is told after taking a client on. */
+export class ClientSubscribedDto {
+  @ApiProperty() ssoOrgId: string;
+  @ApiProperty() name: string;
+  @ApiProperty() planCode: string;
+  @ApiProperty() planName: string;
+  @ApiProperty() status: string;
+  @ApiProperty({ nullable: true }) currentEnd: Date | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Set when this was the first client on the plan, so the mandate ' +
+      'covering it still has to be authorised. Null when an existing mandate ' +
+      'simply grew by one.',
+  })
+  authorisation: { subscriptionId: string; shortUrl: string | null } | null;
+}
+
+/** One mandate an agency holds, and what it covers. */
+export class AgencyMandateDto {
+  @ApiProperty() planCode: string;
+  @ApiProperty() planName: string;
+  @ApiProperty({ description: 'Clients on this plan' }) clients: number;
+  @ApiProperty({ nullable: true, description: 'Per client, in paise' })
+  pricePerClient: number | null;
+  @ApiProperty({ nullable: true, description: 'Clients times the price' })
+  monthly: number | null;
+  @ApiProperty() currency: string;
+  @ApiProperty() status: string;
+  @ApiProperty({ nullable: true }) currentEnd: Date | null;
+  @ApiProperty() cancelAtCycleEnd: boolean;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Where to authorise it, while it is still waiting to be',
+  })
+  authorisationUrl: string | null;
 }

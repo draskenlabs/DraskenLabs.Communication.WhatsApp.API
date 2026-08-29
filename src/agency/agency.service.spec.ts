@@ -11,6 +11,10 @@ import { organisationSettingsDouble } from 'src/organisation-settings/organisati
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { orgDirectoryDouble } from 'src/org/org.test-doubles';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
+import { SsoService } from 'src/auth/sso.service';
+import { RedisService } from 'src/redis/redis.service';
+import { AgencyBillingService } from 'src/billing/agency-billing.service';
+import { InvoiceService } from 'src/billing/invoice.service';
 import { firstArg } from 'src/common/utils/mock-args';
 
 const mockPrisma = {
@@ -24,6 +28,7 @@ const mockPrisma = {
   wabaPhoneNumber: { groupBy: jest.fn() },
   contact: { groupBy: jest.fn() },
   message: { groupBy: jest.fn() },
+  subscription: { findMany: jest.fn() },
 };
 
 // Rebuilt per test, not shared: `jest.clearAllMocks()` forgets calls but keeps
@@ -34,6 +39,20 @@ let mockOrgDirectory: ReturnType<typeof orgDirectoryDouble>;
 // The real `assertWithin`, bound to a bare instance. It is a pure function of
 // its arguments, and a stub would only prove that a stub throws.
 const realLimits = new PlanLimitsService(null as never, null as never);
+const mockSso = { createOrganization: jest.fn() };
+const mockRedis = { getSsoSession: jest.fn() };
+const mockAgencyBilling = {
+  subscribeClient: jest.fn(),
+  releaseClient: jest.fn(),
+};
+// Which invoices an agency may see is this service's decision; what one
+// contains is not, and is proved in the invoice service's own suite.
+const mockInvoices = {
+  listForAgency: jest.fn(),
+  findAddressedTo: jest.fn(),
+  toDto: jest.fn((invoice: { number: string }) => invoice),
+};
+
 const mockPlanLimits = {
   forOrg: jest.fn(),
   assertWithin: realLimits.assertWithin.bind(
@@ -60,10 +79,30 @@ describe('AgencyService', () => {
     mockOrgDirectory = orgDirectoryDouble();
     mockPrisma.organisationSettings.findMany.mockResolvedValue([]);
     mockPrisma.organisationSettings.count.mockResolvedValue(0);
+    mockSso.createOrganization.mockResolvedValue({
+      id: 'org_created',
+      name: 'Kettle Coffee',
+    });
+    mockRedis.getSsoSession.mockResolvedValue({ ssoAccessToken: 'sso-token' });
+    mockAgencyBilling.subscribeClient.mockResolvedValue({
+      ssoOrgId: 'org_created',
+      planCode: 'growth',
+      planName: 'Growth',
+      status: 'created',
+      currentEnd: null,
+      authorisation: { subscriptionId: 'sub_new', shortUrl: 'https://pay' },
+    });
+    mockAgencyBilling.releaseClient.mockResolvedValue(undefined);
+    mockInvoices.listForAgency.mockResolvedValue([]);
+    mockInvoices.findAddressedTo.mockResolvedValue(null);
+    mockInvoices.toDto.mockImplementation(
+      (invoice: { number: string }) => invoice,
+    );
     mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
     mockPrisma.wabaPhoneNumber.groupBy.mockResolvedValue([]);
     mockPrisma.contact.groupBy.mockResolvedValue([]);
     mockPrisma.message.groupBy.mockResolvedValue([]);
+    mockPrisma.subscription.findMany.mockResolvedValue([]);
     mockPlanLimits.forOrg.mockResolvedValue({
       planName: 'Agency',
       includedClients: 10,
@@ -77,6 +116,10 @@ describe('AgencyService', () => {
         { provide: OrganisationSettingsService, useValue: mockSettings },
         { provide: OrgDirectoryService, useValue: mockOrgDirectory },
         { provide: PlanLimitsService, useValue: mockPlanLimits },
+        { provide: SsoService, useValue: mockSso },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: AgencyBillingService, useValue: mockAgencyBilling },
+        { provide: InvoiceService, useValue: mockInvoices },
       ],
     }).compile();
     service = module.get(AgencyService);
@@ -139,6 +182,78 @@ describe('AgencyService', () => {
       }>(mockPrisma.organisationSettings.upsert);
       expect(update.isAgency).toBe(false);
       expect(update.convertedAt).toBeNull();
+    });
+  });
+
+  describe('createClient', () => {
+    beforeEach(() => {
+      mockSettings.get.mockResolvedValue(
+        settings({ ssoOrgId: 'org_agency', isAgency: true }),
+      );
+    });
+
+    const input = {
+      name: 'Kettle Coffee',
+      planCode: 'growth',
+      userId: 7,
+      sessionId: 'sess_1',
+    };
+
+    it('creates the organisation, attaches it and pays for it', async () => {
+      const result = await service.createClient('org_agency', input);
+
+      expect(mockSso.createOrganization).toHaveBeenCalledWith(
+        'sso-token',
+        'Kettle Coffee',
+      );
+      expect(mockAgencyBilling.subscribeClient).toHaveBeenCalledWith({
+        agencyOrgId: 'org_agency',
+        ssoOrgId: 'org_created',
+        planCode: 'growth',
+        userId: 7,
+      });
+      expect(result.ssoOrgId).toBe('org_created');
+      expect(result.authorisation?.subscriptionId).toBe('sub_new');
+    });
+
+    it('checks the allowance before creating anything', async () => {
+      // A refusal must leave no organisation in the SSO that nothing here
+      // knows about — so the count happens first, not after.
+      mockPlanLimits.forOrg.mockResolvedValue({
+        planName: 'Agency',
+        includedClients: 2,
+      });
+      mockPrisma.organisationSettings.count.mockResolvedValue(2);
+
+      await expect(service.createClient('org_agency', input)).rejects.toThrow(
+        /includes 2 clients/,
+      );
+      expect(mockSso.createOrganization).not.toHaveBeenCalled();
+    });
+
+    it('refuses for an organisation that is not an agency', async () => {
+      mockSettings.get.mockResolvedValue(settings({ isAgency: false }));
+
+      await expect(service.createClient('org_1', input)).rejects.toThrow();
+      expect(mockSso.createOrganization).not.toHaveBeenCalled();
+    });
+
+    it('says so when the session can no longer reach the SSO', async () => {
+      mockRedis.getSsoSession.mockResolvedValue(null);
+
+      await expect(service.createClient('org_agency', input)).rejects.toThrow(
+        /session has expired/,
+      );
+      expect(mockSso.createOrganization).not.toHaveBeenCalled();
+    });
+
+    it('names the client with what the agency called it', async () => {
+      await service.createClient('org_agency', input);
+
+      const { create } = firstArg<{ create: { clientName: string } }>(
+        mockPrisma.organisationSettings.upsert,
+      );
+      expect(create.clientName).toBe('Kettle Coffee');
     });
   });
 
@@ -291,6 +406,38 @@ describe('AgencyService', () => {
   });
 
   describe('detachClient', () => {
+    it('stops the money before letting the client go', async () => {
+      // The other order leaves a client paid for by nobody and still being
+      // charged to somebody.
+      mockSettings.get.mockResolvedValueOnce(
+        settings({ agencyOrgId: 'org_agency' }),
+      );
+
+      await service.detachClient('org_agency', 'org_client');
+
+      expect(mockAgencyBilling.releaseClient).toHaveBeenCalledWith(
+        'org_agency',
+        'org_client',
+      );
+      expect(mockPrisma.organisationSettings.update).toHaveBeenCalled();
+    });
+
+    it('still detaches a client that was never paid for per-client', async () => {
+      // One attached before this existed has nothing to release, and that is
+      // not a failure.
+      mockSettings.get.mockResolvedValueOnce(
+        settings({ agencyOrgId: 'org_agency' }),
+      );
+      mockAgencyBilling.releaseClient.mockRejectedValue(
+        new Error('does not pay for a subscription'),
+      );
+
+      await expect(
+        service.detachClient('org_agency', 'org_client'),
+      ).resolves.toBeUndefined();
+      expect(mockPrisma.organisationSettings.update).toHaveBeenCalled();
+    });
+
     it('clears the agency and re-keys the client’s access', async () => {
       mockSettings.get.mockResolvedValueOnce(
         settings({ agencyOrgId: 'org_agency' }),
@@ -387,6 +534,50 @@ describe('AgencyService', () => {
       );
     });
 
+    it('names the plan bought for each client, and its mandate’s status', async () => {
+      // The roster is where an agency sees what it is paying for whom. A row
+      // without its plan is a row that cannot answer the only question the
+      // page is opened with.
+      mockPrisma.organisationSettings.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_a',
+          clientName: 'Kettle',
+          createdAt: new Date('2026-01-01'),
+        },
+        {
+          ssoOrgId: 'org_b',
+          clientName: 'Loom',
+          createdAt: new Date('2026-02-01'),
+        },
+      ]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        {
+          ssoOrgId: 'org_a',
+          status: 'active',
+          plan: { code: 'growth', name: 'Growth' },
+        },
+      ]);
+
+      const { clients } = await service.roster('org_agency');
+
+      expect(clients[0]).toEqual(
+        expect.objectContaining({
+          planCode: 'growth',
+          planName: 'Growth',
+          status: 'active',
+        }),
+      );
+      // Nothing bought for it yet, said plainly rather than borrowed from the
+      // row above.
+      expect(clients[1]).toEqual(
+        expect.objectContaining({
+          planCode: null,
+          planName: null,
+          status: null,
+        }),
+      );
+    });
+
     it('reads the whole roster in a fixed number of queries', async () => {
       // The page exists for an agency with fifty clients. A query per row would
       // make it slowest exactly where it matters.
@@ -403,6 +594,7 @@ describe('AgencyService', () => {
       expect(mockPrisma.wabaOrganisation.findMany).toHaveBeenCalledTimes(1);
       expect(mockPrisma.contact.groupBy).toHaveBeenCalledTimes(1);
       expect(mockPrisma.message.groupBy).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.subscription.findMany).toHaveBeenCalledTimes(1);
     });
 
     it('skips the phone-number query when no client has an account', async () => {
@@ -432,6 +624,56 @@ describe('AgencyService', () => {
       expect(clients).toEqual([]);
       expect(totals.clients).toBe(0);
       expect(mockPrisma.wabaOrganisation.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('invoices', () => {
+    beforeEach(() => {
+      mockSettings.get.mockResolvedValue(settings({ isAgency: true }));
+      mockSettings.clientsOf.mockResolvedValue(['org_kettle', 'org_loom']);
+    });
+
+    it('covers the agency and its clients, not the agency alone', async () => {
+      // Its own are what it is paying now. Its clients' are what they paid
+      // before it took them on, or after it let them go — and an agency asked
+      // to explain a client's history needs both halves.
+      await service.invoices('org_agency');
+
+      expect(mockInvoices.listForAgency).toHaveBeenCalledWith('org_agency', [
+        'org_kettle',
+        'org_loom',
+      ]);
+    });
+
+    it('refuses for an organisation that manages nobody', async () => {
+      mockSettings.get.mockResolvedValue(settings());
+
+      await expect(service.invoices('org_1')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('rejects a number that is not one of ours before asking the database', async () => {
+      // The route parameter is the attack surface: a lookup by number must not
+      // become a search.
+      await expect(
+        service.invoice('org_agency', "'; DROP TABLE"),
+      ).rejects.toThrow(NotFoundException);
+      expect(mockInvoices.findAddressedTo).not.toHaveBeenCalled();
+    });
+
+    it('404s for a real number belonging to somebody else', async () => {
+      // The numbers are sequential, so an unscoped lookup would let any agency
+      // walk the whole series.
+      mockInvoices.findAddressedTo.mockResolvedValue(null);
+
+      await expect(
+        service.invoice('org_agency', 'INV-WAC-2627-0412'),
+      ).rejects.toThrow(NotFoundException);
+      expect(mockInvoices.findAddressedTo).toHaveBeenCalledWith(
+        ['org_agency', 'org_kettle', 'org_loom'],
+        'INV-WAC-2627-0412',
+      );
     });
   });
 

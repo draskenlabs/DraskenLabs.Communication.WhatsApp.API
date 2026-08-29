@@ -88,8 +88,10 @@
 
 ## Before this can take money
 
-1. Activate Subscriptions on the Razorpay account and create one plan per tier
-   at the published price; put the `code:plan_id` pairs in `RAZORPAY_PLAN_IDS`.
+1. Activate Subscriptions on the Razorpay account. Tiers can now be written
+   from the operator console (`POST /admin/plans` creates the provider plan
+   alongside the row); `RAZORPAY_PLAN_IDS` still seeds a fresh deployment from
+   `code:plan_id` pairs.
 2. Register `POST /billing/webhook` in the Razorpay dashboard for the
    `subscription.*` events and set `RAZORPAY_WEBHOOK_SECRET` to match.
 3. Run the flow end to end in test mode: subscribe → authorise in Checkout →
@@ -98,6 +100,26 @@
 4. Decide what happens to existing accounts. Enforcement begins the moment
    credentials are set, and it is per organisation now — one subscription opens
    every account they hold.
+
+## Paying for somebody else
+
+- **`Subscription.payerOrgId`** separates who is charged from who is entitled.
+  Null means self-paid, which everything was until an agency could buy for its
+  clients. `ssoOrgId` is who it entitles; this is who pays, and the two differ
+  only for an agency's client.
+- **`Subscription.billingGroupId` → `AgencyBillingGroup`.** An agency pays one
+  mandate per plan carrying a quantity, so the client's own row names no
+  provider subscription of its own. `razorpaySubscriptionId` is therefore
+  nullable, and `ownMandate()` is the one guard that stands between that and
+  seven non-null assertions.
+- **`SubscriptionPayment` belongs to a subscription *or* a group.** One debit
+  covers several clients, so it hangs off whichever actually paid.
+- **The webhook falls through to `agencyBilling.applyToGroup`** when the
+  provider subscription is a group's, moving every client on it at once.
+- **`state()` reports `payerOrgId` and `payerName`,** so a client's billing page
+  can say "Paid by «agency»" instead of offering a checkout it cannot complete.
+- **Overage counters are not pooled for a client.** A client paying for its own
+  plan is scoped to itself rather than to the agency's whole billing scope.
 
 ## Pending / not in scope
 

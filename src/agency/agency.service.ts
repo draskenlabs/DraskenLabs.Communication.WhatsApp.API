@@ -2,13 +2,25 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
-import { AgencyRosterDto, ClientSummaryDto } from './dto/agency.dto';
+import { SsoService } from 'src/auth/sso.service';
+import { RedisService } from 'src/redis/redis.service';
+import { AgencyBillingService } from 'src/billing/agency-billing.service';
+import { InvoiceService, InvoiceWithLines } from 'src/billing/invoice.service';
+import { isInvoiceNumber } from 'src/billing/invoice.number';
+import { InvoiceDto } from 'src/billing/dto/billing.dto';
+import {
+  AgencyMandateDto,
+  AgencyRosterDto,
+  ClientSubscribedDto,
+  ClientSummaryDto,
+} from './dto/agency.dto';
 
 /** The first of the current month, which is what "this month" is counted from. */
 function startOfMonth(): Date {
@@ -31,11 +43,20 @@ function startOfMonth(): Date {
  */
 @Injectable()
 export class AgencyService {
+  private readonly logger = new Logger(AgencyService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: OrganisationSettingsService,
     private readonly orgDirectory: OrgDirectoryService,
     private readonly planLimits: PlanLimitsService,
+    // Organisations live in the SSO; taking a client on creates one there.
+    private readonly sso: SsoService,
+    private readonly redis: RedisService,
+    private readonly agencyBilling: AgencyBillingService,
+    // An agency's invoices are the agency's own; its clients' are its
+    // clients'. Both are read through here.
+    private readonly invoiceService: InvoiceService,
   ) {}
 
   /** Mark an organisation an agency, or demote one back. */
@@ -165,6 +186,82 @@ export class AgencyService {
   }
 
   /**
+   * Take on a client the agency creates itself, and pay for it.
+   *
+   * One call because the three steps are one intent, and splitting them is how
+   * the old arrangement produced phantom clients: an organisation id typed by
+   * hand into an attach endpoint that never checked it existed. Here the id
+   * comes from the organisation this just created, so it cannot be wrong.
+   *
+   * The client never signs in. The agency owns the organisation, operates it,
+   * and is billed for it — which is the whole reseller shape.
+   */
+  async createClient(
+    agencyOrgId: string,
+    input: {
+      name: string;
+      planCode: string;
+      userId: number;
+      sessionId: string;
+    },
+  ): Promise<ClientSubscribedDto> {
+    await this.assertAgency(agencyOrgId);
+
+    // Checked before anything is created, so a refusal leaves no orphan
+    // organisation in the SSO that nothing here knows about.
+    const [limits, held] = await Promise.all([
+      this.planLimits.forOrg(agencyOrgId),
+      this.prisma.organisationSettings.count({ where: { agencyOrgId } }),
+    ]);
+    this.planLimits.assertWithin(
+      limits,
+      limits.includedClients,
+      held,
+      'client',
+    );
+
+    // Created with the agency's own SSO token, so the agency owns it and can
+    // operate it. The client never signs in.
+    const session = await this.redis.getSsoSession(input.sessionId);
+    if (!session?.ssoAccessToken) {
+      throw new BadRequestException(
+        'Your session has expired. Sign in again before taking on a client.',
+      );
+    }
+    const org = await this.sso.createOrganization(
+      session.ssoAccessToken,
+      input.name,
+    );
+
+    await this.prisma.organisationSettings.upsert({
+      where: { ssoOrgId: org.id },
+      update: {
+        agencyOrgId,
+        clientName: input.name,
+        payerVersion: { increment: 1 },
+      },
+      create: { ssoOrgId: org.id, agencyOrgId, clientName: input.name },
+    });
+
+    const subscription = await this.agencyBilling.subscribeClient({
+      agencyOrgId,
+      ssoOrgId: org.id,
+      planCode: input.planCode,
+      userId: input.userId,
+    });
+
+    return {
+      ssoOrgId: org.id,
+      name: input.name,
+      planCode: subscription.planCode,
+      planName: subscription.planName,
+      status: subscription.status,
+      currentEnd: subscription.currentEnd,
+      authorisation: subscription.authorisation,
+    };
+  }
+
+  /**
    * Let a client go.
    *
    * It keeps its data and its organisation; what it loses is the agency's
@@ -178,6 +275,18 @@ export class AgencyService {
         `${ssoOrgId} is not a client of ${agencyOrgId}`,
       );
     }
+
+    // The money first: if this fails, the client keeps both its cover and its
+    // agency, which is recoverable. Detaching first would leave a client paid
+    // for by nobody and still being charged to somebody.
+    await this.agencyBilling
+      .releaseClient(agencyOrgId, ssoOrgId)
+      .catch((err) => {
+        const detail = err instanceof Error ? err.message : String(err);
+        // A client attached before per-client subscriptions existed has nothing
+        // to release, and that is not a failure.
+        this.logger.log(`Nothing to release for ${ssoOrgId}: ${detail}`);
+      });
 
     await this.prisma.organisationSettings.update({
       where: { ssoOrgId },
@@ -208,6 +317,82 @@ export class AgencyService {
         planName: limits.planName,
       },
     };
+  }
+
+  /**
+   * What the agency is paying, one line per mandate.
+   *
+   * One per plan rather than per client, so an agency with eight clients on
+   * two tiers reads two lines and a total — which is what it is actually
+   * charged, rather than eight separate figures it would have to add up.
+   */
+  async mandates(agencyOrgId: string): Promise<AgencyMandateDto[]> {
+    await this.assertAgency(agencyOrgId);
+    const groups = await this.agencyBilling.groupsFor(agencyOrgId);
+
+    return groups.map((group) => ({
+      planCode: group.plan.code,
+      planName: group.plan.name,
+      clients: group.quantity,
+      pricePerClient: group.plan.price,
+      monthly:
+        group.plan.price === null ? null : group.plan.price * group.quantity,
+      currency: group.plan.currency,
+      status: group.status,
+      currentEnd: group.currentEnd,
+      cancelAtCycleEnd: group.cancelAtCycleEnd,
+      // Only while there is something to authorise. Once the mandate is
+      // registered the link opens a page with nothing left to do on it.
+      authorisationUrl:
+        group.status === 'created' ? (group.shortUrl ?? null) : null,
+    }));
+  }
+
+  /**
+   * Every invoice an agency should be able to see.
+   *
+   * Two halves, and both are needed. Its own are what it is paying now — one
+   * document per debit, itemised by client. Its clients' are what they paid
+   * for themselves before it took them on, or after it let them go: an agency
+   * asked to explain a client's billing history needs the whole of it, and the
+   * client may have nobody left who can sign in and produce it.
+   */
+  async invoices(agencyOrgId: string): Promise<InvoiceDto[]> {
+    await this.assertAgency(agencyOrgId);
+    const clients = await this.settings.clientsOf(agencyOrgId);
+    const invoices = await this.invoiceService.listForAgency(
+      agencyOrgId,
+      clients,
+    );
+    // Whole, not extracted: an agency pays these, and a client's own invoice
+    // from before it was taken on is one it is entitled to explain.
+    return invoices.map((invoice) => this.invoiceService.toDto(invoice));
+  }
+
+  /**
+   * One invoice, readable by this agency.
+   *
+   * Scoped to the agency and its roster: the numbers are sequential, so an
+   * unscoped lookup would let any agency walk the whole series.
+   */
+  async invoice(
+    agencyOrgId: string,
+    number: string,
+  ): Promise<InvoiceWithLines> {
+    await this.assertAgency(agencyOrgId);
+    if (!isInvoiceNumber(number)) {
+      throw new NotFoundException(`No invoice ${number}`);
+    }
+    const clients = await this.settings.clientsOf(agencyOrgId);
+    // Addressed to the agency or to one of its clients — not merely carrying a
+    // line for one, which would let an agency download another agency's
+    // document by taking on a client that once appeared on it.
+    const invoice = await this.invoiceService.findAddressedTo(
+      [agencyOrgId, ...clients],
+      number,
+    );
+    if (!invoice) throw new NotFoundException(`No invoice ${number}`);
+    return invoice;
   }
 
   /** Rename a client. The label is the agency's, so this is theirs to change. */
@@ -265,7 +450,7 @@ export class AgencyService {
         })
       : [];
 
-    const [contacts, messages] = await Promise.all([
+    const [contacts, messages, subscriptions] = await Promise.all([
       this.prisma.contact.groupBy({
         by: ['ssoOrgId'],
         where: { ssoOrgId: { in: ids } },
@@ -275,6 +460,18 @@ export class AgencyService {
         by: ['ssoOrgId'],
         where: { ssoOrgId: { in: ids }, createdAt: { gte: startOfMonth() } },
         _count: { _all: true },
+      }),
+      // What was bought for each client. One query for the roster, and the
+      // newest row per organisation wins — an organisation only ever has one
+      // that is not finished, and a released client keeps its history.
+      this.prisma.subscription.findMany({
+        where: { ssoOrgId: { in: ids }, wabaId: null },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          ssoOrgId: true,
+          status: true,
+          plan: { select: { code: true, name: true } },
+        },
       }),
     ]);
 
@@ -287,6 +484,12 @@ export class AgencyService {
     const messagesByOrg = new Map(
       messages.map((m) => [m.ssoOrgId, m._count._all] as const),
     );
+    // Ordered newest first, so the first one seen for an organisation is the
+    // one that counts.
+    const subByOrg = new Map<string, (typeof subscriptions)[number]>();
+    for (const sub of subscriptions) {
+      if (!subByOrg.has(sub.ssoOrgId)) subByOrg.set(sub.ssoOrgId, sub);
+    }
 
     return Promise.all(
       rows.map(async (row) => {
@@ -305,6 +508,9 @@ export class AgencyService {
           contacts: contactsByOrg.get(row.ssoOrgId) ?? 0,
           messagesThisMonth: messagesByOrg.get(row.ssoOrgId) ?? 0,
           addedAt: row.createdAt,
+          planCode: subByOrg.get(row.ssoOrgId)?.plan?.code ?? null,
+          planName: subByOrg.get(row.ssoOrgId)?.plan?.name ?? null,
+          status: subByOrg.get(row.ssoOrgId)?.status ?? null,
         };
       }),
     );

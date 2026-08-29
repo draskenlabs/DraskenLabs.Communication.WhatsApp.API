@@ -1,4 +1,9 @@
-import { HttpException, HttpStatus, Injectable, NestMiddleware } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  NestMiddleware,
+} from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { SubscriptionAccessService } from '../subscription-access.service';
 import { RazorpayService } from '../razorpay.service';
@@ -37,7 +42,11 @@ export class SubscriptionMiddleware implements NestMiddleware {
     // issued in one must not ride on the other's payment.
     const wabaId = (req as any).apiKeyWabaId as string | undefined;
     const ssoOrgId = (req as any).orgId as string | undefined;
-    if (wabaId && ssoOrgId && (await this.billing.hasAccess(ssoOrgId, wabaId))) {
+    if (
+      wabaId &&
+      ssoOrgId &&
+      (await this.billing.hasAccess(ssoOrgId, wabaId))
+    ) {
       return next();
     }
 

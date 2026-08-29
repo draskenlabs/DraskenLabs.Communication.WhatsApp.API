@@ -6,6 +6,9 @@ import {
 } from '@nestjs/common';
 import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
+import { AgencyBillingService } from './agency-billing.service';
+import { InvoiceService } from './invoice.service';
+import { ReceiptService } from './receipt.service';
 import { RazorpayService } from './razorpay.service';
 import { RazorpaySignatureMiddleware } from './middleware/razorpay-signature.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
@@ -16,6 +19,7 @@ import { SubscriptionAccessModule } from './subscription-access.module';
 import { ProvisioningModule } from 'src/provisioning/provisioning.module';
 import { PlansModule } from 'src/plans/plans.module';
 import { OrgModule } from 'src/org/org.module';
+import { OrgDirectoryModule } from 'src/org/org-directory.module';
 
 @Module({
   imports: [
@@ -28,17 +32,29 @@ import { OrgModule } from 'src/org/org.module';
     PlansModule,
     // Seats live in the SSO, so the team-members meter is read through here.
     OrgModule,
+    // What an organisation is called, for "paid by …" on a client's page.
+    OrgDirectoryModule,
   ],
   controllers: [BillingController],
   providers: [
     BillingService,
+    AgencyBillingService,
+    InvoiceService,
+    ReceiptService,
     RazorpaySignatureMiddleware,
     SubscriptionMiddleware,
     AuthMiddleware,
   ],
   // MessagingModule applies the paywall; it needs both to decide. Razorpay and
   // the gate come through `SubscriptionAccessModule`, which owns them.
-  exports: [BillingService, SubscriptionMiddleware, SubscriptionAccessModule],
+  exports: [
+    BillingService,
+    AgencyBillingService,
+    InvoiceService,
+    ReceiptService,
+    SubscriptionMiddleware,
+    SubscriptionAccessModule,
+  ],
 })
 export class BillingModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
@@ -56,6 +72,11 @@ export class BillingModule implements NestModule {
       // controller reads `req.orgId`, which only this middleware sets.
       { path: 'billing/subscription/plan', method: RequestMethod.PATCH },
       { path: 'billing/subscription', method: RequestMethod.DELETE },
+      // Reading an invoice needs the session's organisation, and nothing else:
+      // the scope is what stops a sequential number being walked.
+      { path: 'billing/invoices', method: RequestMethod.GET },
+      { path: 'billing/invoices/:number', method: RequestMethod.GET },
+      { path: 'billing/invoices/:number/pdf', method: RequestMethod.GET },
     );
   }
 }

@@ -1,4 +1,8 @@
-import { Injectable, NestMiddleware, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  NestMiddleware,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { RazorpayService } from '../razorpay.service';
@@ -14,10 +18,12 @@ export class RazorpaySignatureMiddleware implements NestMiddleware {
 
   use(req: Request, _res: Response, next: NextFunction): void {
     const signature = req.headers['x-razorpay-signature'] as string | undefined;
-    if (!signature) throw new UnauthorizedException('Missing X-Razorpay-Signature');
+    if (!signature)
+      throw new UnauthorizedException('Missing X-Razorpay-Signature');
 
     const secret = this.razorpay.webhookSecret;
-    if (!secret) throw new UnauthorizedException('Webhook secret not configured');
+    if (!secret)
+      throw new UnauthorizedException('Webhook secret not configured');
 
     const rawBody: Buffer | undefined = (req as any).rawBody;
     if (!rawBody) throw new UnauthorizedException('Raw body not available');

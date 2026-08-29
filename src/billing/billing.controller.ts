@@ -5,9 +5,13 @@ import {
   Delete,
   Get,
   HttpCode,
+  NotFoundException,
+  Param,
   Patch,
   Post,
+  Put,
   Req,
+  Res,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
@@ -18,11 +22,21 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { BillingService } from './billing.service';
+import { InvoiceService } from './invoice.service';
+import { ReceiptService } from './receipt.service';
+import { selectableStates } from './gst';
+import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
+import { isInvoiceNumber } from './invoice.number';
 import {
   ChangePlanDto,
   ConfirmSubscriptionDto,
+  GstStateDto,
+  InvoiceDto,
+  ReceiptDto,
+  TaxDetailsDto,
+  UpdateTaxDetailsDto,
   RegisterSubscriptionDto,
   SubscriptionRegisteredDto,
   SubscriptionStateDto,
@@ -35,7 +49,12 @@ import {
 @ApiTags('Billing')
 @Controller('billing')
 export class BillingController {
-  constructor(private readonly billing: BillingService) {}
+  constructor(
+    private readonly billing: BillingService,
+    private readonly invoices: InvoiceService,
+    private readonly receipts: ReceiptService,
+    private readonly orgSettings: OrganisationSettingsService,
+  ) {}
 
   @Get('subscription')
   @ApiBearerAuth()
@@ -53,9 +72,7 @@ export class BillingController {
     description: 'Subscription state',
   })
   async state(@Req() req: Request): Promise<SubscriptionStateDto> {
-    const orgId = (req as any).orgId;
-    if (!orgId)
-      throw new UnauthorizedException('Organisation not found in context');
+    const orgId = this.orgOf(req);
     // The team-member count lives in the SSO, which needs the caller's own
     // token. Everything else on this page comes from our database.
     return this.billing.state(orgId, req.headers.authorization);
@@ -82,10 +99,9 @@ export class BillingController {
     @Req() req: Request,
     @Body() dto: RegisterSubscriptionDto,
   ): Promise<SubscriptionRegisteredDto> {
-    const user = (req as any).user;
-    const orgId = (req as any).orgId;
-    if (!user || !orgId)
-      throw new UnauthorizedException('User not found in context');
+    const { user } = req as unknown as { user?: { id: number } };
+    const orgId = this.orgOf(req);
+    if (!user) throw new UnauthorizedException('User not found in context');
 
     // The name and email come from the user row, not from the request: this
     // context holds only an id and an SSO id.
@@ -110,9 +126,7 @@ export class BillingController {
     @Req() req: Request,
     @Body() dto: ConfirmSubscriptionDto,
   ): Promise<SubscriptionStateDto> {
-    const orgId = (req as any).orgId;
-    if (!orgId)
-      throw new UnauthorizedException('Organisation not found in context');
+    const orgId = this.orgOf(req);
     return this.billing.confirm(orgId, dto);
   }
 
@@ -143,9 +157,7 @@ export class BillingController {
     @Req() req: Request,
     @Body() dto: ChangePlanDto,
   ): Promise<SubscriptionStateDto> {
-    const orgId = (req as any).orgId;
-    if (!orgId)
-      throw new UnauthorizedException('Organisation not found in context');
+    const orgId = this.orgOf(req);
     return this.billing.changePlan(orgId, dto.planCode);
   }
 
@@ -164,10 +176,235 @@ export class BillingController {
     description: 'Subscription state',
   })
   async cancel(@Req() req: Request): Promise<SubscriptionStateDto> {
-    const orgId = (req as any).orgId;
+    const orgId = this.orgOf(req);
+    return this.billing.cancel(orgId);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Invoices                                                            *
+   * ------------------------------------------------------------------ */
+
+  @Get('invoices')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Every invoice that bought this organisation a month',
+    description:
+      'Both the invoices charged to it and, for a client an agency pays ' +
+      'for, the agency’s invoices carrying the line that bought its month. ' +
+      'A client holds no mandate of its own, so without the second half its ' +
+      'billing history would be empty while it was being paid for.',
+  })
+  @ApiWrappedOkResponse({
+    dataDto: InvoiceDto,
+    isArray: true,
+    description: 'Invoices, newest first',
+  })
+  async invoiceList(@Req() req: Request): Promise<InvoiceDto[]> {
+    const orgId = this.orgOf(req);
+    const invoices = await this.invoices.listCoveringOrg(orgId);
+    // Scoped per invoice, not per request: its own come back whole, and an
+    // agency's come back as an extract of the lines that bought its month.
+    return invoices.map((invoice) => this.invoices.toDtoFor(invoice, orgId));
+  }
+
+  @Get('invoices/:number')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'One invoice, by its number',
+    description:
+      'Scoped to the caller’s organisation. The numbers are sequential, so ' +
+      'an unscoped lookup would let anyone with a session walk the series — ' +
+      'somebody else’s number answers 404 rather than 403, which is the same ' +
+      'answer a number that does not exist gets.',
+  })
+  @ApiWrappedOkResponse({ dataDto: InvoiceDto, description: 'The invoice' })
+  @ApiStandardErrorResponses()
+  async invoice(
+    @Req() req: Request,
+    @Param('number') number: string,
+  ): Promise<InvoiceDto> {
+    const orgId = this.orgOf(req);
+    return this.invoices.toDtoFor(await this.readable(req, number), orgId);
+  }
+
+  @Get('invoices/:number/pdf')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The invoice as a PDF',
+    description:
+      'The same document that was emailed when the payment was taken. ' +
+      'Rendered on demand from the snapshot rather than stored, so it cannot ' +
+      'drift from the row it was raised against. Only for an invoice ' +
+      'addressed to the caller: an agency’s client sees its own line through ' +
+      'the list, not the agency’s whole debit.',
+  })
+  @ApiStandardErrorResponses()
+  async invoicePdf(
+    @Req() req: Request,
+    @Param('number') number: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    // Stricter than the list: the document is the payer's whole debit, so an
+    // agency's client downloading it would be downloading its rivals' names
+    // and prices. It sees its own line as an extract instead.
+    const invoice = await this.invoices.findAddressedTo(
+      [this.orgOf(req)],
+      number,
+    );
+    if (!invoice) throw new NotFoundException(`No invoice ${number}`);
+    const pdf = this.invoices.pdf(invoice);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    // `inline`, so a browser opens it rather than dropping it in Downloads. A
+    // customer checking a figure usually wants to look, not to keep.
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${this.invoices.filename(invoice)}"`,
+    );
+    res.setHeader('Content-Length', String(pdf.length));
+    res.end(pdf);
+  }
+
+  @Get('tax-details')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The tax identity printed on this organisation’s invoices',
+    description:
+      'The state is the one that matters: it is the place of supply, and it ' +
+      'decides whether a charge is CGST plus SGST or IGST. A GSTIN is what ' +
+      'lets the customer claim the tax back.',
+  })
+  @ApiWrappedOkResponse({ dataDto: TaxDetailsDto })
+  @ApiStandardErrorResponses()
+  async taxDetails(@Req() req: Request): Promise<TaxDetailsDto> {
+    return this.orgSettings.taxDetails(this.orgOf(req));
+  }
+
+  @Put('tax-details')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Set the tax identity',
+    description:
+      'Applies to invoices raised from now on. An invoice already issued ' +
+      'states what was true when it was raised and is never restated — a ' +
+      'GSTIN added today cannot appear on last month’s document, because the ' +
+      'customer would be holding a claim their own return will not support.',
+  })
+  @ApiWrappedOkResponse({ dataDto: TaxDetailsDto })
+  @ApiStandardErrorResponses()
+  async setTaxDetails(
+    @Req() req: Request,
+    @Body() body: UpdateTaxDetailsDto,
+  ): Promise<TaxDetailsDto> {
+    return this.orgSettings.setTaxDetails(this.orgOf(req), body);
+  }
+
+  @Get('gst-states')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The states a customer may choose from',
+    description:
+      'Codes no longer issued are left out of the list but still resolve, so ' +
+      'an existing registration on one of them is not rejected.',
+  })
+  @ApiWrappedOkResponse({ dataDto: GstStateDto, isArray: true })
+  @ApiStandardErrorResponses()
+  gstStates(): GstStateDto[] {
+    return selectableStates();
+  }
+
+  @Get('receipts')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Every receipt issued to this organisation',
+    description:
+      'What was received, as opposed to what was charged. Only this ' +
+      'organisation’s own: a receipt acknowledges money that left one ' +
+      'account, so a client an agency pays for has none of its own — its ' +
+      'agency holds them.',
+  })
+  @ApiWrappedOkResponse({ dataDto: ReceiptDto, isArray: true })
+  @ApiStandardErrorResponses()
+  async receiptList(@Req() req: Request): Promise<ReceiptDto[]> {
+    const receipts = await this.receipts.listForOrg(this.orgOf(req));
+    return Promise.all(
+      receipts.map(async (receipt) =>
+        this.receipts.toDto(receipt, await this.invoiceNumberFor(receipt)),
+      ),
+    );
+  }
+
+  @Get('receipts/:number/pdf')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The receipt as a PDF',
+    description:
+      'The same document that was emailed with the invoice when the payment ' +
+      'was taken. Only for a receipt issued to the caller.',
+  })
+  @ApiStandardErrorResponses()
+  async receiptPdf(
+    @Req() req: Request,
+    @Param('number') number: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const receipt = await this.receipts.findAddressedTo(
+      [this.orgOf(req)],
+      number,
+    );
+    if (!receipt) throw new NotFoundException(`No receipt ${number}`);
+
+    // The customer's address and registration live on the invoice, which is
+    // the document that states who they are for tax.
+    const invoice = await this.invoices.find(
+      (await this.invoiceNumberFor(receipt)) ?? '',
+    );
+    const pdf = this.receipts.pdf(receipt, invoice);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${this.receipts.filename(receipt)}"`,
+    );
+    res.setHeader('Content-Length', String(pdf.length));
+    res.end(pdf);
+  }
+
+  /** The number of the invoice a receipt settles, for display and rendering. */
+  private async invoiceNumberFor(receipt: {
+    invoiceId: number;
+  }): Promise<string | null> {
+    const invoice = await this.invoices.byId(receipt.invoiceId);
+    return invoice?.number ?? null;
+  }
+
+  /**
+   * One invoice this caller is allowed to read, or a 404.
+   *
+   * The number is checked against the series before the database is asked, so
+   * a lookup by number cannot be turned into a search.
+   */
+  private async readable(req: Request, number: string) {
+    const orgId = this.orgOf(req);
+    if (!isInvoiceNumber(number)) {
+      throw new NotFoundException(`No invoice ${number}`);
+    }
+    const invoice = await this.invoices.findForOrgs([orgId], number);
+    if (!invoice) throw new NotFoundException(`No invoice ${number}`);
+    return invoice;
+  }
+
+  /**
+   * The organisation on the request, or a refusal.
+   *
+   * Typed rather than cast to `any`: `orgId` is put there by `AuthMiddleware`
+   * and read by every route on this controller, so it is worth naming once.
+   */
+  private orgOf(req: Request): string {
+    const { orgId } = req as unknown as { orgId?: string };
     if (!orgId)
       throw new UnauthorizedException('Organisation not found in context');
-    return this.billing.cancel(orgId);
+    return orgId;
   }
 
   /** Razorpay-facing. Signature-checked by middleware; never called by a user. */

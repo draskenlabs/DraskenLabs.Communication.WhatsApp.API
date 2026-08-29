@@ -14,7 +14,11 @@ function api(): TestAgent<request.Test> {
   return request(h.app.getHttpServer() as Server);
 }
 
-function envelope<T>(res: request.Response): { data: T; meta?: unknown; message?: string } {
+function envelope<T>(res: request.Response): {
+  data: T;
+  meta?: unknown;
+  message?: string;
+} {
   return res.body as { data: T; meta?: unknown; message?: string };
 }
 
@@ -125,7 +129,8 @@ describe('Inbox (integration)', () => {
                 contacts: [{ profile: { name: 'Priya' } }],
                 messages: [
                   {
-                    id: over.id ?? `wamid.${Math.random().toString(36).slice(2)}`,
+                    id:
+                      over.id ?? `wamid.${Math.random().toString(36).slice(2)}`,
                     from: CUSTOMER,
                     timestamp: String(
                       Math.floor((over.at ?? new Date()).getTime() / 1000),
@@ -183,14 +188,19 @@ describe('Inbox (integration)', () => {
     });
 
     it('describes a photo rather than showing an empty line', async () => {
-      await deliverReply({ type: 'image', body: { id: 'MEDIA1', mime_type: 'image/jpeg' } });
+      await deliverReply({
+        type: 'image',
+        body: { id: 'MEDIA1', mime_type: 'image/jpeg' },
+      });
 
       const res = await api()
         .get('/inbox')
         .set('Authorization', `Bearer ${token}`)
         .expect(200);
 
-      expect(envelope<ConversationView[]>(res).data[0].lastPreview).toBe('Sent a photo');
+      expect(envelope<ConversationView[]>(res).data[0].lastPreview).toBe(
+        'Sent a photo',
+      );
     });
 
     it('reopens a thread that had been closed', async () => {
@@ -240,7 +250,9 @@ describe('Inbox (integration)', () => {
       });
       await deliverReply();
 
-      const list = await api().get('/inbox').set('Authorization', `Bearer ${token}`);
+      const list = await api()
+        .get('/inbox')
+        .set('Authorization', `Bearer ${token}`);
       conversationId = (list.body.data as ConversationView[])[0].id;
     });
 
@@ -251,13 +263,22 @@ describe('Inbox (integration)', () => {
         .expect(200);
 
       const thread = envelope<ThreadView>(res).data;
-      expect(thread.messages.map((m) => m.direction)).toEqual(['outbound', 'inbound']);
-      expect(thread.messages[0]).toMatchObject({ id: 'out:1', status: 'delivered' });
+      expect(thread.messages.map((m) => m.direction)).toEqual([
+        'outbound',
+        'inbound',
+      ]);
+      expect(thread.messages[0]).toMatchObject({
+        id: 'out:1',
+        status: 'delivered',
+      });
       expect(thread.messages[1].id).toMatch(/^in:/);
     });
 
     it('offers a media path for a photo, and none for text', async () => {
-      await deliverReply({ type: 'image', body: { id: 'MEDIA1', mime_type: 'image/jpeg' } });
+      await deliverReply({
+        type: 'image',
+        body: { id: 'MEDIA1', mime_type: 'image/jpeg' },
+      });
 
       const res = await api()
         .get(`/inbox/${conversationId}/messages`)
@@ -266,9 +287,14 @@ describe('Inbox (integration)', () => {
 
       const thread = envelope<ThreadView>(res).data;
       const photo = thread.messages.find((m) => m.type === 'image');
-      expect(photo?.mediaUrl).toBe(`/inbox/media/${photo!.id.replace('in:', '')}`);
-      expect(thread.messages.find((m) => m.type === 'text' && m.direction === 'inbound')
-        ?.mediaUrl).toBeUndefined();
+      expect(photo?.mediaUrl).toBe(
+        `/inbox/media/${photo!.id.replace('in:', '')}`,
+      );
+      expect(
+        thread.messages.find(
+          (m) => m.type === 'text' && m.direction === 'inbound',
+        )?.mediaUrl,
+      ).toBeUndefined();
     });
 
     it('pages backwards without repeating a message', async () => {
@@ -313,7 +339,9 @@ describe('Inbox (integration)', () => {
         .set('Authorization', `Bearer ${token}`)
         .expect(201);
 
-      const res = await api().get('/inbox').set('Authorization', `Bearer ${token}`);
+      const res = await api()
+        .get('/inbox')
+        .set('Authorization', `Bearer ${token}`);
       expect(envelope<ConversationView[]>(res).data[0].unreadCount).toBe(0);
     });
 
@@ -334,12 +362,16 @@ describe('Inbox (integration)', () => {
 
     const openThread = async (lastReplyAt: Date): Promise<number> => {
       await deliverReply({ at: lastReplyAt });
-      const list = await api().get('/inbox').set('Authorization', `Bearer ${token}`);
+      const list = await api()
+        .get('/inbox')
+        .set('Authorization', `Bearer ${token}`);
       return (list.body.data as ConversationView[])[0].id;
     };
 
     it('refuses a free-form reply once the 24-hour window has closed', async () => {
-      conversationId = await openThread(new Date(Date.now() - 25 * 60 * 60 * 1000));
+      conversationId = await openThread(
+        new Date(Date.now() - 25 * 60 * 60 * 1000),
+      );
 
       const res = await api()
         .post(`/inbox/${conversationId}/messages`)
@@ -441,7 +473,12 @@ describe('Inbox (integration)', () => {
 
     it('shows the name the business filed them under, and their opt-out', async () => {
       await h.prisma.contact.create({
-        data: { ssoOrgId: ORG, phone: `+${CUSTOMER}`, name: 'Priya Sharma', optedOut: true },
+        data: {
+          ssoOrgId: ORG,
+          phone: `+${CUSTOMER}`,
+          name: 'Priya Sharma',
+          optedOut: true,
+        },
       });
 
       const res = await api()
@@ -458,7 +495,9 @@ describe('Inbox (integration)', () => {
       const id = (
         await api().get('/inbox').set('Authorization', `Bearer ${token}`)
       ).body.data[0].id as number;
-      await api().post(`/inbox/${id}/read`).set('Authorization', `Bearer ${token}`);
+      await api()
+        .post(`/inbox/${id}/read`)
+        .set('Authorization', `Bearer ${token}`);
 
       const res = await api()
         .get('/inbox?unread=true')

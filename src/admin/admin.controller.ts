@@ -10,6 +10,7 @@ import {
   Patch,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -17,20 +18,26 @@ import {
   ApiExcludeController,
   ApiOperation,
 } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { AdminGuard, actorOf } from './admin.guard';
 import { AdminService } from './admin.service';
+import { InvoiceService } from 'src/billing/invoice.service';
 import {
   AdminAuditPageDto,
+  AdminInvoicePageDto,
   AdminMeDto,
   AdminOrganisationDetailDto,
   AdminOrganisationPageDto,
   AdminOverviewDto,
   AdminPlanDto,
   AdminSubscriptionRowDto,
+  AdminAgencyRowDto,
+  AdminAnalyticsDto,
   AdminUserDto,
+  AdminUserPageDto,
   AttachClientDto,
   ConvertOrgDto,
+  CreatePlanDto,
   SetAdminDto,
   UpdatePlanDto,
 } from './dto/admin.dto';
@@ -47,7 +54,12 @@ import {
 @Controller('admin')
 @UseGuards(AdminGuard)
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    // Only to render one. Which invoices an operator may see is not a
+    // question — this console crosses every organisation boundary by design.
+    private readonly invoices: InvoiceService,
+  ) {}
 
   /**
    * Whether the caller is an operator.
@@ -93,9 +105,57 @@ export class AdminController {
     return this.admin.subscriptions(status);
   }
 
+  @Get('invoices')
+  invoiceList(
+    @Query('search') search?: string,
+    @Query('ssoOrgId') ssoOrgId?: string,
+    @Query('page') page?: string,
+  ): Promise<AdminInvoicePageDto> {
+    return this.admin.invoices({
+      search,
+      ssoOrgId,
+      page: page ? Number(page) : undefined,
+    });
+  }
+
+  @Get('invoices/:number/pdf')
+  async invoicePdf(
+    @Param('number') number: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const invoice = await this.admin.invoice(number);
+    const pdf = this.invoices.pdf(invoice);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${this.invoices.filename(invoice)}"`,
+    );
+    res.setHeader('Content-Length', String(pdf.length));
+    res.end(pdf);
+  }
+
+  /** For the support case this screen exists for: "it never arrived". */
+  @Post('invoices/:number/resend')
+  @HttpCode(200)
+  resendInvoice(
+    @Req() req: Request,
+    @Param('number') number: string,
+  ): Promise<{ sent: boolean; to: string | null }> {
+    return this.admin.resendInvoice(actorOf(req), number);
+  }
+
   @Get('plans')
   plans(): Promise<AdminPlanDto[]> {
     return this.admin.plans();
+  }
+
+  @Post('plans')
+  createPlan(
+    @Req() req: Request,
+    @Body() dto: CreatePlanDto,
+  ): Promise<AdminPlanDto> {
+    return this.admin.createPlan(actorOf(req), dto);
   }
 
   @Patch('plans/:code')
@@ -150,9 +210,59 @@ export class AdminController {
     return this.admin.admins();
   }
 
+  /**
+   * The grant picker's search. Deliberately not a listing: it answers "who is
+   * this person I am about to grant access to", and refuses a term short
+   * enough to fish with.
+   */
   @Get('users')
   findUsers(@Query('search') search?: string): Promise<AdminUserDto[]> {
     return this.admin.findUsers(search ?? '');
+  }
+
+  @Get('users/directory')
+  @ApiOperation({
+    summary:
+      'Everybody with an account, and the organisations we have seen them in',
+    description:
+      'Memberships live in the SSO, so the organisations here are the ones ' +
+      'this person connected an account for — not an authoritative roster. ' +
+      'Somebody invited to an organisation who has connected nothing shows ' +
+      'with none.',
+  })
+  directory(
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+  ): Promise<AdminUserPageDto> {
+    return this.admin.users({
+      search,
+      page: page ? Number(page) : 1,
+    });
+  }
+
+  @Get('agencies')
+  @ApiOperation({
+    summary: 'Every agency, and the clients under it',
+    description:
+      'The clients are the organisations the agency is being charged for, ' +
+      'which is the relationship somebody is asked about when a bill is ' +
+      'queried.',
+  })
+  agencies(): Promise<AdminAgencyRowDto[]> {
+    return this.admin.agencies();
+  }
+
+  @Get('analytics')
+  @ApiOperation({
+    summary: 'Registrations, subscriptions and revenue, day by day',
+    description:
+      'Bucketed in the billing time zone rather than UTC, so a sign-up at ' +
+      '03:00 IST belongs to that day. Every day in the range appears, ' +
+      'including the empty ones — a series with gaps draws a chart that lies ' +
+      'about its own shape.',
+  })
+  analytics(@Query('days') days?: string): Promise<AdminAnalyticsDto> {
+    return this.admin.analytics(days ? Number(days) : 30);
   }
 
   @Patch('users/:id/admin')

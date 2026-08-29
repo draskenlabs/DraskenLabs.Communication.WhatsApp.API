@@ -111,9 +111,9 @@
 
 | Item | Notes |
 |------|-------|
-| Creating the plans at Razorpay | The mapping is configuration; somebody still has to create one plan per tier in the Razorpay account, at the published price, and list them in `RAZORPAY_PLAN_IDS` |
+| Creating the plans at Razorpay | Now done by `POST /admin/plans`, which writes the tier and the provider plan in one call. `RAZORPAY_PLAN_IDS` remains for tiers created before that, and is still what seeds a fresh deployment |
 | Team-member limit on acceptance | The invite path is ours and is capped; somebody added directly in the SSO is not seen by this API |
-| Admin editing | The catalogue changes by migration; there is no write endpoint |
+| Admin editing | Done: `POST /admin/plans` writes a tier and its provider plan together, `PATCH /admin/plans/:code` edits everything except the amount. A provider plan is immutable and a subscription is charged against the one it was created on, so repricing is a new plan rather than an edit — `razorpayPlanId` can be repointed, but only at a provider plan whose amount and currency match the tier |
 | Usage against the limit in the console | `GET /billing/subscription` now carries `usage` — accounts and numbers against the tier's inclusions, with the price of the next one. The capped limits still have no "3 of 5 used" view |
 | Slab pricing for a quoted agency plan | A quoted deal is a minimum with a `mandateCeiling` today; bands by client count were discussed and deferred |
 | Per-WABA member permissions | Out of scope, kept in the definition: a team member sees every account in the organisation |

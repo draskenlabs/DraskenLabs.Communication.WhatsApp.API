@@ -23,7 +23,9 @@ describe('RazorpaySignatureMiddleware', () => {
         { provide: RazorpayService, useValue: mockRazorpay },
       ],
     }).compile();
-    middleware = module.get<RazorpaySignatureMiddleware>(RazorpaySignatureMiddleware);
+    middleware = module.get<RazorpaySignatureMiddleware>(
+      RazorpaySignatureMiddleware,
+    );
   });
 
   const request = (body: string, signature?: string) =>
@@ -44,9 +46,9 @@ describe('RazorpaySignatureMiddleware', () => {
     const body = '{"event":"subscription.charged"}';
     const tampered = '{"event":"subscription.cancelled"}';
 
-    expect(() => middleware.use(request(tampered, sign(body)), {} as any, next)).toThrow(
-      UnauthorizedException,
-    );
+    expect(() =>
+      middleware.use(request(tampered, sign(body)), {} as any, next),
+    ).toThrow(UnauthorizedException);
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -58,8 +60,8 @@ describe('RazorpaySignatureMiddleware', () => {
 
   it('rejects a signature of the wrong length rather than comparing it', () => {
     // timingSafeEqual throws on a length mismatch; the guard has to come first.
-    expect(() => middleware.use(request('{}', 'abcd'), {} as any, next)).toThrow(
-      UnauthorizedException,
-    );
+    expect(() =>
+      middleware.use(request('{}', 'abcd'), {} as any, next),
+    ).toThrow(UnauthorizedException);
   });
 });

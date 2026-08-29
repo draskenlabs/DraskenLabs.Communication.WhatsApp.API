@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { isGstin, stateCodeOfGstin, stateName } from 'src/billing/gst';
 
 /** What we know about an organisation, beyond the SSO's own record of it. */
 export interface OrgSettings {
@@ -12,6 +13,12 @@ export interface OrgSettings {
   payerVersion: number;
 }
 
+/** Trimmed, with an empty string treated as "cleared" rather than as text. */
+function clean(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 const DEFAULTS = (ssoOrgId: string): OrgSettings => ({
   ssoOrgId,
   agencyOrgId: null,
@@ -19,6 +26,25 @@ const DEFAULTS = (ssoOrgId: string): OrgSettings => ({
   clientName: null,
   payerVersion: 0,
 });
+
+/**
+ * An organisation's tax identity, as it must appear on its invoices.
+ *
+ * `stateCode` is the load-bearing field: it is the place of supply, and it
+ * decides whether a charge is CGST plus SGST or IGST. It is separate from the
+ * GSTIN because an unregistered customer still has a state, and the split
+ * still depends on it.
+ */
+export interface TaxDetails {
+  gstin: string | null;
+  legalName: string | null;
+  billingAddress: string | null;
+  billingCity: string | null;
+  billingPostalCode: string | null;
+  stateCode: string | null;
+  /** Resolved from the code, for display: "Karnataka". */
+  stateName: string | null;
+}
 
 /**
  * Who an organisation is, to us.
@@ -51,6 +77,101 @@ export class OrganisationSettingsService {
       },
     });
     return row ?? DEFAULTS(ssoOrgId);
+  }
+
+  /**
+   * The tax identity on file, or empty fields where none has been entered.
+   *
+   * The state falls back to the one the registration carries: a customer who
+   * gave a GSTIN has told us their state already, and asking twice for
+   * something we can read off what they typed is how forms get abandoned.
+   */
+  async taxDetails(ssoOrgId: string): Promise<TaxDetails> {
+    const row = await this.prisma.organisationSettings.findUnique({
+      where: { ssoOrgId },
+      select: {
+        gstin: true,
+        legalName: true,
+        billingAddress: true,
+        billingCity: true,
+        billingPostalCode: true,
+        stateCode: true,
+      },
+    });
+
+    const stateCode = row?.stateCode ?? stateCodeOfGstin(row?.gstin) ?? null;
+    return {
+      gstin: row?.gstin ?? null,
+      legalName: row?.legalName ?? null,
+      billingAddress: row?.billingAddress ?? null,
+      billingCity: row?.billingCity ?? null,
+      billingPostalCode: row?.billingPostalCode ?? null,
+      stateCode,
+      stateName: stateName(stateCode),
+    };
+  }
+
+  /**
+   * Set it, having checked it is usable.
+   *
+   * The GSTIN's check digit is validated, not just its shape: a regex accepts
+   * a transposed pair of characters, which is the mistake somebody actually
+   * makes copying fifteen of them off a certificate — and a wrong GSTIN on an
+   * *issued* invoice cannot be corrected by reissuing it.
+   *
+   * A GSTIN whose state disagrees with the state chosen is refused rather than
+   * silently preferred either way. One of the two is wrong, and guessing which
+   * would put the wrong heads of tax on every invoice from here on.
+   */
+  async setTaxDetails(
+    ssoOrgId: string,
+    input: {
+      gstin?: string | null;
+      legalName?: string | null;
+      billingAddress?: string | null;
+      billingCity?: string | null;
+      billingPostalCode?: string | null;
+      stateCode?: string | null;
+    },
+  ): Promise<TaxDetails> {
+    const gstin = clean(input.gstin)?.toUpperCase() ?? null;
+    if (gstin && !isGstin(gstin)) {
+      throw new BadRequestException(
+        'That GSTIN is not valid. Check it against your registration certificate — one wrong character makes the whole number invalid.',
+      );
+    }
+
+    const chosen = clean(input.stateCode);
+    if (chosen && !stateName(chosen)) {
+      throw new BadRequestException(`${chosen} is not a GST state code.`);
+    }
+
+    const fromGstin = stateCodeOfGstin(gstin);
+    if (chosen && fromGstin && chosen !== fromGstin) {
+      throw new BadRequestException(
+        `Your GSTIN is registered in ${stateName(fromGstin)}, but you have selected ${stateName(chosen)}. They have to agree — the state decides how tax is charged.`,
+      );
+    }
+
+    const stateCode = chosen ?? fromGstin ?? null;
+    const data = {
+      gstin,
+      legalName: clean(input.legalName),
+      billingAddress: clean(input.billingAddress),
+      billingCity: clean(input.billingCity),
+      billingPostalCode: clean(input.billingPostalCode),
+      stateCode,
+    };
+
+    await this.prisma.organisationSettings.upsert({
+      where: { ssoOrgId },
+      // Most organisations have no row until something needs one, so this is
+      // as often an insert as an update.
+      create: { ssoOrgId, ...data },
+      update: data,
+    });
+
+    return { ...data, stateName: stateName(stateCode) };
   }
 
   /**

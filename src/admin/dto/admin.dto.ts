@@ -1,9 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { InvoiceDto } from 'src/billing/dto/billing.dto';
 import {
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
+  Length,
+  Matches,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -33,6 +37,54 @@ export class AdminAtRiskDto {
     description: 'A tier was chosen and the mandate never authorised',
   })
   neverAuthorised: number;
+}
+
+/** One day's figure in a series. */
+export class AdminSeriesPointDto {
+  @ApiProperty({ description: 'The day, as YYYY-MM-DD in the billing zone' })
+  date: string;
+
+  @ApiProperty() value: number;
+}
+
+/** Revenue over the three windows an operator actually asks about. */
+export class AdminRevenueDto {
+  @ApiProperty({ description: 'Captured today, in the smallest unit' })
+  today: number;
+
+  @ApiProperty({ description: 'Captured since the 1st of this month' })
+  month: number;
+
+  @ApiProperty({ description: 'Captured since 1 April — the financial year' })
+  year: number;
+
+  @ApiProperty({ description: 'The same window a year’s worth of days covers' })
+  currency: string;
+}
+
+/**
+ * The overview's time series.
+ *
+ * Days are bucketed in the billing time zone rather than UTC: a sign-up at
+ * 03:00 IST belongs to that day, and bucketing from UTC would file it under
+ * the one before and make every daily figure quietly wrong.
+ */
+export class AdminAnalyticsDto {
+  @ApiProperty({ description: 'Days covered' }) days: number;
+
+  @ApiProperty({ type: [AdminSeriesPointDto] })
+  registrations: AdminSeriesPointDto[];
+
+  @ApiProperty({ type: [AdminSeriesPointDto] })
+  subscriptions: AdminSeriesPointDto[];
+
+  @ApiProperty({
+    type: [AdminSeriesPointDto],
+    description: 'Captured payments each day, in the smallest currency unit',
+  })
+  revenue: AdminSeriesPointDto[];
+
+  @ApiProperty() currency: string;
 }
 
 /** One line of the estate, for the overview. */
@@ -74,6 +126,19 @@ export class AdminOverviewDto {
       'mandates that stopped, and tiers chosen but never authorised.',
   })
   atRisk: AdminAtRiskDto;
+
+  @ApiProperty({ description: 'People with an account on this deployment' })
+  users: number;
+
+  @ApiProperty({ description: 'Organisations marked as agencies' })
+  agencies: number;
+
+  @ApiProperty({
+    description:
+      'Money actually captured, as opposed to the MRR above — which is what ' +
+      'the live subscriptions are worth if every one of them pays.',
+  })
+  revenue: AdminRevenueDto;
 }
 
 /** One organisation, as the index lists it. */
@@ -109,6 +174,17 @@ export class AdminOrganisationRowDto {
     description: 'The agency that pays for it, when it is somebody’s client',
   })
   agencyOrgId: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The organisation charged for this one, when it is not itself — an ' +
+      'agency paying for a client.',
+  })
+  payerOrgId: string | null;
+
+  @ApiProperty({ nullable: true, description: 'That organisation’s name' })
+  payerName: string | null;
 
   @ApiProperty({
     nullable: true,
@@ -192,7 +268,14 @@ export class AdminSubscriptionRowDto {
   @ApiProperty() currency: string;
   @ApiProperty({ nullable: true }) currentEnd: Date | null;
   @ApiProperty() cancelAtCycleEnd: boolean;
-  @ApiProperty() razorpaySubscriptionId: string;
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Null for a client an agency pays for — it is a quantity on the ' +
+      'agency’s subscription rather than one of its own.',
+  })
+  razorpaySubscriptionId: string | null;
+
   @ApiProperty({ nullable: true }) lastPaymentAt: Date | null;
   @ApiProperty() createdAt: Date;
 }
@@ -229,6 +312,12 @@ export class AdminPlanDto {
     description: 'The organisation this was negotiated for, or null if public',
   })
   ssoOrgId: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'The provider plan the next subscriber would be charged on',
+  })
+  razorpayPlanId: string | null;
 
   @ApiProperty({
     description: 'Whether a subscription can be sold on it',
@@ -308,6 +397,155 @@ export class UpdatePlanDto {
   @ApiPropertyOptional() @IsOptional() @IsInt() sortOrder?: number;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() recommended?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() active?: boolean;
+
+  @ApiPropertyOptional({ enum: ['subscribe', 'contact'] })
+  @IsOptional()
+  @IsIn(['subscribe', 'contact'])
+  ctaKind?: 'subscribe' | 'contact';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  ctaLabel?: string;
+
+  /**
+   * Point the tier at a different provider plan.
+   *
+   * The one field here that moves money, so it is checked rather than trusted:
+   * the plan has to exist at the provider and its amount has to match this
+   * tier's price. Pointing a ₹499 tier at a ₹9,999 plan is one typo, and the
+   * first anybody would know is a customer's bank statement.
+   *
+   * Existing subscribers are unaffected — each records the plan it was created
+   * against — so this only ever changes what the *next* customer is charged.
+   */
+  @ApiPropertyOptional({ description: 'Provider plan id, e.g. plan_XXXXXXXX' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  razorpayPlanId?: string;
+}
+
+/**
+ * A new plan.
+ *
+ * The one place an amount ever enters the system. A provider plan is immutable,
+ * so the price is set here, at creation, and never again — repricing is a new
+ * plan, which is exactly what this endpoint is for.
+ */
+export class CreatePlanDto {
+  @ApiProperty({
+    description:
+      'Stable identifier used in seeds, analytics and URLs. Lower case, ' +
+      'letters, numbers and hyphens.',
+  })
+  @IsString()
+  @Matches(/^[a-z0-9][a-z0-9-]{1,48}$/, {
+    message:
+      'code must be lower case letters, numbers and hyphens, 2–49 characters',
+  })
+  code: string;
+
+  @ApiProperty() @IsString() @MaxLength(120) name: string;
+
+  @ApiProperty({ description: 'Who the plan is for, in one line' })
+  @IsString()
+  @MaxLength(240)
+  audience: string;
+
+  @ApiPropertyOptional({
+    description:
+      'In paise. Omit for a quoted plan, which carries a label instead and ' +
+      'cannot be checked out.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(100)
+  price?: number;
+
+  @ApiPropertyOptional({
+    description: 'Shown instead of an amount, e.g. "Custom"',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  priceLabel?: string;
+
+  @ApiPropertyOptional({ default: 'INR' })
+  @IsOptional()
+  @IsString()
+  @Length(3, 3)
+  currency?: string;
+
+  @ApiPropertyOptional({ description: 'What the price is per, e.g. "/month"' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  unit?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'The organisation this is negotiated for. Set it and the plan never ' +
+      'appears on the public price list, and only that organisation can buy it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  ssoOrgId?: string;
+
+  @ApiPropertyOptional({ enum: ['subscribe', 'contact'], default: 'subscribe' })
+  @IsOptional()
+  @IsIn(['subscribe', 'contact'])
+  ctaKind?: 'subscribe' | 'contact';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  ctaLabel?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  additionalWabaPrice?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  additionalNumberPrice?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) includedWabas?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  includedPhoneNumbersPerWaba?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  includedClients?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) maxTeamMembers?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxWebhookEndpoints?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxApiKeysPerWaba?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) maxContacts?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxMessagesPerMinute?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) historyDays?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() rank?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() sortOrder?: number;
 }
 
 /** A person who can, or is about to be able to, use this console. */
@@ -317,6 +555,99 @@ export class AdminUserDto {
   @ApiProperty({ nullable: true }) name: string | null;
   @ApiProperty() isAdmin: boolean;
   @ApiProperty() createdAt: Date;
+}
+
+/**
+ * One organisation a user has been seen acting in.
+ *
+ * Memberships live in the SSO, so this is what *we* have recorded rather than
+ * an authoritative roster: an organisation appears here because this person
+ * connected an account for it. Somebody invited to an organisation who has
+ * connected nothing will not show up, which is why the screen says so rather
+ * than presenting this as the whole truth.
+ */
+export class AdminUserOrgDto {
+  @ApiProperty() ssoOrgId: string;
+  @ApiProperty({ nullable: true }) name: string | null;
+  @ApiProperty({ description: 'Accounts this person connected for it' })
+  wabas: number;
+  @ApiProperty({ description: 'Whether that organisation manages clients' })
+  isAgency: boolean;
+}
+
+/** A user, with the organisations we have seen them in. */
+export class AdminUserRowDto {
+  @ApiProperty() id: number;
+  @ApiProperty({ nullable: true }) email: string | null;
+  @ApiProperty({ nullable: true }) name: string | null;
+  @ApiProperty() isAdmin: boolean;
+  @ApiProperty() createdAt: Date;
+
+  @ApiProperty({ type: [AdminUserOrgDto] })
+  organisations: AdminUserOrgDto[];
+}
+
+export class AdminUserPageDto {
+  @ApiProperty({ type: [AdminUserRowDto] }) users: AdminUserRowDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() totalPages: number;
+}
+
+/** One client an agency manages. */
+export class AdminAgencyClientDto {
+  @ApiProperty() ssoOrgId: string;
+  @ApiProperty({
+    nullable: true,
+    description: 'What the agency calls it, falling back to its own name',
+  })
+  name: string | null;
+
+  @ApiProperty({ nullable: true, description: 'The tier it is on' })
+  planName: string | null;
+
+  @ApiProperty({ nullable: true }) planCode: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Its subscription status, or null where it has none',
+  })
+  status: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What the agency pays for it a month, in the smallest unit',
+  })
+  price: number | null;
+
+  @ApiProperty({ description: 'When the agency took it on' })
+  since: Date;
+}
+
+/** An agency, and the clients under it. */
+export class AdminAgencyRowDto {
+  @ApiProperty() ssoOrgId: string;
+  @ApiProperty({ nullable: true }) name: string | null;
+
+  @ApiProperty({ nullable: true, description: 'Who marked it an agency' })
+  convertedBy: string | null;
+
+  @ApiProperty({ nullable: true }) convertedAt: Date | null;
+
+  @ApiProperty({ description: 'How many clients it manages' })
+  clientCount: number;
+
+  @ApiProperty({
+    description:
+      'What it pays a month across every client, in the smallest currency ' +
+      'unit. Clients on a quoted tier carry no price and count for nothing.',
+  })
+  monthly: number;
+
+  @ApiProperty() currency: string;
+
+  @ApiProperty({ type: [AdminAgencyClientDto] })
+  clients: AdminAgencyClientDto[];
 }
 
 export class SetAdminDto {
@@ -344,6 +675,21 @@ export class AttachClientDto {
 }
 
 /** One recorded action. */
+/** A page of invoices, with the one figure on the screen that is a job. */
+export class AdminInvoicePageDto {
+  @ApiProperty({ type: [InvoiceDto] }) invoices: InvoiceDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() totalPages: number;
+
+  @ApiProperty({
+    description:
+      'Invoices raised and never emailed — a mail outage at the moment of ' +
+      'the charge. Not page-scoped: it is the whole backlog.',
+  })
+  undelivered: number;
+}
+
 export class AdminAuditRowDto {
   @ApiProperty() id: number;
   @ApiProperty({ nullable: true }) actorEmail: string | null;

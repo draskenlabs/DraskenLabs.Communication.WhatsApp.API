@@ -96,6 +96,23 @@ export class PlanDto {
   unit: string;
 
   @ApiProperty({
+    description:
+      'Tax already inside `price`, in basis points — 1800 is 18% GST. The ' +
+      'published price is inclusive, so this is what a card should say the ' +
+      'price already contains rather than something to add to it. Zero where ' +
+      'the deployment charges no tax, and the note is then not shown at all.',
+    example: 1800,
+  })
+  taxRateBps: number;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'What that tax is called, where there is any',
+    example: 'GST',
+  })
+  taxLabel: string | null;
+
+  @ApiProperty({
     nullable: true,
     description:
       'Monthly charge for each phone number after the first on a WABA, in the ' +

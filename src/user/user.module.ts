@@ -22,7 +22,7 @@ import { SsoService } from 'src/auth/sso.service';
   // UserModule, so importing it back would be circular — provide it here.
   providers: [UserService, UserWhatsappService, SsoService],
   controllers: [UserController],
-  exports: [UserService, UserWhatsappService, JwtModule],
+  exports: [UserService, UserWhatsappService, JwtModule, SsoService],
 })
 export class UserModule {
   configure(consumer: MiddlewareConsumer) {
