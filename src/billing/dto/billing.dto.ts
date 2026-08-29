@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 /** What the subscription costs, read from the Razorpay plan. */
 export class SubscriptionPlanDto {
@@ -497,6 +497,87 @@ export class InvoiceLineDto {
 
   @ApiProperty({ description: 'quantity × unitAmount' })
   amount: number;
+}
+
+/** The customer's own tax identity, as the console reads and writes it. */
+export class TaxDetailsDto {
+  @ApiProperty({
+    nullable: true,
+    example: '29AAPFU0939F1ZR',
+    description:
+      'The customer’s GST registration. Required for input tax credit, and ' +
+      'the first two characters name the state it is registered in.',
+  })
+  gstin: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'The registered name, where it differs from the trading one',
+  })
+  legalName: string | null;
+
+  @ApiProperty({ nullable: true, description: 'One line per newline' })
+  billingAddress: string | null;
+
+  @ApiProperty({ nullable: true }) billingCity: string | null;
+
+  @ApiProperty({ nullable: true }) billingPostalCode: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    example: '29',
+    description:
+      'GST state code. This is the place of supply, and it decides whether ' +
+      'a charge is CGST plus SGST or IGST.',
+  })
+  stateCode: string | null;
+
+  @ApiProperty({ nullable: true, example: 'Karnataka' })
+  stateName: string | null;
+}
+
+/** One state a customer may choose from. */
+export class GstStateDto {
+  @ApiProperty({ example: '29' }) code: string;
+  @ApiProperty({ example: 'Karnataka' }) name: string;
+}
+
+export class UpdateTaxDetailsDto {
+  @ApiPropertyOptional({ example: '29AAPFU0939F1ZR' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(15)
+  gstin?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  legalName?: string | null;
+
+  @ApiPropertyOptional({ description: 'One line per newline' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  billingAddress?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  billingCity?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  billingPostalCode?: string | null;
+
+  @ApiPropertyOptional({ example: '29' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  stateCode?: string | null;
 }
 
 /**

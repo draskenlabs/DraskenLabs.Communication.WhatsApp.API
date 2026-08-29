@@ -9,6 +9,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Req,
   Res,
   UnauthorizedException,
@@ -25,12 +26,17 @@ import { Request, Response } from 'express';
 import { BillingService } from './billing.service';
 import { InvoiceService } from './invoice.service';
 import { ReceiptService } from './receipt.service';
+import { selectableStates } from './gst';
+import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
 import { isInvoiceNumber } from './invoice.number';
 import {
   ChangePlanDto,
   ConfirmSubscriptionDto,
+  GstStateDto,
   InvoiceDto,
   ReceiptDto,
+  TaxDetailsDto,
+  UpdateTaxDetailsDto,
   RegisterSubscriptionDto,
   SubscriptionRegisteredDto,
   SubscriptionStateDto,
@@ -47,6 +53,7 @@ export class BillingController {
     private readonly billing: BillingService,
     private readonly invoices: InvoiceService,
     private readonly receipts: ReceiptService,
+    private readonly orgSettings: OrganisationSettingsService,
   ) {}
 
   @Get('subscription')
@@ -256,6 +263,54 @@ export class BillingController {
     );
     res.setHeader('Content-Length', String(pdf.length));
     res.end(pdf);
+  }
+
+  @Get('tax-details')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The tax identity printed on this organisation’s invoices',
+    description:
+      'The state is the one that matters: it is the place of supply, and it ' +
+      'decides whether a charge is CGST plus SGST or IGST. A GSTIN is what ' +
+      'lets the customer claim the tax back.',
+  })
+  @ApiWrappedOkResponse({ dataDto: TaxDetailsDto })
+  @ApiStandardErrorResponses()
+  async taxDetails(@Req() req: Request): Promise<TaxDetailsDto> {
+    return this.orgSettings.taxDetails(this.orgOf(req));
+  }
+
+  @Put('tax-details')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Set the tax identity',
+    description:
+      'Applies to invoices raised from now on. An invoice already issued ' +
+      'states what was true when it was raised and is never restated — a ' +
+      'GSTIN added today cannot appear on last month’s document, because the ' +
+      'customer would be holding a claim their own return will not support.',
+  })
+  @ApiWrappedOkResponse({ dataDto: TaxDetailsDto })
+  @ApiStandardErrorResponses()
+  async setTaxDetails(
+    @Req() req: Request,
+    @Body() body: UpdateTaxDetailsDto,
+  ): Promise<TaxDetailsDto> {
+    return this.orgSettings.setTaxDetails(this.orgOf(req), body);
+  }
+
+  @Get('gst-states')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'The states a customer may choose from',
+    description:
+      'Codes no longer issued are left out of the list but still resolve, so ' +
+      'an existing registration on one of them is not rejected.',
+  })
+  @ApiWrappedOkResponse({ dataDto: GstStateDto, isArray: true })
+  @ApiStandardErrorResponses()
+  gstStates(): GstStateDto[] {
+    return selectableStates();
   }
 
   @Get('receipts')
