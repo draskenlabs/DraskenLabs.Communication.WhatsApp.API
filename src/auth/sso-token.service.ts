@@ -34,6 +34,18 @@ interface Jwk {
 }
 
 /**
+ * The two shapes `/.well-known/jwks.json` comes back in.
+ *
+ * RFC 7517 says a key set is `{ keys: [...] }` and nothing else, which is what
+ * every JWT library expects — but the SSO wraps it in the same envelope as the
+ * rest of its API. Both are read, because which one arrives is not this
+ * service's decision to make and getting it wrong empties the ring: every
+ * token then fails as "Unknown SSO signing key", which reads like a rotation
+ * gone wrong rather than a parser looking one level too high.
+ */
+type JwksResponse = { keys?: Jwk[]; data?: { keys?: Jwk[] } };
+
+/**
  * Verifies DraskenLabs SSO access tokens **offline**, against the public keys
  * the SSO publishes at `/.well-known/jwks.json`.
  *
@@ -204,11 +216,12 @@ export class SsoTokenService {
 
     this.inFlight = (async () => {
       try {
-        const { data } = await axios.get<{ keys?: Jwk[] }>(this.jwksUrl, {
+        const { data } = await axios.get<JwksResponse>(this.jwksUrl, {
           timeout: 5000,
         });
+        const published = data?.keys ?? data?.data?.keys ?? [];
         const next = new Map<string, KeyObject>();
-        for (const jwk of data?.keys ?? []) {
+        for (const jwk of published) {
           if (jwk.kty !== 'RSA' || !jwk.kid) continue;
           if (jwk.alg && jwk.alg !== 'RS256') continue;
           try {
@@ -227,7 +240,15 @@ export class SsoTokenService {
           // Keep whatever we already hold: replacing it with nothing would
           // reject every request until the SSO answered again, and the keys we
           // have are still the ones tokens already in flight were signed with.
-          this.logger.error('SSO published no usable signing keys');
+          //
+          // The top-level keys are named because this is where an unexpected
+          // response shape shows up, and the symptom on its own — every token
+          // rejected as naming an unknown key — points at the SSO rather than
+          // at us reading the wrong level of the answer.
+          this.logger.error(
+            `SSO published no usable signing keys from ${this.jwksUrl} ` +
+              `(response keys: ${Object.keys(data ?? {}).join(', ') || 'none'})`,
+          );
           return;
         }
         this.keys = next;

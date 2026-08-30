@@ -63,9 +63,20 @@ function sign(
   );
 }
 
-/** The key ring the SSO serves, for this test. */
+/** The key ring the SSO serves, raw as RFC 7517 describes it. */
 function serves(...keys: { jwk: unknown }[]) {
   mockedAxios.get.mockResolvedValue({ data: { keys: keys.map((k) => k.jwk) } });
+}
+
+/** The same ring, wrapped in the envelope the SSO actually answers with. */
+function servesWrapped(...keys: { jwk: unknown }[]) {
+  mockedAxios.get.mockResolvedValue({
+    data: {
+      statusCode: 200,
+      message: 'Success',
+      data: { keys: keys.map((k) => k.jwk) },
+    },
+  });
 }
 
 describe('SsoTokenService', () => {
@@ -205,6 +216,23 @@ describe('SsoTokenService', () => {
     await service.verify(sign(KEY));
 
     mockedAxios.get.mockResolvedValue({ data: { keys: [] } });
+    await expect(service.verify(sign(KEY))).resolves.toEqual(
+      expect.objectContaining({ sub: 'user_2abc123' }),
+    );
+  });
+
+  /**
+   * RFC 7517 says a key set is `{ keys: [...] }` and nothing else, and the SSO
+   * reference says this endpoint is deliberately left raw for that reason. The
+   * deployed SSO wraps it in the same envelope as everything else. Reading only
+   * the documented shape emptied the ring, and an empty ring rejects every
+   * token as naming a key it does not hold — which reads like a rotation gone
+   * wrong rather than a parser looking one level too high.
+   */
+  it('reads the ring whether or not it arrives in the response envelope', async () => {
+    servesWrapped(KEY);
+    const service = new SsoTokenService(configService);
+
     await expect(service.verify(sign(KEY))).resolves.toEqual(
       expect.objectContaining({ sub: 'user_2abc123' }),
     );
