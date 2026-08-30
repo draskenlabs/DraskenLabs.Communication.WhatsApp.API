@@ -59,6 +59,12 @@ every request locally. Four checks, not just the signature:
 `alg` must be `RS256`, checked from the header before a key is chosen, so
 `alg: none` and an HMAC over something we hold never reach the verifier.
 
+The response is read in both shapes: RFC 7517's bare `{ keys: [...] }`, which
+is what every JWT library expects and what the SSO reference documents, and the
+same set wrapped in the SSO's standard envelope, which is what the deployed SSO
+actually answers with. Reading only the documented one leaves the ring empty,
+and an empty ring rejects every token as naming an unknown key.
+
 The ring is refetched at most once per 30s for an unknown `kid`, so a forged
 token cannot turn into an outbound flood; an empty ring retries every 5s.
 An SSO answer with no usable keys leaves the ring we hold in place, because
