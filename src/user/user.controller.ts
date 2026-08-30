@@ -1,5 +1,18 @@
-import { Controller, Delete, ForbiddenException, Get, Post, Req, UseGuards, UnauthorizedException } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  Controller,
+  Delete,
+  Get,
+  NotFoundException,
+  Post,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiExcludeEndpoint,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { UserService } from './user.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -81,20 +94,43 @@ export class UserController {
     return this.userService.deleteAccount(user.id, (req as any).sessionId);
   }
 
+  /**
+   * A session for user id 1, to whoever asks. Off unless switched on.
+   *
+   * This mints a working token with no credential of any kind, so the only
+   * thing standing between it and anybody who can reach the port is this
+   * check — which is why the check has to fail *closed*.
+   *
+   * It used to be `NODE_ENV !== 'production'`, which is the opposite: an
+   * environment that never set the variable, or set it to `Production`, or
+   * lost it when a container was rebuilt, was handing out sessions and looked
+   * exactly like one that was not. Safety inferred from the *absence* of a
+   * value is not safety. `ALLOW_TEST_TOKENS` has to be set, deliberately, to
+   * the string `true`, and a deployment that says nothing gets nothing.
+   *
+   * Refused as **404**, not 403. A 403 confirms the endpoint is there and
+   * tells somebody probing exactly what to come back for once they find a
+   * misconfigured environment; a 404 says only that there is nothing here.
+   */
   @Post('test-token')
-  @ApiOperation({ summary: 'Generate access token for user id 1 (Testing only)' })
+  @ApiExcludeEndpoint()
   async generateTestToken() {
-    if (this.configService.get('NODE_ENV') === 'production') {
-      throw new ForbiddenException('Not available in production');
-    }
-    const userId = 1;
-    const user = await this.userService.findById(userId);
-    
-    if (!user) {
-      throw new UnauthorizedException('Test user with ID 1 not found. Please ensure it exists in the database.');
+    if (this.configService.get<string>('ALLOW_TEST_TOKENS') !== 'true') {
+      throw new NotFoundException('Cannot POST /user/test-token');
     }
 
-    const token = await this.jwtService.signAsync({ sub: user.id, orgId: '', role: 'member' });
+    const user = await this.userService.findById(1);
+    if (!user) {
+      throw new UnauthorizedException(
+        'Test user with ID 1 not found. Please ensure it exists in the database.',
+      );
+    }
+
+    const token = await this.jwtService.signAsync({
+      sub: user.id,
+      orgId: '',
+      role: 'member',
+    });
 
     return {
       access_token: token,

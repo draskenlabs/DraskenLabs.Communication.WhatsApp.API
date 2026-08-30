@@ -10,7 +10,9 @@ import { Harness, ORG, seedAccount, startHarness } from './harness';
  * the list; the controller reads `req.orgId`, which only that middleware sets,
  * so each answered 401 — and the console treats a 401 as a dead session, so
  * opening the billing page signed the customer out. A sixth route went the
- * other way and answered anybody who asked.
+ * other way and answered anybody who asked — `POST /user/test-token`, which
+ * mints a session for user id 1 and is now off unless `ALLOW_TEST_TOKENS` says
+ * otherwise.
  *
  * Both directions are one mistake: **the route list and the middleware list are
  * two places, and they drifted.** So this suite reads neither list. It asks the
@@ -105,18 +107,6 @@ const SELF_AUTHENTICATING: { route: string; credential: string }[] = [
   },
   { route: 'DELETE /organisation/:orgId/members/:userId', credential: 'Same' },
   { route: 'GET /organisation/:orgId/invitations', credential: 'Same' },
-  {
-    // Not self-authenticating at all, and listed here so that it is not
-    // silently counted as fine: it mints a session for user id 1 for anybody
-    // who asks, and the only thing standing in front of it is
-    // `NODE_ENV === 'production'`. Any environment where that variable is
-    // unset or spelled differently — a staging cluster, a review app — hands
-    // out a working session to whoever can reach the port. Flagged rather
-    // than changed, because removing it would break whatever local workflow
-    // depends on it; the fix is a guard that fails closed.
-    route: 'POST /user/test-token',
-    credential: 'None. Refused only when NODE_ENV is exactly "production"',
-  },
 ];
 
 const isPublic = new Set(PUBLIC.map((p) => p.route));
@@ -244,6 +234,31 @@ describe('Route authentication (integration)', () => {
       expect(entry.credential.length).toBeGreaterThan(3);
     }
   });
+
+  it('mints no session from the test-token route in a plain environment', async () => {
+    // Called out by name because the sweep above would also pass if this
+    // route stopped being registered, and because of what it does when it
+    // answers: hand a working session for user id 1 to whoever asked, with
+    // no credential at all.
+    //
+    // It used to be gated on `NODE_ENV !== 'production'`, so any environment
+    // that never set the variable — a staging cluster, a review app, a
+    // rebuilt container — was open. This harness sets no `ALLOW_TEST_TOKENS`,
+    // which is exactly the case that used to be wrong, and is the case a
+    // deployment falls into by saying nothing.
+    //
+    // Seed first. The route mints for user id 1 specifically, and `reset()`
+    // restarts the identity sequence, so this is that user. Without it the
+    // route would refuse for want of a row rather than for want of the flag,
+    // and the test would pass against the very code it exists to catch.
+    const { userId } = await seedAccount(h.prisma);
+    expect(userId).toBe(1);
+
+    const res = await http().post('/user/test-token').send({});
+
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(res.body)).not.toContain('access_token');
+  }, 30_000);
 
   it('lists no exception the application does not register', () => {
     // A stale allowlist quietly excuses a route that has since been renamed,

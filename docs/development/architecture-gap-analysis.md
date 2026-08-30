@@ -10,7 +10,7 @@ Audit of the current codebase against `docs/development/architecture.md`.
 |----------|-------|---------|
 | 🔴 Critical Security | 3 | Must fix before any production deployment |
 | 🔴 Critical Architecture | 5 | Core multi-WABA design not implemented — messaging module cannot be built on current Redis structure |
-| 🟠 Functional Missing | 6 | Auth module 25% incomplete, key features absent |
+| 🟠 Functional Missing | 6 (1 fixed) | Auth module 25% incomplete, key features absent. F6 is closed |
 | 🟡 Minor | 6 | Low risk, addressable incrementally |
 | **Total Gaps** | **20** | |
 
@@ -109,7 +109,39 @@ This conflates two separate concerns: **API key auth** and **phone→token resol
 | F3 | **Connect flow does not populate phone cache** | After `POST /connect`, `phone:{phoneNumberId}` entries must be written to Redis | `connectWhatsapp()` only saves to DB (`UserWhatsapp` record) |
 | F4 | **Phone number sync does not populate phone cache** | After `POST /wabas/:wabaId/phone-numbers/sync`, all phone entries written to Redis | `syncPhoneNumbers()` only saves to DB (`WabaPhoneNumber` records) |
 | F5 | **No `DELETE /wabas/:wabaId/connect` endpoint** | WABA disconnect must remove `UserWhatsapp` record and invalidate all `phone:{id}` Redis entries via `user:{userId}:phones` Set | Not built |
-| F6 | **`POST /user/test-token` not gated by environment** | Must be disabled or unreachable in production | Always live regardless of `NODE_ENV` |
+| F6 | ✅ **Fixed** — **`POST /user/test-token` not gated by environment** | Must be disabled or unreachable in production | Now off unless `ALLOW_TEST_TOKENS` is set to exactly `true`, and refused as 404. See the note below |
+
+### F6 — Detail: why the gate is a positive flag, not `NODE_ENV`
+
+The endpoint mints a working session for user id 1 to whoever asks, with no
+credential of any kind, so the gate in front of it is the whole of its
+security. The obvious gate is the wrong one:
+
+```
+// Rejected
+if (process.env.NODE_ENV === 'production') throw ...
+```
+
+That infers safety from the *absence* of a value. An environment that never
+set `NODE_ENV`, set it to `Production`, or lost it when a container was
+rebuilt is indistinguishable from a developer's laptop, and hands out a
+session to anybody who can reach the port. Staging clusters and review apps
+are exactly the deployments that get this wrong, and they usually hold real
+data.
+
+The gate is therefore positive and exact — `ALLOW_TEST_TOKENS` must be set to
+the string `true` — so that a deployment which says nothing gets nothing.
+
+It refuses as **404**, not 403: a 403 confirms the route exists and tells
+somebody probing what to come back for once they find a misconfigured
+environment.
+
+Covered by `src/user/user.controller.spec.ts` (each near-miss value refused
+individually, and no database call while it is off) and by
+`test/integration/route-auth.int-spec.ts`, which probes it over HTTP with no
+credential in a harness that sets no flag. The integration test seeds user id 1
+first, so it fails for want of the flag and not for want of a row: against the
+old gate it gets `201` and a token, against this one `404`.
 
 ---
 
@@ -139,7 +171,7 @@ This conflates two separate concerns: **API key auth** and **phone→token resol
 | 7 | **F1** — Add `DELETE /api-keys/:id` — soft delete DB + `DEL apiKey:{accessKey}` Redis | Low |
 | 8 | **F2** — Add `user.status === true` check in `AuthMiddleware` | Low |
 | 9 | **F5** — Add `DELETE /wabas/:wabaId/connect` — remove `UserWhatsapp`, invalidate phone cache | Medium |
-| 10 | **F6** — Gate `POST /user/test-token` behind `NODE_ENV !== 'production'` | Low |
+| 10 | ✅ **F6** — Done. Gated on `ALLOW_TEST_TOKENS === 'true'`, not on `NODE_ENV` | Low |
 | 11 | **M1–M6** — Minor fixes | Low |
 
 ---

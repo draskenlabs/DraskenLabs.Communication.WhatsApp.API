@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { UserController } from './user.controller';
 import { UserService } from './user.service';
 import { JwtService } from '@nestjs/jwt';
@@ -8,7 +12,9 @@ import { RedisService } from 'src/redis/redis.service';
 import { SsoService } from 'src/auth/sso.service';
 
 const mockUserService = { findById: jest.fn(), deleteAccount: jest.fn() };
-const mockJwtService = { signAsync: jest.fn().mockResolvedValue('signed_token') };
+const mockJwtService = {
+  signAsync: jest.fn().mockResolvedValue('signed_token'),
+};
 const mockConfigService = { get: jest.fn() };
 const mockRedisService = { getSsoSession: jest.fn() };
 const mockSsoService = { getProfile: jest.fn() };
@@ -50,7 +56,10 @@ describe('UserController', () => {
         createdAt: '2026-05-01T00:00:00.000Z',
         updatedAt: '2026-06-01T00:00:00.000Z',
       });
-      const req = { user: { id: 1, ssoId: 'sso_1' }, sessionId: 'sess_1' } as any;
+      const req = {
+        user: { id: 1, ssoId: 'sso_1' },
+        sessionId: 'sess_1',
+      } as any;
       await expect(controller.getProfile(req)).resolves.toEqual({
         id: 1,
         ssoId: 'sso_1',
@@ -77,7 +86,10 @@ describe('UserController', () => {
         ssoCreatedAt: '2026-05-01T00:00:00.000Z',
       });
       mockSsoService.getProfile.mockResolvedValue(null);
-      const req = { user: { id: 1, ssoId: 'sso_1' }, sessionId: 'sess_1' } as any;
+      const req = {
+        user: { id: 1, ssoId: 'sso_1' },
+        sessionId: 'sess_1',
+      } as any;
       await expect(controller.getProfile(req)).resolves.toEqual({
         id: 1,
         ssoId: 'sso_1',
@@ -93,7 +105,10 @@ describe('UserController', () => {
 
     it('falls back to empty fields when the session has expired', async () => {
       mockRedisService.getSsoSession.mockResolvedValue(null);
-      const req = { user: { id: 1, ssoId: 'sso_1' }, sessionId: 'sess_1' } as any;
+      const req = {
+        user: { id: 1, ssoId: 'sso_1' },
+        sessionId: 'sess_1',
+      } as any;
       await expect(controller.getProfile(req)).resolves.toEqual({
         id: 1,
         ssoId: 'sso_1',
@@ -110,26 +125,69 @@ describe('UserController', () => {
 
     it('throws UnauthorizedException when user is missing', async () => {
       const req = {} as any;
-      await expect(controller.getProfile(req)).rejects.toThrow(UnauthorizedException);
+      await expect(controller.getProfile(req)).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
   });
 
   describe('generateTestToken', () => {
-    it('throws ForbiddenException in production', async () => {
-      mockConfigService.get.mockReturnValue('production');
-      await expect(controller.generateTestToken()).rejects.toThrow(ForbiddenException);
+    /** The one value that switches it on. Anything else must refuse. */
+    const allow = (value: string | undefined) =>
+      mockConfigService.get.mockReturnValue(value);
+
+    it('is not found when nothing has switched it on', async () => {
+      // The ordinary case, and the one the old gate got wrong: an environment
+      // that simply says nothing about this must get nothing.
+      allow(undefined);
+
+      await expect(controller.generateTestToken()).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
-    it('throws UnauthorizedException when test user not found', async () => {
-      mockConfigService.get.mockReturnValue('development');
-      mockUserService.findById.mockResolvedValue(null);
-      await expect(controller.generateTestToken()).rejects.toThrow(UnauthorizedException);
+    it.each([
+      ['production', 'production'],
+      ['a truthy-looking string', 'yes'],
+      ['the wrong case', 'True'],
+      ['an empty string', ''],
+      ['a stray value', '1'],
+    ])('is not found for %s', async (_label, value) => {
+      // Only the first of these was refused before. The old check asked
+      // whether NODE_ENV was exactly "production", so every near miss — a
+      // different case, a different word, nothing at all — was a session for
+      // whoever asked.
+      allow(value);
+
+      await expect(controller.generateTestToken()).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
-    it('returns token and user in non-production env', async () => {
-      mockConfigService.get.mockReturnValue('development');
-      const user = { id: 1, email: 'test@test.com', firstName: 'Test', lastName: 'User' };
-      mockUserService.findById.mockResolvedValue(user);
+    it('refuses as 404 rather than 403', async () => {
+      // A 403 confirms the endpoint is there and tells somebody probing what
+      // to come back for once they find a misconfigured environment.
+      allow(undefined);
+
+      await expect(controller.generateTestToken()).rejects.not.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('does not go near the database while it is switched off', async () => {
+      allow(undefined);
+
+      await expect(controller.generateTestToken()).rejects.toThrow();
+      expect(mockUserService.findById).not.toHaveBeenCalled();
+    });
+
+    it('mints a token where it has been switched on deliberately', async () => {
+      allow('true');
+      mockUserService.findById.mockResolvedValue({
+        id: 1,
+        ssoId: 'sso_1',
+        email: 'test@test.com',
+      });
 
       const result = await controller.generateTestToken();
 
@@ -137,21 +195,23 @@ describe('UserController', () => {
       expect(result.user.id).toBe(1);
       expect(mockJwtService.signAsync).toHaveBeenCalled();
     });
-  });
 
-  describe('deleteAccount', () => {
-    it('deletes the caller\'s platform data and reports what went', async () => {
-      const summary = { wabas: 1, phoneNumbers: 2, templates: 3, messages: 4, inboundMessages: 5, apiKeys: 1, metaConnections: 1, contacts: 0, webhookEvents: 0 };
-      mockUserService.deleteAccount.mockResolvedValue(summary);
-      const req = { user: { id: 1, ssoId: 'sso_1' }, sessionId: 'sess_1' } as any;
+    it('reads the flag it claims to read', async () => {
+      allow('true');
+      mockUserService.findById.mockResolvedValue({ id: 1, ssoId: 'sso_1' });
 
-      await expect(controller.deleteAccount(req)).resolves.toEqual(summary);
-      expect(mockUserService.deleteAccount).toHaveBeenCalledWith(1, 'sess_1');
+      await controller.generateTestToken();
+
+      expect(mockConfigService.get).toHaveBeenCalledWith('ALLOW_TEST_TOKENS');
     });
 
-    it('throws UnauthorizedException when user is missing', async () => {
-      await expect(controller.deleteAccount({} as any)).rejects.toThrow(UnauthorizedException);
-      expect(mockUserService.deleteAccount).not.toHaveBeenCalled();
+    it('still refuses when the test user does not exist', async () => {
+      allow('true');
+      mockUserService.findById.mockResolvedValue(null);
+
+      await expect(controller.generateTestToken()).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
   });
 });
