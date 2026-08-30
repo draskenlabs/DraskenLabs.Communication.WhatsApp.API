@@ -1,37 +1,67 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { SsoService, OrgSummary } from './sso.service';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { createHash } from 'crypto';
+import { SsoService, OrgSummary, SsoTokenData } from './sso.service';
+import { SsoTokenService } from './sso-token.service';
+import { OrgAccessService } from './org-access.service';
 import { UserService } from 'src/user/user.service';
 import { RedisService } from 'src/redis/redis.service';
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { AuthCallbackDto } from './dto/callback.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
-import { OrgTokenResponseDto } from './dto/org.dto';
-import { OrganisationSettingsService } from 'src/organisation-settings/organisation-settings.service';
+import { OrgAccessResponseDto } from './dto/org.dto';
+
+/** What a caller needs to keep a session alive, and where to put each half. */
+export interface SessionTokens {
+  accessToken: string;
+  /** Never returned to the browser — the controller puts it in a cookie. */
+  refreshToken: string;
+  expiresIn: number;
+  tokenType: string;
+}
+
+/** How long a concurrent refresh waits for the one that took the lock. */
+const REFRESH_WAIT_MS = 2000;
+const REFRESH_POLL_MS = 100;
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly ssoService: SsoService,
+    private readonly ssoToken: SsoTokenService,
+    private readonly orgAccess: OrgAccessService,
     private readonly userService: UserService,
-    private readonly jwtService: JwtService,
     private readonly redisService: RedisService,
     private readonly orgDirectory: OrgDirectoryService,
-    private readonly orgSettings: OrganisationSettingsService,
   ) {}
 
   /**
-   * Completes the PKCE exchange and starts a session. Returns a **session** JWT
-   * (no org) plus the user's organisations. The client then selects or creates
-   * an org to obtain an org-scoped token. The user's SSO access token + org
-   * membership are cached server-side so org list/create/switch can run behind
-   * the app JWT without exposing the SSO token to the browser.
+   * Completes the PKCE exchange and starts a session.
+   *
+   * What comes back is the **SSO's** access token, not one this API signed.
+   * Everything downstream verifies it against the SSO's published keys, so
+   * there is one credential in play rather than two, and it ends when the SSO
+   * says it ends instead of when a locally-issued copy happens to expire.
+   *
+   * The session record keyed by the token's `sid` holds what the SSO cannot
+   * answer: which organisations this person may enter here. It holds no token
+   * of theirs — every request now carries the live one.
    */
-  async handleCallback(dto: AuthCallbackDto): Promise<AuthResponseDto> {
-    const tokens = await this.ssoService.exchangeCode(dto.code, dto.codeVerifier);
+  async handleCallback(
+    dto: AuthCallbackDto,
+  ): Promise<{ body: AuthResponseDto; tokens: SessionTokens }> {
+    const tokens = await this.ssoService.exchangeCode(
+      dto.code,
+      dto.codeVerifier,
+    );
+    // Verified rather than merely decoded: this is the first time the token is
+    // seen, and the `sid` the whole session is keyed on has to be one the SSO
+    // actually signed for this client.
+    const claims = await this.ssoToken.verify(tokens.accessToken);
     const ssoUser = this.ssoService.decodeUserInfo(tokens.accessToken);
 
-    const organisations = await this.ssoService.listOrganizations(tokens.accessToken);
+    const organisations = await this.ssoService.listOrganizations(
+      tokens.accessToken,
+    );
     // The access token has no name claims, so the display name has to come
     // from the SSO profile endpoint. Best-effort: login still succeeds without
     // it, falling back to what the token does carry.
@@ -40,16 +70,14 @@ export class AuthService {
     // Contact details are stored locally so background jobs and webhooks can
     // email this person without a token of theirs to call SSO with.
     const user = await this.userService.findOrCreateBySsoId(ssoUser.ssoId, {
-      email: profile?.email || ssoUser.email,
+      email: profile?.email || claims.email || ssoUser.email,
       firstName: profile?.firstName || ssoUser.firstName,
       lastName: profile?.lastName || ssoUser.lastName,
     });
 
-    const sessionId = await this.redisService.createSessionId();
-    await this.redisService.setSsoSession(sessionId, {
+    await this.redisService.setSsoSession(claims.sid, {
       ssoId: ssoUser.ssoId,
-      ssoAccessToken: tokens.accessToken,
-      email: profile?.email || ssoUser.email,
+      email: profile?.email || claims.email || ssoUser.email,
       firstName: profile?.firstName || ssoUser.firstName,
       lastName: profile?.lastName || ssoUser.lastName,
       username: profile?.username ?? '',
@@ -57,142 +85,172 @@ export class AuthService {
       imageUrl: profile?.imageUrl ?? '',
       ssoCreatedAt: profile?.createdAt ?? null,
       orgs: organisations,
+      grants: {},
     });
 
     // The only moment anything here learns what an organisation is called.
     // Cached now so a webhook or a billing cron can name it later.
     await this.orgDirectory.remember(organisations);
 
-    const access_token = await this.jwtService.signAsync({ sub: user.id, sessionId });
-    // What the session stores is membership as the SSO sees it — that is what
-    // `selectOrg` checks against. Clients are added on the way out only.
     return {
-      access_token,
-      user,
-      organisations: await this.withClients(organisations),
+      body: {
+        user,
+        organisations: await this.orgAccess.withClients(organisations),
+      },
+      tokens: this.sessionTokens(tokens),
     };
+  }
+
+  /**
+   * Trades the refresh token for a new access token.
+   *
+   * Serialised per token, because the SSO rotates on use and reads a second
+   * presentation of the same token as theft — it revokes the entire session
+   * family. Two tabs waking together share one cookie, so without this they
+   * would sign the user out between them. The winner's pair is cached for a
+   * minute and handed to anyone still holding the token it spent.
+   */
+  async refresh(refreshToken: string): Promise<SessionTokens> {
+    const hash = createHash('sha256').update(refreshToken).digest('hex');
+
+    const cached = await this.redisService.getRefreshResult<SsoTokenData>(hash);
+    if (cached) return this.sessionTokens(cached);
+
+    if (!(await this.redisService.takeRefreshLock(hash))) {
+      const shared = await this.waitForRefresh(hash);
+      if (shared) return this.sessionTokens(shared);
+      throw new UnauthorizedException('Could not refresh the session');
+    }
+
+    try {
+      const tokens = await this.ssoService.refreshTokens(refreshToken);
+      await this.redisService.setRefreshResult(hash, tokens);
+      return this.sessionTokens(tokens);
+    } catch (err) {
+      // Released rather than left to expire: a refresh that failed because the
+      // SSO was briefly unreachable should be retryable on the next request,
+      // not ten seconds later.
+      await this.redisService.releaseRefreshLock(hash);
+      throw err;
+    }
+  }
+
+  /**
+   * Ends the session — at the SSO, so every application sharing it is told,
+   * and here, so the grants go with it.
+   */
+  async logout(sessionId: string, ssoAccessToken: string): Promise<void> {
+    await this.ssoService.logout(ssoAccessToken);
+    await this.redisService.deleteSsoSession(sessionId);
   }
 
   /** Lists the organisations the session user can enter. */
-  async listOrganisations(sessionId: string): Promise<OrgSummary[]> {
-    const session = await this.getSession(sessionId);
-    return this.withClients(session.orgs);
+  async listOrganisations(
+    sessionId: string,
+    ssoAccessToken: string,
+  ): Promise<OrgSummary[]> {
+    const session = await this.redisService.getSsoSession(sessionId);
+    const orgs =
+      session?.orgs ??
+      (await this.ssoService.listOrganizations(ssoAccessToken));
+    return this.orgAccess.withClients(orgs);
   }
 
   /**
-   * Re-issues an org-scoped token for an organisation the user may enter.
+   * Enters an organisation the user may enter.
    *
-   * Two ways in. Ordinarily that means membership in the SSO. An agency also
-   * gets in to each of its clients, which are organisations here that never
-   * grant anyone membership — that relationship is ours, so the SSO cannot
-   * answer it and this does.
+   * This used to re-issue a token with the organisation baked in. It no longer
+   * issues anything: the credential is the SSO's, so what this does is record
+   * the grant against the session and tell the caller what it may send in
+   * `X-Org-Id`. Switching organisation is now a fact about the session, not a
+   * second token to keep in step with the first.
    */
-  async selectOrg(userId: number, sessionId: string, orgId: string): Promise<OrgTokenResponseDto> {
-    const session = await this.getSession(sessionId);
-    const org = session.orgs.find((o) => o.id === orgId);
-    if (org) {
-      return this.issueOrgToken(userId, sessionId, org, 'member');
-    }
-
-    const client = await this.resolveClient(session.orgs, orgId);
-    if (!client) {
-      throw new ForbiddenException('You are not a member of this organisation');
-    }
-    return this.issueOrgToken(
-      userId,
-      sessionId,
-      client.org,
-      'agency',
-      client.agencyOrgId,
-    );
-  }
-
-  /** Creates a new organisation in the SSO and returns an org-scoped token for it. */
-  async createOrganisation(userId: number, sessionId: string, name: string): Promise<OrgTokenResponseDto> {
-    const session = await this.getSession(sessionId);
-    const org = await this.ssoService.createOrganization(session.ssoAccessToken, name);
-
-    const orgs = [...session.orgs.filter((o) => o.id !== org.id), org];
-    await this.redisService.setSsoSession(sessionId, { ...session, orgs });
-
-    return this.issueOrgToken(userId, sessionId, org, 'owner');
-  }
-
-  /**
-   * The organisations the session can enter, in switcher order: the ones the
-   * SSO says they belong to, then the clients of any of those that is an
-   * agency. Kept out of the session record on purpose — membership is what
-   * `selectOrg` checks, and a client is not membership.
-   */
-  private async withClients(orgs: OrgSummary[]): Promise<OrgSummary[]> {
-    const clients: OrgSummary[] = [];
-    for (const org of orgs) {
-      const settings = await this.orgSettings.get(org.id);
-      if (!settings.isAgency) continue;
-      for (const client of await this.orgSettings.clientRoster(org.id)) {
-        clients.push({
-          id: client.ssoOrgId,
-          // The agency's own label first: a client whose people have never
-          // logged in has no name anywhere else.
-          name:
-            client.clientName ??
-            (await this.orgDirectory.name(client.ssoOrgId)) ??
-            'Client',
-          agencyOrgId: org.id,
-        });
-      }
-    }
-    return [...orgs, ...clients];
-  }
-
-  /** Whether one of the session's organisations is the agency for `orgId`. */
-  private async resolveClient(
-    orgs: OrgSummary[],
+  async selectOrg(
+    sessionId: string,
     orgId: string,
-  ): Promise<{ org: OrgSummary; agencyOrgId: string } | null> {
-    const settings = await this.orgSettings.get(orgId);
-    if (!settings.agencyOrgId) return null;
-    const agency = orgs.find((o) => o.id === settings.agencyOrgId);
-    if (!agency) return null;
+    ssoAccessToken: string,
+  ): Promise<OrgAccessResponseDto> {
+    const grant = await this.orgAccess.grantFor(
+      sessionId,
+      orgId,
+      ssoAccessToken,
+    );
+    if (!grant) {
+      throw new UnauthorizedException(
+        'You are not a member of this organisation',
+      );
+    }
+
+    const org = await this.describe(sessionId, orgId, grant.agencyOrgId);
+    await this.orgDirectory.remember([org]);
     return {
-      org: {
-        id: orgId,
-        name:
-          settings.clientName ??
-          (await this.orgDirectory.name(orgId)) ??
-          'Client',
-        agencyOrgId: agency.id,
-      },
-      agencyOrgId: agency.id,
+      orgId,
+      organisation: org,
+      role: grant.role,
+      ...(grant.agencyOrgId ? { agencyOrgId: grant.agencyOrgId } : {}),
     };
   }
 
-  private async getSession(sessionId: string) {
+  /** Creates a new organisation in the SSO and enters it. */
+  async createOrganisation(
+    sessionId: string,
+    name: string,
+    ssoAccessToken: string,
+  ): Promise<OrgAccessResponseDto> {
+    const org = await this.ssoService.createOrganization(ssoAccessToken, name);
+
     const session = await this.redisService.getSsoSession(sessionId);
-    if (!session) {
-      throw new UnauthorizedException('Session expired — please sign in again');
+    if (session) {
+      await this.redisService.setSsoSession(sessionId, {
+        ...session,
+        orgs: [...session.orgs.filter((o) => o.id !== org.id), org],
+      });
     }
-    return session;
+    // Recorded rather than resolved: the SSO's membership list is a moment
+    // behind a creation this request made, and the creator is its owner.
+    await this.orgAccess.record(sessionId, org.id, { role: 'owner' });
+    await this.orgDirectory.remember([org]);
+
+    return { orgId: org.id, organisation: org, role: 'owner' };
   }
 
-  private async issueOrgToken(
-    userId: number,
+  /** The organisation as the switcher should show it. */
+  private async describe(
     sessionId: string,
-    org: OrgSummary,
-    role: string,
+    orgId: string,
     agencyOrgId?: string,
-  ): Promise<OrgTokenResponseDto> {
-    await this.orgDirectory.remember([org]);
-    // `agencyOrgId` rides on the token so a request can tell it is an agency
-    // acting inside a client without another lookup — the console uses it to
-    // hide what a client cannot change, such as its own subscription.
-    const access_token = await this.jwtService.signAsync({
-      sub: userId,
-      orgId: org.id,
-      role,
-      sessionId,
+  ): Promise<OrgSummary> {
+    const session = await this.redisService.getSsoSession(sessionId);
+    // Through the same list the switcher is built from, so an organisation is
+    // named identically whether it was picked from that list or entered here.
+    const known = await this.orgAccess.withClients(session?.orgs ?? []);
+    const found = known.find((o) => o.id === orgId);
+    if (found) return found;
+    return {
+      id: orgId,
+      name: (await this.orgDirectory.name(orgId)) ?? 'Client',
       ...(agencyOrgId ? { agencyOrgId } : {}),
-    });
-    return { access_token, orgId: org.id, organisation: org };
+    };
+  }
+
+  private sessionTokens(tokens: SsoTokenData): SessionTokens {
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresIn: tokens.expiresIn,
+      tokenType: tokens.tokenType ?? 'Bearer',
+    };
+  }
+
+  /** Polls for the pair the caller holding the lock is fetching. */
+  private async waitForRefresh(hash: string): Promise<SsoTokenData | null> {
+    const deadline = Date.now() + REFRESH_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, REFRESH_POLL_MS));
+      const cached =
+        await this.redisService.getRefreshResult<SsoTokenData>(hash);
+      if (cached) return cached;
+    }
+    return null;
   }
 }

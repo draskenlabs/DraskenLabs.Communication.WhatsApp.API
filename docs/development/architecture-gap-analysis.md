@@ -109,7 +109,7 @@ This conflates two separate concerns: **API key auth** and **phone→token resol
 | F3 | **Connect flow does not populate phone cache** | After `POST /connect`, `phone:{phoneNumberId}` entries must be written to Redis | `connectWhatsapp()` only saves to DB (`UserWhatsapp` record) |
 | F4 | **Phone number sync does not populate phone cache** | After `POST /wabas/:wabaId/phone-numbers/sync`, all phone entries written to Redis | `syncPhoneNumbers()` only saves to DB (`WabaPhoneNumber` records) |
 | F5 | **No `DELETE /wabas/:wabaId/connect` endpoint** | WABA disconnect must remove `UserWhatsapp` record and invalidate all `phone:{id}` Redis entries via `user:{userId}:phones` Set | Not built |
-| F6 | ✅ **Fixed** — **`POST /user/test-token` not gated by environment** | Must be disabled or unreachable in production | Now off unless `ALLOW_TEST_TOKENS` is set to exactly `true`, and refused as 404. See the note below |
+| F6 | ✅ **Closed** — **`POST /user/test-token` not gated by environment** | Must be disabled or unreachable in production | Removed entirely (2026-08-30). It minted a JWT this API signed, and this API signs no access tokens any more — the credential is the SSO's. The gate below is kept as the record of why it was a positive flag while the endpoint existed |
 
 ### F6 — Detail: why the gate is a positive flag, not `NODE_ENV`
 
@@ -171,7 +171,7 @@ old gate it gets `201` and a token, against this one `404`.
 | 7 | **F1** — Add `DELETE /api-keys/:id` — soft delete DB + `DEL apiKey:{accessKey}` Redis | Low |
 | 8 | **F2** — Add `user.status === true` check in `AuthMiddleware` | Low |
 | 9 | **F5** — Add `DELETE /wabas/:wabaId/connect` — remove `UserWhatsapp`, invalidate phone cache | Medium |
-| 10 | ✅ **F6** — Done. Gated on `ALLOW_TEST_TOKENS === 'true'`, not on `NODE_ENV` | Low |
+| 10 | ✅ **F6** — Closed. The endpoint was removed when the SSO's own access token became the credential | Low |
 | 11 | **M1–M6** — Minor fixes | Low |
 
 ---

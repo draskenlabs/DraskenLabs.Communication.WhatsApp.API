@@ -12,7 +12,6 @@ import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { orgDirectoryDouble } from 'src/org/org.test-doubles';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { SsoService } from 'src/auth/sso.service';
-import { RedisService } from 'src/redis/redis.service';
 import { AgencyBillingService } from 'src/billing/agency-billing.service';
 import { InvoiceService } from 'src/billing/invoice.service';
 import { firstArg } from 'src/common/utils/mock-args';
@@ -40,7 +39,6 @@ let mockOrgDirectory: ReturnType<typeof orgDirectoryDouble>;
 // its arguments, and a stub would only prove that a stub throws.
 const realLimits = new PlanLimitsService(null as never, null as never);
 const mockSso = { createOrganization: jest.fn() };
-const mockRedis = { getSsoSession: jest.fn() };
 const mockAgencyBilling = {
   subscribeClient: jest.fn(),
   releaseClient: jest.fn(),
@@ -83,7 +81,6 @@ describe('AgencyService', () => {
       id: 'org_created',
       name: 'Kettle Coffee',
     });
-    mockRedis.getSsoSession.mockResolvedValue({ ssoAccessToken: 'sso-token' });
     mockAgencyBilling.subscribeClient.mockResolvedValue({
       ssoOrgId: 'org_created',
       planCode: 'growth',
@@ -117,7 +114,6 @@ describe('AgencyService', () => {
         { provide: OrgDirectoryService, useValue: mockOrgDirectory },
         { provide: PlanLimitsService, useValue: mockPlanLimits },
         { provide: SsoService, useValue: mockSso },
-        { provide: RedisService, useValue: mockRedis },
         { provide: AgencyBillingService, useValue: mockAgencyBilling },
         { provide: InvoiceService, useValue: mockInvoices },
       ],
@@ -196,7 +192,7 @@ describe('AgencyService', () => {
       name: 'Kettle Coffee',
       planCode: 'growth',
       userId: 7,
-      sessionId: 'sess_1',
+      ssoAccessToken: 'sso-token',
     };
 
     it('creates the organisation, attaches it and pays for it', async () => {
@@ -235,15 +231,6 @@ describe('AgencyService', () => {
       mockSettings.get.mockResolvedValue(settings({ isAgency: false }));
 
       await expect(service.createClient('org_1', input)).rejects.toThrow();
-      expect(mockSso.createOrganization).not.toHaveBeenCalled();
-    });
-
-    it('says so when the session can no longer reach the SSO', async () => {
-      mockRedis.getSsoSession.mockResolvedValue(null);
-
-      await expect(service.createClient('org_agency', input)).rejects.toThrow(
-        /session has expired/,
-      );
       expect(mockSso.createOrganization).not.toHaveBeenCalled();
     });
 

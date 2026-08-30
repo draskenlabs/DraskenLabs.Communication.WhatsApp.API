@@ -10,19 +10,46 @@ export class AuthUserDto {
 /**
  * Response of `POST /auth/callback`.
  *
- * The `access_token` is a **session** JWT (identifies the user, carries no
- * organisation) — the client must select or create an organisation via
- * `/auth/select-org` or `/auth/organisations` to obtain an org-scoped token
- * before calling business endpoints. `organisations` lists what the user can
- * choose from (empty → they must create one).
+ * `accessToken` is the **SSO's own** RS256 access token — this API signs
+ * nothing of its own any more. It is short-lived (ten minutes by default);
+ * `POST /auth/refresh` mints the next one from the refresh token, which stays
+ * in an HttpOnly cookie and never reaches page scripts.
+ *
+ * It carries no organisation, because the SSO does not know what one means
+ * here. `organisations` is what the user may enter; the client picks one via
+ * `/auth/select-org` (or `/auth/organisations`) and then names it in the
+ * `X-Org-Id` header on every request.
  */
 export class AuthResponseDto {
-  @ApiProperty({ description: 'Session JWT — not yet scoped to an organisation' })
-  access_token: string;
-
   @ApiProperty({ type: AuthUserDto })
   user: AuthUserDto;
 
   @ApiProperty({ type: OrgSummaryDto, isArray: true })
   organisations: OrgSummaryDto[];
+}
+
+/** The half of a token pair a browser is allowed to hold. */
+export class SessionTokenDto {
+  @ApiProperty({
+    description: 'SSO access token — verify it against the SSO JWKS',
+  })
+  accessToken: string;
+
+  @ApiProperty({ description: 'Seconds until the access token expires' })
+  expiresIn: number;
+
+  @ApiProperty({ example: 'Bearer' })
+  tokenType: string;
+}
+
+/** Response of `POST /auth/callback` — the session plus its access token. */
+export class AuthSessionDto extends AuthResponseDto {
+  @ApiProperty()
+  accessToken: string;
+
+  @ApiProperty()
+  expiresIn: number;
+
+  @ApiProperty({ example: 'Bearer' })
+  tokenType: string;
 }

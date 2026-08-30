@@ -143,16 +143,16 @@ export class AgencyController {
   ): Promise<ClientSubscribedDto> {
     const request = req as Request & {
       user?: { id: number };
-      sessionId?: string;
+      ssoAccessToken?: string;
     };
-    if (!request.user?.id || !request.sessionId) {
+    if (!request.user?.id || !request.ssoAccessToken) {
       throw new UnauthorizedException('Session not found in context');
     }
     return this.agency.createClient(this.orgOf(req), {
       name: dto.name,
       planCode: dto.planCode,
       userId: request.user.id,
-      sessionId: request.sessionId,
+      ssoAccessToken: request.ssoAccessToken,
     });
   }
 

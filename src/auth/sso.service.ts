@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
 
@@ -10,10 +14,12 @@ export interface OrgSummary {
   agencyOrgId?: string;
 }
 
-interface SsoTokenData {
+export interface SsoTokenData {
   accessToken: string;
   refreshToken: string;
+  /** Seconds the access token is good for — 600 unless the client says otherwise. */
   expiresIn: number;
+  tokenType?: string;
 }
 
 export interface SsoUserInfo {
@@ -76,7 +82,9 @@ export class SsoService {
       const { data } = await axios.get(`${this.apiBase}/organizations`, {
         headers: { Authorization: `Bearer ${ssoAccessToken}` },
       });
-      const orgs = (data?.data ?? data) as Array<Record<string, unknown>> | undefined;
+      const orgs = (data?.data ?? data) as
+        | Array<Record<string, unknown>>
+        | undefined;
       if (!Array.isArray(orgs)) return [];
       return orgs
         .filter((o) => typeof o?.id === 'string')
@@ -111,7 +119,10 @@ export class SsoService {
    * don't get an auto-generated slug with a long unique suffix. Uses the user's
    * SSO access token; the created org is the single source of truth.
    */
-  async createOrganization(ssoAccessToken: string, name: string): Promise<OrgSummary> {
+  async createOrganization(
+    ssoAccessToken: string,
+    name: string,
+  ): Promise<OrgSummary> {
     try {
       const { data } = await axios.post(
         `${this.apiBase}/organizations`,
@@ -120,15 +131,23 @@ export class SsoService {
       );
       const o = (data?.data ?? data) as Record<string, unknown> | undefined;
       if (!o || typeof o.id !== 'string') {
-        throw new BadRequestException('Malformed organisation response from SSO');
+        throw new BadRequestException(
+          'Malformed organisation response from SSO',
+        );
       }
-      return { id: o.id, name: (o.name as string) ?? name, slug: o.slug as string | undefined };
+      return {
+        id: o.id,
+        name: (o.name as string) ?? name,
+        slug: o.slug as string | undefined,
+      };
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
       const error = err as AxiosError<{ message?: string }>;
-      const msg = error.response?.data?.message ?? 'Failed to create organisation';
+      const msg =
+        error.response?.data?.message ?? 'Failed to create organisation';
       const status = error.response?.status ?? 500;
-      if (status === 401 || status === 403) throw new UnauthorizedException(msg);
+      if (status === 401 || status === 403)
+        throw new UnauthorizedException(msg);
       throw new BadRequestException(msg);
     }
   }
@@ -166,7 +185,10 @@ export class SsoService {
     }
   }
 
-  async exchangeCode(code: string, codeVerifier: string): Promise<SsoTokenData> {
+  async exchangeCode(
+    code: string,
+    codeVerifier: string,
+  ): Promise<SsoTokenData> {
     try {
       const { data } = await axios.post(`${this.apiBase}/auth/token`, {
         clientId: this.clientId,
@@ -183,22 +205,77 @@ export class SsoService {
     }
   }
 
+  /**
+   * Trades a refresh token for a brand-new pair.
+   *
+   * The SSO rotates on every use: the token presented here is dead the moment
+   * it is accepted, and presenting a spent one is treated as theft rather than
+   * as a mistake — the whole session family is revoked. That is why the caller
+   * ({@link AuthService.refresh}) serialises refreshes for a session and hands
+   * a concurrent caller the pair the first one got, instead of letting two tabs
+   * spend the same token and take the session down between them.
+   *
+   * Sent in the body, not as a cookie: this is a server-side caller, and the
+   * cookie the SSO would set belongs to a browser talking to the SSO directly.
+   */
+  async refreshTokens(refreshToken: string): Promise<SsoTokenData> {
+    try {
+      const { data } = await axios.post(`${this.apiBase}/auth/refresh`, {
+        refreshToken,
+      });
+      return data.data as SsoTokenData;
+    } catch (err) {
+      const error = err as AxiosError<{ message?: string }>;
+      const msg =
+        error.response?.data?.message ?? 'Could not refresh the session';
+      throw new UnauthorizedException(msg);
+    }
+  }
+
+  /**
+   * Ends the session at the SSO, so signing out here signs out everywhere this
+   * device was signed in.
+   *
+   * Best-effort by design: a sign-out that fails because the SSO is
+   * unreachable must still clear this side. The alternative is a person who
+   * cannot sign out of a console because a different service is down.
+   */
+  async logout(ssoAccessToken: string): Promise<void> {
+    try {
+      await axios.post(
+        `${this.apiBase}/auth/logout`,
+        {},
+        { headers: { Authorization: `Bearer ${ssoAccessToken}` } },
+      );
+    } catch {
+      // Nothing to do: the token expires on its own within minutes.
+    }
+  }
+
   decodeUserInfo(accessToken: string): SsoUserInfo {
     try {
       const [, payload] = accessToken.split('.');
-      const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8'));
+      const decoded = JSON.parse(
+        Buffer.from(payload, 'base64url').toString('utf-8'),
+      );
 
       const ssoId: string = decoded.sub;
       const email: string = decoded.email;
-      const firstName: string = decoded.firstName ?? decoded.given_name ?? decoded.first_name ?? '';
-      const lastName: string = decoded.lastName ?? decoded.family_name ?? decoded.last_name ?? '';
+      const firstName: string =
+        decoded.firstName ?? decoded.given_name ?? decoded.first_name ?? '';
+      const lastName: string =
+        decoded.lastName ?? decoded.family_name ?? decoded.last_name ?? '';
 
       if (!ssoId || !email) {
         throw new Error('Missing required claims in SSO token');
       }
 
       const ssoOrgId: string | null =
-        decoded.orgId ?? decoded.org_id ?? decoded.activeOrgId ?? decoded.active_org_id ?? null;
+        decoded.orgId ??
+        decoded.org_id ??
+        decoded.activeOrgId ??
+        decoded.active_org_id ??
+        null;
 
       const role: string | null =
         decoded.role ?? decoded.orgRole ?? decoded.org_role ?? null;

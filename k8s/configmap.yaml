@@ -22,6 +22,16 @@ data:
   # Redirect URI registered for this SSO client. Must EXACTLY match the web app's
   # /auth/callback URL (its SSO_REDIRECT_URI) and the value sent at token exchange.
   SSO_REDIRECT_URI: "https://wa.draskenapis.com/auth/callback"
+  # Browser origins allowed to make credentialed requests. The console's own
+  # origin comes from SSO_REDIRECT_URI and needs no entry here; this adds the
+  # rest. Credentials matter now because the SSO refresh token is held in an
+  # HttpOnly cookie, and a cookie only travels on a credentialed request.
+  # WEB_APP_ORIGINS: "https://staging.wa.draskenapis.com"
+  # The refresh-token cookie. `lax` is enough while the console and this API
+  # sit under one registrable domain; `none` (which forces Secure) is for a
+  # deployment that splits them across sites.
+  AUTH_COOKIE_SAMESITE: "lax"
+  AUTH_COOKIE_SECURE: "true"
   # Meta OAuth redirect (must match the Meta App config)
   META_REDIRECT_URI: "https://api.example.com/connect/callback"
   # Amazon SES — non-secret settings. Credentials live in the Secret, or are

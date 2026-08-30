@@ -44,14 +44,19 @@ npm run start:dev
 | `REDIS_HOST` | Redis hostname |
 | `REDIS_PORT` | Redis port |
 | `ENCRYPTION_KEY` | 32-byte hex key for AES-256-GCM |
-| `JWT_SECRET` | Secret for signing internal JWTs |
+| `JWT_SECRET` | HMAC secret for the signatures this API makes for itself (e.g. unsubscribe links) — **not** access tokens |
 | `META_APP_ID` | Meta app ID |
 | `META_APP_SECRET` | Meta app secret |
 | `META_REDIRECT_URI` | OAuth redirect URI registered in Meta |
 | `WEBHOOK_VERIFY_TOKEN` | Token for Meta webhook verification |
-| `SSO_CLIENT_ID` | Drasken SSO client ID |
-| `SSO_API_URL` | Drasken SSO API base URL |
-| `SSO_ACCOUNTS_URL` | Drasken SSO accounts UI base URL |
+| `SSO_CLIENT_ID` | Drasken SSO client ID — also the `aud` every access token must carry |
+| `SSO_CLIENT_SECRET` | Drasken SSO client secret (confidential client) |
+| `SSO_API_URL` | Drasken SSO API base URL — JWKS and token endpoints live under it |
+| `SSO_REDIRECT_URI` | The console's `/auth/callback` URL; its origin is allowed through CORS |
+| `SSO_ISSUER` | Optional — the `iss` on SSO tokens, when it is not `SSO_API_URL` |
+| `SSO_REFRESH_TOKEN_TTL` | Optional — refresh-token lifetime in seconds (default 2592000) |
+| `WEB_APP_ORIGINS` | Optional — extra browser origins allowed credentialed requests |
+| `AUTH_COOKIE_SAMESITE` | Optional — `lax` (default) or `none` for the refresh cookie |
 
 ---
 
@@ -59,12 +64,24 @@ npm run start:dev
 
 Two strategies are supported:
 
-### JWT (user-facing)
+### SSO access token (user-facing)
 
-Issued by `POST /auth/callback` after a PKCE SSO login. Pass as:
+`POST /auth/callback` completes the PKCE exchange and returns the **SSO's own**
+RS256 access token — this API signs none of its own. Pass it as:
+
 ```
-Authorization: Bearer <jwt>
+Authorization: Bearer <sso access token>
+X-Org-Id: <organisation id from POST /auth/select-org>
 ```
+
+It is verified offline against the keys the SSO publishes at
+`/.well-known/jwks.json`, checking `iss`, `aud` (this client id), `exp` and the
+header `kid`. It lives about ten minutes; `POST /auth/refresh` mints the next
+one from the refresh token, which the API keeps in an HttpOnly cookie so page
+scripts never see it. `POST /auth/logout` ends the session at the SSO.
+
+The token carries no organisation, so a request names the one it is working in
+with `X-Org-Id`, checked against the grants the session holds.
 
 ### API Key (programmatic)
 
@@ -74,12 +91,11 @@ x-access-key: ak_...
 x-secret-key: sk_...
 ```
 
-### SSO Token (organisation endpoints only)
+### Organisation endpoints
 
-`/organisation/*` endpoints are a proxy to the Drasken SSO API. Pass the **SSO access token** received during login:
-```
-Authorization: Bearer <sso_access_token>
-```
+`/organisation/*` is a proxy onto the Drasken SSO's own organisation API. It
+takes the same access token as everything else — verified here, then forwarded
+to the SSO as-is, because the caller already holds the token the SSO wants.
 
 ---
 
@@ -87,17 +103,17 @@ Authorization: Bearer <sso_access_token>
 
 | Tag | Base Path | Auth | Description |
 |-----|-----------|------|-------------|
-| Auth | `/auth` | — | PKCE login flow, JWT issuance |
-| User | `/user` | JWT | User profile |
-| Organisations | `/organisation` | SSO Token | SSO org & member management (proxy) |
-| Connect | `/connect` | JWT | WhatsApp Embedded Signup |
-| WABAs | `/wabas` | JWT | WABA management and sync |
-| WABA Phone Numbers | `/wabas/:id/phone-numbers` | JWT | Phone number sync |
-| API Keys | `/api-keys` | JWT | Programmatic key management |
+| Auth | `/auth` | — / SSO token | PKCE login, refresh, logout, organisation selection |
+| User | `/user` | SSO token | User profile |
+| Organisations | `/organisation` | SSO token | SSO org & member management (proxy) |
+| Connect | `/connect` | SSO token | WhatsApp Embedded Signup |
+| WABAs | `/wabas` | SSO token | WABA management and sync |
+| WABA Phone Numbers | `/wabas/:id/phone-numbers` | SSO token | Phone number sync |
+| API Keys | `/api-keys` | SSO token | Programmatic key management |
 | Messaging | `/messages` | API Key | Send and retrieve messages |
-| Inbox | `/inbox` | JWT / API Key | Conversations, threads and replies |
-| Templates | `/templates` | JWT | Message template sync from Meta |
-| Contacts | `/contacts` | JWT | Contact and opt-out management |
+| Inbox | `/inbox` | SSO token / API Key | Conversations, threads and replies |
+| Templates | `/templates` | SSO token | Message template sync from Meta |
+| Contacts | `/contacts` | SSO token | Contact and opt-out management |
 | Webhooks | `/webhooks` | HMAC / None | Meta event ingestion |
 
 ---
@@ -128,7 +144,7 @@ npm run test:cov      # coverage report
 
 ```
 src/
-  auth/               PKCE SSO flow, JWT issuance
+  auth/               PKCE SSO flow, token verification, refresh, org grants
   user/               User profile, auth middleware
   org/                Organisation proxy (SSO)
   connect/            WhatsApp Embedded Signup
