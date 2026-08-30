@@ -10,6 +10,43 @@ import { ConfigService } from '@nestjs/config';
 import * as cookieParser from 'cookie-parser';
 import { json } from 'express';
 
+/**
+ * The browser origins allowed to call this API, credentials included.
+ *
+ * It used to be every origin, without credentials — which was enough while the
+ * only credential was a bearer token a script had to attach by hand. It is not
+ * enough now: the refresh token lives in an HttpOnly cookie, and a cookie only
+ * travels on a credentialed request, which a wildcard origin may not answer.
+ *
+ * The console's own origin comes from `SSO_REDIRECT_URI` — that value is the
+ * web app's callback URL, so it always names the deployment this API serves and
+ * needs no second variable to be kept in step with it. `WEB_APP_ORIGINS` adds
+ * the others a deployment has: a staging console, a local `bun dev`.
+ *
+ * Nothing here affects server-to-server callers: CORS is a browser rule, and an
+ * API-key integration never sends an `Origin`.
+ */
+function browserOrigins(config: ConfigService): string[] {
+  const origins = new Set<string>();
+
+  const redirectUri = config.get<string>('SSO_REDIRECT_URI');
+  if (redirectUri) {
+    try {
+      origins.add(new URL(redirectUri).origin);
+    } catch {
+      // A malformed redirect URI is the SSO's problem to reject at token
+      // exchange; it must not stop this process from starting.
+    }
+  }
+
+  for (const raw of (config.get<string>('WEB_APP_ORIGINS') ?? '').split(',')) {
+    const origin = raw.trim().replace(/\/+$/, '');
+    if (origin) origins.add(origin);
+  }
+
+  return [...origins];
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
@@ -29,7 +66,10 @@ async function bootstrap() {
   );
 
   app.use(cookieParser());
-  app.enableCors();
+  app.enableCors({
+    origin: browserOrigins(app.get(ConfigService)),
+    credentials: true,
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -96,13 +136,30 @@ function mountSwagger(app: INestApplication): void {
     .setTitle('DraskenLabs WhatsApp Communication API')
     .setDescription(
       'NestJS backend for DraskenLabs WhatsApp Communication API using PostgreSQL, Prisma, and Redis.\n\n' +
-      '**Authentication**\n\n' +
-      'Most endpoints use the internal JWT issued by `POST /auth/callback` in the `Authorization: Bearer <token>` header.\n\n' +
-      '**Organisation endpoints** (`/organisation/*`) are a thin proxy to the Drasken SSO API. ' +
-      'Pass the **SSO access token** (received from the SSO during login) in the `Authorization: Bearer <sso_token>` header — not the internal JWT.',
+        '**Authentication**\n\n' +
+        'Most endpoints use the internal JWT issued by `POST /auth/callback` in the `Authorization: Bearer <token>` header.\n\n' +
+        '**Organisation endpoints** (`/organisation/*`) are a thin proxy to the Drasken SSO API. ' +
+        'Pass the **SSO access token** (received from the SSO during login) in the `Authorization: Bearer <sso_token>` header — not the internal JWT.',
     )
-    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT', description: 'Internal JWT issued by POST /auth/callback' }, 'jwt')
-    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT', description: 'SSO access token from Drasken SSO (used for /organisation endpoints)' }, 'sso-token')
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        description: 'Internal JWT issued by POST /auth/callback',
+      },
+      'jwt',
+    )
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        description:
+          'SSO access token from Drasken SSO (used for /organisation endpoints)',
+      },
+      'sso-token',
+    )
     .addTag('Auth', 'PKCE login flow and JWT issuance')
     .addTag('WABAs', 'WhatsApp Business Account management')
     .addTag('WABA Phone Numbers', 'Phone number management within a WABA')
@@ -110,7 +167,10 @@ function mountSwagger(app: INestApplication): void {
     .addTag('Templates', 'Message template management via Meta Graph API')
     .addTag('Contacts', 'Contact and opt-out management')
     .addTag('API Keys', 'Programmatic access key management')
-    .addTag('Organisations', 'SSO organisation and member management — pass the SSO access token, not the internal JWT')
+    .addTag(
+      'Organisations',
+      'SSO organisation and member management — pass the SSO access token, not the internal JWT',
+    )
     .addTag('Webhooks', 'Meta webhook verification and event ingestion')
     .setVersion('1.0.0')
     .build();

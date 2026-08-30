@@ -49,7 +49,10 @@ import * as Joi from 'joi';
         // address may be registered at all. The second is for local
         // development: in production it is what stops an endpoint from being
         // pointed at our own network.
-        WEBHOOK_DELIVERY_TIMEOUT_MS: Joi.number().min(1000).max(60000).default(10000),
+        WEBHOOK_DELIVERY_TIMEOUT_MS: Joi.number()
+          .min(1000)
+          .max(60000)
+          .default(10000),
         WEBHOOK_ALLOW_INSECURE_URLS: Joi.boolean()
           .truthy('true')
           .falsy('false')
@@ -63,14 +66,42 @@ import * as Joi from 'joi';
           .truthy('true')
           .falsy('false')
           .default(false),
-        ALLOW_MANUAL_CONNECT: Joi.boolean().truthy('true').falsy('false').default(false),
+        ALLOW_MANUAL_CONNECT: Joi.boolean()
+          .truthy('true')
+          .falsy('false')
+          .default(false),
         // Off by default, so a deployment publishes the API docs only when it
         // says to rather than because nobody remembered to turn them off.
-        SWAGGER_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+        SWAGGER_ENABLED: Joi.boolean()
+          .truthy('true')
+          .falsy('false')
+          .default(false),
         SSO_CLIENT_ID: Joi.string().required(),
         SSO_CLIENT_SECRET: Joi.string().required(),
         SSO_API_URL: Joi.string().required(),
         SSO_REDIRECT_URI: Joi.string().required(),
+        // The `iss` the SSO stamps on its tokens. Its public base URL, which is
+        // `SSO_API_URL` everywhere we run — set this only where the API is
+        // reached at a private address behind a public issuer.
+        SSO_ISSUER: Joi.string().uri().optional(),
+        // How long the SSO's refresh token lives, so the cookie holding it
+        // expires with it rather than outliving it. Matches the SSO's own
+        // default of 30 days; raise it only alongside the client's setting.
+        SSO_REFRESH_TOKEN_TTL: Joi.number().min(60).default(2592000),
+        // Browser origins allowed to make credentialed requests — the console,
+        // plus any staging or local origin. The web app's own origin, taken
+        // from SSO_REDIRECT_URI, is always allowed and needs no entry here.
+        WEB_APP_ORIGINS: Joi.string().optional(),
+        // The refresh cookie. `lax` is right while the console and this API
+        // share a registrable domain; a deployment that splits them across
+        // sites needs `none`, which forces Secure. Secure is off only for a
+        // plain-http local API.
+        AUTH_COOKIE_SAMESITE: Joi.string().valid('lax', 'none').default('lax'),
+        AUTH_COOKIE_SECURE: Joi.boolean()
+          .truthy('true')
+          .falsy('false')
+          .default(true),
+        AUTH_COOKIE_DOMAIN: Joi.string().optional(),
         // Firebase Cloud Messaging — optional. Without it the API runs
         // normally and push is simply disabled, so a deployment that does not
         // want notifications needs no extra configuration.

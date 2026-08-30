@@ -1,10 +1,10 @@
 import { ExecutionContext, NotFoundException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import { SsoTokenService } from 'src/auth/sso-token.service';
 import { AdminGuard, actorOf } from './admin.guard';
 import { PrismaService } from 'src/prisma/prisma.service';
 import type { Request } from 'express';
 
-const mockJwt = { verifyAsync: jest.fn() };
+const mockSsoToken = { verify: jest.fn() };
 const mockPrisma = { user: { findUnique: jest.fn() } };
 
 const contextFor = (
@@ -25,10 +25,10 @@ describe('AdminGuard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     guard = new AdminGuard(
-      mockJwt as unknown as JwtService,
+      mockSsoToken as unknown as SsoTokenService,
       mockPrisma as unknown as PrismaService,
     );
-    mockJwt.verifyAsync.mockResolvedValue({ sub: 7 });
+    mockSsoToken.verify.mockResolvedValue({ sub: 'user_2abc', sid: 'sess_1' });
     mockPrisma.user.findUnique.mockResolvedValue({
       id: 7,
       email: 'ops@drasken.com',
@@ -60,7 +60,7 @@ describe('AdminGuard', () => {
   });
 
   it('answers not-found when the token does not verify', async () => {
-    mockJwt.verifyAsync.mockRejectedValue(new Error('expired'));
+    mockSsoToken.verify.mockRejectedValue(new Error('expired'));
     const { context } = contextFor({ authorization: 'Bearer stale' });
 
     await expect(guard.canActivate(context)).rejects.toThrow(NotFoundException);
@@ -90,7 +90,7 @@ describe('AdminGuard', () => {
     const { context } = contextFor({ authorization: 'Basic abc' });
 
     await expect(guard.canActivate(context)).rejects.toThrow(NotFoundException);
-    expect(mockJwt.verifyAsync).not.toHaveBeenCalled();
+    expect(mockSsoToken.verify).not.toHaveBeenCalled();
   });
 
   it('reads the flag from the database rather than any session cache', async () => {
@@ -101,7 +101,7 @@ describe('AdminGuard', () => {
     await guard.canActivate(context);
 
     expect(mockPrisma.user.findUnique).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 7 } }),
+      expect.objectContaining({ where: { ssoId: 'user_2abc' } }),
     );
   });
 

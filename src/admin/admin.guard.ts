@@ -4,9 +4,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { SsoTokenService } from 'src/auth/sso-token.service';
 
 /** The operator behind an admin request, attached to it once verified. */
 export interface AdminActor {
@@ -45,11 +45,15 @@ export function actorOf(req: Request): AdminActor {
  * The token is verified here rather than by `AuthMiddleware` for the same
  * reason: that middleware answers 401, which is the one thing these routes must
  * never say.
+ *
+ * What is verified is the SSO's own access token, against the SSO's published
+ * keys — this API signs nothing of its own. The token names the person by
+ * their SSO id, so that is what the admin flag is looked up by.
  */
 @Injectable()
 export class AdminGuard implements CanActivate {
   constructor(
-    private readonly jwt: JwtService,
+    private readonly ssoToken: SsoTokenService,
     private readonly prisma: PrismaService,
   ) {}
 
@@ -59,18 +63,16 @@ export class AdminGuard implements CanActivate {
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) throw new NotFoundException();
 
-    let userId: number;
+    let ssoId: string;
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: number }>(
-        header.slice('Bearer '.length),
-      );
-      userId = payload.sub;
+      const claims = await this.ssoToken.verify(header.slice('Bearer '.length));
+      ssoId = claims.sub;
     } catch {
       throw new NotFoundException();
     }
 
     const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+      where: { ssoId },
       select: {
         id: true,
         email: true,

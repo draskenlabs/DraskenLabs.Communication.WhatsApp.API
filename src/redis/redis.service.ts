@@ -9,9 +9,23 @@ import Redis from 'ioredis';
 import { v7 as uuidv7 } from 'uuid';
 import { WABAConnectState } from './dto/waba-connect-state.dto';
 
+/**
+ * What the session is allowed to do inside one organisation.
+ *
+ * Held here rather than stamped into a token: the credential is now the SSO's
+ * own access token, and the SSO knows nothing about agencies or about which
+ * organisation a console tab is looking at. A request names the organisation
+ * in `X-Org-Id`, and this is what says whether it may.
+ */
+export interface OrgGrant {
+  /** `owner` | `member` for a membership, `agency` inside a managed client. */
+  role: string;
+  /** Set only on a client organisation: the agency acting inside it. */
+  agencyOrgId?: string;
+}
+
 export interface SsoSessionData {
   ssoId: string;
-  ssoAccessToken: string;
   email?: string;
   firstName?: string;
   lastName?: string;
@@ -21,6 +35,8 @@ export interface SsoSessionData {
   imageUrl?: string;
   ssoCreatedAt?: string | null;
   orgs: { id: string; name: string; slug?: string }[];
+  /** Organisations this session has entered, and on what basis. */
+  grants?: Record<string, OrgGrant>;
 }
 
 @Injectable()
@@ -75,18 +91,20 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return stateId;
   }
 
-  // SSO Session — ssosession:{sessionId} → { ssoId, ssoAccessToken, orgs }.
-  // Holds the user's SSO access token + org membership server-side so org
-  // list/create/switch can run behind the app JWT without the browser ever
-  // seeing the SSO token. TTL defaults to the app JWT lifetime (1 day).
-  async createSessionId(): Promise<string> {
-    return uuidv7();
-  }
-
+  // SSO Session — ssosession:{sid} → { ssoId, orgs, grants }.
+  //
+  // Keyed by the SSO's own session id, the `sid` claim on every access token,
+  // so a refreshed token lands on the same record and a session survives the
+  // ten-minute access-token lifetime. It holds what the SSO cannot answer:
+  // which organisations this person may enter here, and on what basis. It
+  // deliberately holds no token of theirs — the request carries the live one.
+  //
+  // TTL matches the SSO refresh-token lifetime (30 days), because that is how
+  // long the session can keep producing access tokens.
   async setSsoSession(
     sessionId: string,
     data: SsoSessionData,
-    ttlSeconds = 86400,
+    ttlSeconds = 2592000,
   ): Promise<void> {
     await this.client.set(
       `ssosession:${sessionId}`,
@@ -124,6 +142,70 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async invalidateUserCache(userId: number): Promise<void> {
     await this.client.del(`user:${userId}`);
+  }
+
+  // usersso:{ssoId} → { id, ssoId }. The same row as `user:{id}`, reached from
+  // the other end: an SSO access token names the person by their SSO id, and
+  // the request needs the local one before it can touch anything here.
+  async getUserBySsoCache(
+    ssoId: string,
+  ): Promise<{ id: number; ssoId: string } | null> {
+    const raw = await this.client.get(`usersso:${ssoId}`);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  }
+
+  async setUserBySsoCache(
+    ssoId: string,
+    user: { id: number; ssoId: string },
+  ): Promise<void> {
+    await this.client.set(`usersso:${ssoId}`, JSON.stringify(user), 'EX', 900);
+  }
+
+  async invalidateUserBySsoCache(ssoId: string): Promise<void> {
+    await this.client.del(`usersso:${ssoId}`);
+  }
+
+  // Refresh replay window — refresh:{hash} → the pair a spent refresh token
+  // bought, and refreshlock:{hash} while it is being bought.
+  //
+  // The SSO rotates refresh tokens and treats a second presentation of one as
+  // theft: it revokes the whole session family. Two console tabs waking at the
+  // same moment would do exactly that with the same cookie. So the first
+  // caller takes the lock, and everyone else holding that same spent token is
+  // handed the pair it got instead of spending it again.
+  async takeRefreshLock(hash: string, ttlSeconds = 10): Promise<boolean> {
+    const res = await this.client.set(
+      `refreshlock:${hash}`,
+      '1',
+      'EX',
+      ttlSeconds,
+      'NX',
+    );
+    return res === 'OK';
+  }
+
+  async releaseRefreshLock(hash: string): Promise<void> {
+    await this.client.del(`refreshlock:${hash}`);
+  }
+
+  async setRefreshResult<T>(
+    hash: string,
+    data: T,
+    ttlSeconds = 60,
+  ): Promise<void> {
+    await this.client.set(
+      `refresh:${hash}`,
+      JSON.stringify(data),
+      'EX',
+      ttlSeconds,
+    );
+  }
+
+  async getRefreshResult<T>(hash: string): Promise<T | null> {
+    const raw = await this.client.get(`refresh:${hash}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as T;
   }
 
   // Organisation names — orgName:{ssoOrgId} → the display name.

@@ -18,8 +18,8 @@ import { BillingModule } from 'src/billing/billing.module';
  * and answers 404 to every refusal.
  */
 @Module({
-  // UserModule for the JwtModule it exports — the guard verifies the token
-  // itself rather than letting a middleware answer 401 on this prefix.
+  // UserModule for the SsoTokenService it exports — the guard verifies the SSO
+  // token itself rather than letting a middleware answer 401 on this prefix.
   imports: [
     OrgDirectoryModule,
     PlansModule,

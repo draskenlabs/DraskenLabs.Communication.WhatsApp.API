@@ -10,7 +10,6 @@ import { OrganisationSettingsService } from 'src/organisation-settings/organisat
 import { OrgDirectoryService } from 'src/org/org-directory.service';
 import { PlanLimitsService } from 'src/plans/plan-limits.service';
 import { SsoService } from 'src/auth/sso.service';
-import { RedisService } from 'src/redis/redis.service';
 import { AgencyBillingService } from 'src/billing/agency-billing.service';
 import { InvoiceService, InvoiceWithLines } from 'src/billing/invoice.service';
 import { isInvoiceNumber } from 'src/billing/invoice.number';
@@ -52,7 +51,6 @@ export class AgencyService {
     private readonly planLimits: PlanLimitsService,
     // Organisations live in the SSO; taking a client on creates one there.
     private readonly sso: SsoService,
-    private readonly redis: RedisService,
     private readonly agencyBilling: AgencyBillingService,
     // An agency's invoices are the agency's own; its clients' are its
     // clients'. Both are read through here.
@@ -202,7 +200,8 @@ export class AgencyService {
       name: string;
       planCode: string;
       userId: number;
-      sessionId: string;
+      /** The agency's own SSO access token, off the request that asked. */
+      ssoAccessToken: string;
     },
   ): Promise<ClientSubscribedDto> {
     await this.assertAgency(agencyOrgId);
@@ -221,15 +220,11 @@ export class AgencyService {
     );
 
     // Created with the agency's own SSO token, so the agency owns it and can
-    // operate it. The client never signs in.
-    const session = await this.redis.getSsoSession(input.sessionId);
-    if (!session?.ssoAccessToken) {
-      throw new BadRequestException(
-        'Your session has expired. Sign in again before taking on a client.',
-      );
-    }
+    // operate it. The client never signs in. The token is the live one off this
+    // request rather than a copy stored at login, which a ten-minute
+    // access-token lifetime would have made stale within minutes.
     const org = await this.sso.createOrganization(
-      session.ssoAccessToken,
+      input.ssoAccessToken,
       input.name,
     );
 
