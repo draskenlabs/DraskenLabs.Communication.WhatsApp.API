@@ -573,10 +573,14 @@ export class BillingService {
     // Registering again while one is running would leave two mandates against
     // the organisation, and two debits a month.
     if (existing && !this.isFinished(existing)) {
+      // Cancelled, and still inside the month already paid for. A mandate set
+      // to stop at the end of its cycle cannot be un-cancelled at Razorpay, so
+      // carrying on means a *new* mandate — but one that starts where the paid
+      // month ends, so nobody buys the same days twice and access never lapses.
+      // Refusing here instead is what left the console offering a Subscribe
+      // button whose only possible outcome was an error.
       if (existing.cancelAtCycleEnd) {
-        throw new BadRequestException(
-          'This subscription is set to end at the close of the paid month. It cannot be replaced until then.',
-        );
+        return this.startResubscribe(existing, plan, userId);
       }
       throw new BadRequestException(
         'This organisation already has a subscription. Change its tier rather than starting another.',
@@ -660,6 +664,114 @@ export class BillingService {
       status: data.status,
       planCode: plan.code,
       // A first subscription has no month behind it to make up.
+      prorationAmount: null,
+    };
+  }
+
+  /**
+   * Carry on after a cancellation, without buying the same month twice.
+   *
+   * The mandate they cancelled stops at the end of the cycle and Razorpay has
+   * no way to reverse that, so this authorises a second one that begins where
+   * the first ends. Until they finish authorising it, nothing has changed:
+   * they are still on the tier they cancelled, still have access to the end of
+   * the month they paid for, and abandoning Checkout leaves them exactly where
+   * they were.
+   *
+   * The `pending…` columns already hold "a subscription chosen but not yet
+   * authorised" for upgrades, and `confirm` already swaps one in and clears
+   * the cancellation. Reusing them means one path to keep correct rather than
+   * two that must agree.
+   */
+  private async startResubscribe(
+    sub: Subscription & {
+      plan?: { code: string; name: string } | null;
+      pendingPlan?: { code: string; name: string } | null;
+    },
+    plan: {
+      id: number;
+      code: string;
+      name: string;
+      razorpayPlanId: string | null;
+      price: number | null;
+    },
+    userId: number,
+  ): Promise<SubscriptionRegisteredDto> {
+    // Where the paid month ends. In the past — a cancelled subscription the
+    // sweep has not caught up with — means there is nothing left to protect,
+    // so the new mandate starts now.
+    const startAt =
+      sub.currentEnd && sub.currentEnd.getTime() > Date.now()
+        ? sub.currentEnd
+        : null;
+
+    // A resubscription already in flight is replaced rather than added to:
+    // two unauthorised mandates against one organisation is how somebody ends
+    // up authorising both and paying twice.
+    if (sub.pendingRazorpaySubscriptionId) {
+      try {
+        await this.razorpay.cancelSubscription(
+          sub.pendingRazorpaySubscriptionId,
+          false,
+        );
+      } catch (err: unknown) {
+        const detail = err instanceof Error ? err.message : String(err);
+        this.logger.error(
+          `Could not cancel the superseded resubscription ` +
+            `${sub.pendingRazorpaySubscriptionId}: ${detail}`,
+        );
+      }
+    }
+
+    const profile = await this.profileFor(userId);
+    const customerId =
+      sub.razorpayCustomerId ??
+      (await this.orgCustomerId(sub.ssoOrgId)) ??
+      (
+        await this.razorpay.createCustomer({
+          ...profile,
+          notes: { ssoOrgId: sub.ssoOrgId },
+        })
+      ).id;
+
+    const created = await this.razorpay.createSubscription({
+      customerId,
+      planId: plan.razorpayPlanId!,
+      startAt: startAt ? Math.floor(startAt.getTime() / 1000) : undefined,
+      notes: {
+        ssoOrgId: sub.ssoOrgId,
+        userId: String(userId),
+        planCode: plan.code,
+        resubscribeAfter: this.ownMandate(sub),
+      },
+    });
+
+    await this.prisma.subscription.update({
+      where: { id: sub.id },
+      data: {
+        razorpayCustomerId: customerId,
+        pendingRazorpaySubscriptionId: created.id,
+        pendingShortUrl: created.short_url ?? null,
+        // The tier they have asked for, not the tier they hold. Their limits
+        // stay on the cancelled plan until the money is authorised.
+        pendingPlanRefId: plan.id,
+        pendingPlanAt: startAt,
+      },
+    });
+
+    this.logger.log(
+      `${sub.ssoOrgId} is resubscribing on ${plan.code} from ` +
+        `${startAt?.toISOString() ?? 'now'}; awaiting authorisation of ${created.id}`,
+    );
+
+    return {
+      subscriptionId: created.id,
+      keyId: this.razorpay.keyId ?? '',
+      authorisationUrl: created.short_url ?? '',
+      status: this.toStatus(created.status),
+      planCode: plan.code,
+      // Nothing to make up: the month they are in is already paid for, and the
+      // new mandate does not charge until it ends.
       prorationAmount: null,
     };
   }

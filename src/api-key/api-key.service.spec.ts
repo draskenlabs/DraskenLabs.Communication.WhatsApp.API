@@ -30,8 +30,9 @@ const mockPlanLimits = {
   forWaba: jest.fn(),
   // The real one: the refusal message is part of what this spec checks, and a
   // stub would only ever assert that a stub was called.
-  assertWithin: (...args: Parameters<PlanLimitsService['assertWithin']>): void =>
-    realLimits.assertWithin(...args),
+  assertWithin: (
+    ...args: Parameters<PlanLimitsService['assertWithin']>
+  ): Promise<void> => realLimits.assertWithin(...args),
 };
 
 describe('ApiKeyService', () => {

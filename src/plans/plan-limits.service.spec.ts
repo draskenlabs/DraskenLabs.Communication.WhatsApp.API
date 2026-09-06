@@ -7,7 +7,7 @@ import { firstArg } from 'src/common/utils/mock-args';
 
 const mockPrisma = {
   subscription: { findMany: jest.fn(), findUnique: jest.fn() },
-  plan: { findFirst: jest.fn() },
+  plan: { findFirst: jest.fn(), findMany: jest.fn() },
 };
 
 const mockSettings = { billingOrgFor: jest.fn() };
@@ -275,36 +275,127 @@ describe('PlanLimitsService', () => {
       historyDays: 30,
     } satisfies EffectiveLimits;
 
-    it('allows anything below the limit', () => {
-      expect(() =>
+    beforeEach(() => {
+      // No tier to suggest unless a test says otherwise, which is also the
+      // shape of a deployment with nothing wired up.
+      mockPrisma.plan.findMany.mockResolvedValue([]);
+    });
+
+    it('allows anything below the limit', async () => {
+      await expect(
         service.assertWithin(limits, 2, 1, 'webhook endpoint'),
-      ).not.toThrow();
+      ).resolves.toBeUndefined();
     });
 
-    it('refuses at the limit, naming the plan and what to do about it', () => {
-      expect(() =>
+    it('refuses at the limit, naming the plan and what to do about it', async () => {
+      await expect(
         service.assertWithin(limits, 2, 2, 'webhook endpoint'),
-      ).toThrow(/Starter plan includes 2 webhook endpoints, and you have 2/);
-      expect(() =>
+      ).rejects.toThrow(
+        /Starter plan includes 2 webhook endpoints, and you have 2/,
+      );
+      await expect(
         service.assertWithin(limits, 2, 2, 'webhook endpoint'),
-      ).toThrow(BadRequestException);
+      ).rejects.toThrow(BadRequestException);
     });
 
-    it('says "Your plan" when the organisation is on the floor rather than a tier', () => {
-      expect(() =>
+    it('says "Your plan" when the organisation is on the floor rather than a tier', async () => {
+      await expect(
         service.assertWithin(
           { ...limits, planName: null },
           1,
           1,
           'phone number',
         ),
-      ).toThrow(/Your plan includes 1 phone number/);
+      ).rejects.toThrow(/Your plan includes 1 phone number/);
     });
 
-    it('allows anything at all when the plan names no limit', () => {
-      expect(() =>
+    it('allows anything at all when the plan names no limit', async () => {
+      await expect(
         service.assertWithin(limits, null, 9_000, 'webhook endpoint'),
-      ).not.toThrow();
+      ).resolves.toBeUndefined();
+    });
+
+    it('names the cheapest tier that would take the addition', async () => {
+      mockPrisma.plan.findMany.mockResolvedValue([
+        {
+          code: 'growth',
+          name: 'Growth',
+          price: 99900,
+          currency: 'INR',
+          unit: '/month',
+          maxWebhookEndpoints: 5,
+        },
+      ]);
+
+      await expect(
+        service.assertWithin(
+          limits,
+          2,
+          2,
+          'webhook endpoint',
+          'maxWebhookEndpoints',
+        ),
+      ).rejects.toThrow(
+        /Growth \(\u20b9999\/month\) includes 5 webhook endpoints/,
+      );
+    });
+
+    it('asks only for tiers that could actually be bought', async () => {
+      await service
+        .assertWithin(limits, 2, 2, 'webhook endpoint', 'maxWebhookEndpoints')
+        .catch(() => undefined);
+
+      const { where } = firstArg<{
+        where: Record<string, unknown>;
+      }>(mockPrisma.plan.findMany);
+      expect(where.active).toBe(true);
+      expect(where.ssoOrgId).toBeNull();
+      expect(where.ctaKind).toBe('subscribe');
+      expect(where.razorpayPlanId).toEqual({ not: null });
+    });
+
+    it('keeps the refusal when the price list cannot be read', async () => {
+      mockPrisma.plan.findMany.mockRejectedValue(new Error('database down'));
+
+      // A 400 the customer can act on, never a 500: the suggestion is a
+      // nicety and the refusal is the answer.
+      await expect(
+        service.assertWithin(
+          limits,
+          2,
+          2,
+          'webhook endpoint',
+          'maxWebhookEndpoints',
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('prefers a finite allowance to an unlimited one at the same price', async () => {
+      mockPrisma.plan.findMany.mockResolvedValue([
+        {
+          code: 'custom',
+          name: 'Custom',
+          price: 99900,
+          currency: 'INR',
+          unit: '/month',
+          maxWebhookEndpoints: null,
+        },
+        {
+          code: 'growth',
+          name: 'Growth',
+          price: 99900,
+          currency: 'INR',
+          unit: '/month',
+          maxWebhookEndpoints: 5,
+        },
+      ]);
+
+      const offer = await service.cheapestPlanAllowing(
+        'maxWebhookEndpoints',
+        3,
+      );
+      expect(offer?.code).toBe('growth');
+      expect(offer?.value).toBe(5);
     });
   });
 });

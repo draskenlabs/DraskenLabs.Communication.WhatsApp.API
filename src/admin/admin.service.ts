@@ -985,6 +985,11 @@ export class AdminService {
       if (code) subscribers.set(code, row._count._all);
     }
 
+    // A property of the deployment rather than of any one tier, repeated on
+    // each row so the card that offers to create a provider plan can tell
+    // whether there is a provider to create it at without a second request.
+    const billingEnabled = this.razorpay.isConfigured();
+
     return rows.map(({ razorpayPlanId, ...plan }) => ({
       ...plan,
       // Shown so an operator repointing a tier can see what it is pointed at
@@ -994,6 +999,7 @@ export class AdminService {
       // A tier with no Razorpay plan cannot be checked out, whatever the price
       // list says about it.
       sellable: Boolean(razorpayPlanId) && plan.active,
+      billingEnabled,
       subscribers: subscribers.get(plan.code) ?? 0,
     }));
   }
@@ -1101,6 +1107,78 @@ export class AdminService {
     });
 
     return (await this.plans()).find((p) => p.code === plan.code)!;
+  }
+
+  /**
+   * Create the provider plan for a tier that has none, and wire it up.
+   *
+   * The gap between `createPlan` and `updatePlan`, and the reason a seeded
+   * deployment could not sell anything. A migration writes the price list but
+   * cannot write a Razorpay plan id — the ids differ between test and live
+   * accounts — so every seeded tier starts unsellable. `createPlan` refuses a
+   * code that already exists, and `updatePlan` only accepts an id that is
+   * already at the provider. That left the Razorpay dashboard as the only way
+   * to make Starter, Growth or Business buyable, which is not an operation
+   * this console should have to send somebody elsewhere for.
+   *
+   * The amount comes from the tier itself, never from the caller. That is what
+   * makes this safe to expose: the one field that moves money is already on
+   * the row and already on the public price list.
+   */
+  async createProviderPlan(
+    actor: AdminActor,
+    code: string,
+  ): Promise<AdminPlanDto> {
+    const plan = await this.prisma.plan.findUnique({
+      where: { code },
+      select: PLAN_SELECT,
+    });
+    if (!plan) throw new NotFoundException(`No plan ${code}`);
+
+    if (!this.razorpay.isConfigured()) {
+      throw new BadRequestException(
+        'This deployment has no payment provider credentials, so there is ' +
+          'nothing to create a plan against. Set RAZORPAY_KEY_ID and ' +
+          'RAZORPAY_KEY_SECRET first.',
+      );
+    }
+    if (plan.razorpayPlanId) {
+      throw new BadRequestException(
+        `${plan.name} already sells against ${plan.razorpayPlanId}. ` +
+          'Point it at a different plan by editing the id rather than creating a second one for the same tier.',
+      );
+    }
+    if (plan.ctaKind !== 'subscribe' || plan.price === null) {
+      throw new BadRequestException(
+        `${plan.name} is a quoted plan — it carries no amount, so there is nothing to charge. ` +
+          'A signed deal is a plan of its own, priced and scoped to the organisation.',
+      );
+    }
+
+    // Created at the provider first, so a failure leaves the row exactly as it
+    // was rather than pointing at a plan that does not exist.
+    const created = await this.razorpay.createPlan({
+      name: plan.name,
+      amount: plan.price,
+      currency: plan.currency,
+      description: plan.audience,
+    });
+
+    await this.prisma.plan.update({
+      where: { code },
+      data: { razorpayPlanId: created.id },
+    });
+
+    await this.audit.record(actor, {
+      action: 'plan.wired',
+      targetType: 'plan',
+      targetId: code,
+      summary: `${plan.name} now sells against ${created.id}`,
+      before: { razorpayPlanId: null },
+      after: { razorpayPlanId: created.id },
+    });
+
+    return (await this.plans()).find((p) => p.code === code)!;
   }
 
   async updatePlan(

@@ -90,8 +90,9 @@
 
 1. Activate Subscriptions on the Razorpay account. Tiers can now be written
    from the operator console (`POST /admin/plans` creates the provider plan
-   alongside the row); `RAZORPAY_PLAN_IDS` still seeds a fresh deployment from
-   `code:plan_id` pairs.
+   alongside the row, and `POST /admin/plans/:code/provider-plan` creates one
+   for a tier a migration seeded without an id); `RAZORPAY_PLAN_IDS` still
+   seeds a fresh deployment from `code:plan_id` pairs.
 2. Register `POST /billing/webhook` in the Razorpay dashboard for the
    `subscription.*` events and set `RAZORPAY_WEBHOOK_SECRET` to match.
 3. Run the flow end to end in test mode: subscribe → authorise in Checkout →
@@ -100,6 +101,22 @@
 4. Decide what happens to existing accounts. Enforcement begins the moment
    credentials are set, and it is per organisation now — one subscription opens
    every account they hold.
+
+## Resubscribing after a cancellation
+
+A mandate set to stop at the end of its cycle cannot be un-cancelled at
+Razorpay, so `register` no longer refuses inside the paid month — it starts a
+**second** mandate with `start_at` at `currentEnd` and holds it in the
+`pending…` columns, the same machinery an upgrade uses. Until Checkout is
+finished nothing has moved: they are still on the tier they cancelled, still
+have access to the end of the month they paid for, and abandoning it leaves
+them exactly where they were. `confirm` swaps the pending subscription in and
+clears `cancelAtCycleEnd`. Once the paid month has run out the subscription is
+finished and a plain fresh registration applies, reusing the row.
+
+A resubscription already awaiting authorisation is cancelled and replaced
+rather than added to — two unauthorised mandates is how somebody authorises
+both and pays twice for one month.
 
 ## Paying for somebody else
 

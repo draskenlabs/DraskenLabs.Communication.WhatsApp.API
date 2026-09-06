@@ -389,6 +389,14 @@ export class AdminPlanDto {
   })
   sellable: boolean;
 
+  @ApiProperty({
+    description:
+      'Whether this deployment has payment credentials at all. A property of ' +
+      'the deployment, not of the tier — repeated on every row so the console ' +
+      'can tell an unwired tier from an unwired deployment.',
+  })
+  billingEnabled: boolean;
+
   @ApiProperty({ description: 'Subscriptions currently on this plan' })
   subscribers: number;
 }

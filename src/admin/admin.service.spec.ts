@@ -57,7 +57,11 @@ const mockAgency = {
   detachClient: jest.fn(),
 };
 const mockAudit = { record: jest.fn() };
-const mockRazorpay = { createPlan: jest.fn(), fetchPlan: jest.fn() };
+const mockRazorpay = {
+  createPlan: jest.fn(),
+  fetchPlan: jest.fn(),
+  isConfigured: jest.fn(() => true),
+};
 // Rendering and re-sending a document is its own service's business; this
 // console only decides who may ask for one, which here is anybody.
 const mockInvoices = {
@@ -407,6 +411,80 @@ describe('AdminService', () => {
         { data: { recommended: boolean } },
       ];
       expect(data.recommended).toBe(false);
+    });
+  });
+
+  describe('wiring a seeded tier to the provider', () => {
+    // The gap this closes: a migration seeds the price list but cannot know a
+    // Razorpay plan id, so every seeded tier arrives unsellable — and neither
+    // `createPlan` (which refuses an existing code) nor `updatePlan` (which
+    // only accepts an id already at the provider) could fix it.
+    it('creates the provider plan from the tier’s own price and wires it', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: null }),
+      );
+      mockPrisma.plan.findMany.mockResolvedValue([plan()]);
+
+      await service.createProviderPlan(ACTOR, 'growth');
+
+      expect(mockRazorpay.createPlan).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 99900, currency: 'INR' }),
+      );
+      const { data } = firstArg<{ data: { razorpayPlanId: string } }>(
+        mockPrisma.plan.update,
+      );
+      expect(data.razorpayPlanId).toBe('plan_created');
+    });
+
+    it('leaves the row alone when the provider refuses', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: null }),
+      );
+      mockRazorpay.createPlan.mockRejectedValue(new Error('gateway down'));
+
+      await expect(
+        service.createProviderPlan(ACTOR, 'growth'),
+      ).rejects.toThrow();
+      expect(mockPrisma.plan.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a tier that already sells against one', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(plan());
+
+      await expect(service.createProviderPlan(ACTOR, 'growth')).rejects.toThrow(
+        /already sells against plan_growth/,
+      );
+      expect(mockRazorpay.createPlan).not.toHaveBeenCalled();
+    });
+
+    it('refuses a quoted tier, which has no amount to charge', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: null, ctaKind: 'contact', price: null }),
+      );
+
+      await expect(service.createProviderPlan(ACTOR, 'growth')).rejects.toThrow(
+        /quoted plan/,
+      );
+      expect(mockRazorpay.createPlan).not.toHaveBeenCalled();
+    });
+
+    it('says so when the deployment has no payment credentials at all', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: null }),
+      );
+      mockRazorpay.isConfigured.mockReturnValue(false);
+
+      await expect(service.createProviderPlan(ACTOR, 'growth')).rejects.toThrow(
+        /RAZORPAY_KEY_ID/,
+      );
+    });
+
+    it('404s for a plan that does not exist', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(null);
+
+      await expect(service.createProviderPlan(ACTOR, 'nope')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 

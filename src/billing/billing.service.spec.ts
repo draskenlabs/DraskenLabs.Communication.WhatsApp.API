@@ -413,13 +413,71 @@ describe('BillingService', () => {
       expect(mockRazorpay.createSubscription).not.toHaveBeenCalled();
     });
 
-    it('refuses to replace one that is already set to end', async () => {
+    it('resubscribes from the end of the paid month rather than refusing', async () => {
+      // A mandate set to stop at the end of its cycle cannot be un-cancelled
+      // at Razorpay, so carrying on means a second one — starting where the
+      // paid month ends, so the same days are never bought twice.
+      const end = soon();
       mockPrisma.subscription.findFirst.mockResolvedValue(
-        row({ cancelAtCycleEnd: true }),
+        row({ cancelAtCycleEnd: true, currentEnd: end }),
       );
 
-      await expect(service.register(7, 'org_1', 'growth')).rejects.toThrow(
-        /close of the paid month/,
+      const result = await service.register(7, 'org_1', 'growth');
+
+      const { startAt } = firstArg<{ startAt?: number }>(
+        mockRazorpay.createSubscription,
+      );
+      expect(startAt).toBe(Math.floor(end.getTime() / 1000));
+      expect(result.subscriptionId).toBe('sub_new');
+    });
+
+    it('holds the resubscription aside until it is authorised', async () => {
+      // Nothing about what they hold may move before the money does: they are
+      // still on the tier they cancelled, and abandoning Checkout must leave
+      // them exactly where they were.
+      mockPrisma.subscription.findFirst.mockResolvedValue(
+        row({ cancelAtCycleEnd: true, planRefId: 1 }),
+      );
+
+      await service.register(7, 'org_1', 'growth');
+
+      const { data } = firstArg<{ data: Record<string, unknown> }>(
+        mockPrisma.subscription.update,
+      );
+      expect(data.pendingRazorpaySubscriptionId).toBe('sub_new');
+      expect(data.pendingPlanRefId).toBe(2);
+      expect(data).not.toHaveProperty('planRefId');
+      expect(data).not.toHaveProperty('cancelAtCycleEnd');
+    });
+
+    it('starts the resubscription now when the paid month has already run out', async () => {
+      mockPrisma.subscription.findFirst.mockResolvedValue(
+        row({ cancelAtCycleEnd: true, currentEnd: past() }),
+      );
+
+      await service.register(7, 'org_1', 'growth');
+
+      const { startAt } = firstArg<{ startAt?: number }>(
+        mockRazorpay.createSubscription,
+      );
+      expect(startAt).toBeUndefined();
+    });
+
+    it('replaces a resubscription already awaiting authorisation', async () => {
+      // Two unauthorised mandates is how somebody authorises both and pays
+      // twice for one month.
+      mockPrisma.subscription.findFirst.mockResolvedValue(
+        row({
+          cancelAtCycleEnd: true,
+          pendingRazorpaySubscriptionId: 'sub_stale',
+        }),
+      );
+
+      await service.register(7, 'org_1', 'growth');
+
+      expect(mockRazorpay.cancelSubscription).toHaveBeenCalledWith(
+        'sub_stale',
+        false,
       );
     });
 

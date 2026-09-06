@@ -42,6 +42,43 @@ export interface EffectiveLimits {
   historyDays: number | null;
 }
 
+/**
+ * The `Plan` columns a ceiling can be looked up under.
+ *
+ * Named as they are in the schema rather than as `EffectiveLimits` renames
+ * them, because this is what the upgrade query filters on. Only the ceilings
+ * are here: an inclusion is not something a customer can be refused for, so
+ * there is no upgrade to point them at.
+ */
+export type LimitField =
+  | 'maxTeamMembers'
+  | 'maxWebhookEndpoints'
+  | 'maxApiKeysPerWaba'
+  | 'maxContacts'
+  | 'includedClients';
+
+/** A tier worth suggesting, with the number that makes it worth suggesting. */
+export interface PlanOffer {
+  code: string;
+  name: string;
+  /** In paise. Null for a tier with no published amount. */
+  price: number | null;
+  currency: string;
+  unit: string;
+  /** What the tier allows of the thing that was refused. Null is no limit. */
+  value: number | null;
+}
+
+/** "₹999" for 99900 paise. Only the symbol we sell in gets one. */
+function formatAmount(paise: number, currency: string): string {
+  const amount = (paise / 100).toLocaleString('en-IN', {
+    maximumFractionDigits: 2,
+  });
+  return currency.toUpperCase() === 'INR'
+    ? `\u20b9${amount}`
+    : `${amount} ${currency.toUpperCase()}`;
+}
+
 /** Statuses that mean a subscription is paying for something right now. */
 const LIVE_STATUSES = ['active', 'authenticated', 'pending', 'halted'] as const;
 
@@ -200,22 +237,134 @@ export class PlanLimitsService {
    *
    * Phrased as what the customer can do about it — a limit that says only
    * "limit reached" leaves somebody guessing whether they can buy their way
-   * out of it or have to delete something.
+   * out of it or have to delete something. When the caller names the column
+   * the limit came from, the refusal goes one further and names the cheapest
+   * tier that would allow it: "upgrade the plan" is advice nobody can act on
+   * without opening the price list and comparing two numbers themselves.
    */
-  assertWithin(
+  async assertWithin(
     limits: EffectiveLimits,
     limit: number | null,
     current: number,
     noun: string,
-  ): void {
+    field?: LimitField,
+  ): Promise<void> {
     if (limit === null) return;
     if (current < limit) return;
 
     const plan = limits.planName ? `The ${limits.planName} plan` : 'Your plan';
+    const held = `${plan} includes ${limit} ${noun}${limit === 1 ? '' : 's'}, and you have ${current}.`;
+
     throw new BadRequestException(
-      `${plan} includes ${limit} ${noun}${limit === 1 ? '' : 's'}, and you have ${current}. ` +
-        'Upgrade the plan or remove one before adding another.',
+      `${held} ${await this.wayOut(field, current + 1, noun)}`,
     );
+  }
+
+  /**
+   * What to do about a limit, in the customer's own terms.
+   *
+   * The cheapest tier that would actually take the addition, named with its
+   * price — or, when nothing published would, the plain truth that no upgrade
+   * fixes this one. Both beat "upgrade the plan", which is only useful to
+   * somebody who already knows which tier to upgrade to.
+   */
+  private async wayOut(
+    field: LimitField | undefined,
+    need: number,
+    noun: string,
+  ): Promise<string> {
+    const upgrade = field ? await this.cheapestPlanAllowing(field, need) : null;
+    if (!upgrade)
+      return 'Upgrade the plan or remove one before adding another.';
+
+    const allows =
+      upgrade.value === null
+        ? `any number of ${noun}s`
+        : `${upgrade.value} ${noun}${upgrade.value === 1 ? '' : 's'}`;
+    const price =
+      upgrade.price === null
+        ? ''
+        : ` (${formatAmount(upgrade.price, upgrade.currency)}${upgrade.unit})`;
+
+    return (
+      `${upgrade.name}${price} includes ${allows} — ` +
+      `move to it from your subscription page, or remove one before adding another.`
+    );
+  }
+
+  /**
+   * The cheapest published tier whose ceiling would take `need`.
+   *
+   * Published and sellable only. A negotiated plan is somebody else's
+   * contract, and pointing a customer at a tier this deployment cannot charge
+   * for is an upgrade they would be refused at checkout — the same dead end
+   * that made the refusal worth rewriting in the first place.
+   *
+   * `null` in the column is no limit, which allows anything, so those sort
+   * last and win only when no finite tier is large enough.
+   */
+  async cheapestPlanAllowing(
+    field: LimitField,
+    need: number,
+  ): Promise<PlanOffer | null> {
+    try {
+      return await this.lookUpPlanAllowing(field, need);
+    } catch (err: unknown) {
+      // Advisory only. The refusal is what the caller asked for and it is
+      // already correct; a price list that could not be read turns the
+      // sentence after it back into the generic one rather than turning a
+      // clean 400 into a 500.
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Could not suggest a plan for ${field}: ${detail}`);
+      return null;
+    }
+  }
+
+  private async lookUpPlanAllowing(
+    field: LimitField,
+    need: number,
+  ): Promise<PlanOffer | null> {
+    const candidates = await this.prisma.plan.findMany({
+      where: {
+        active: true,
+        ssoOrgId: null,
+        ctaKind: 'subscribe',
+        razorpayPlanId: { not: null },
+        OR: [{ [field]: null }, { [field]: { gte: need } }],
+      },
+      select: {
+        code: true,
+        name: true,
+        price: true,
+        currency: true,
+        unit: true,
+        [field]: true,
+      },
+      orderBy: [{ price: 'asc' }],
+    });
+
+    const rows = candidates as unknown as (PlanOffer & {
+      [key: string]: unknown;
+    })[];
+    // A finite allowance beats an unlimited one at the same price: it is the
+    // smaller step, and the customer asked for room rather than for infinity.
+    const ordered = rows.sort((a, b) => {
+      const av = a[field] === null ? 1 : 0;
+      const bv = b[field] === null ? 1 : 0;
+      if (av !== bv) return av - bv;
+      return (a.price ?? 0) - (b.price ?? 0);
+    });
+
+    const best = ordered[0];
+    if (!best) return null;
+    return {
+      code: best.code,
+      name: best.name,
+      price: best.price,
+      currency: best.currency,
+      unit: best.unit,
+      value: (best[field] as number | null) ?? null,
+    };
   }
 
   /**

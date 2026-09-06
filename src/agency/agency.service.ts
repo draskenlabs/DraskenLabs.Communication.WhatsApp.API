@@ -153,11 +153,12 @@ export class AgencyService {
       // number that means nothing — and each client carries a *full* set of
       // the plan's limits, so an unbounded roster is an unbounded estate on
       // one subscription. Enforced as a ceiling until it can be billed.
-      this.planLimits.assertWithin(
+      await this.planLimits.assertWithin(
         limits,
         limits.includedClients,
         held,
         'client',
+        'includedClients',
       );
     }
 
@@ -212,11 +213,12 @@ export class AgencyService {
       this.planLimits.forOrg(agencyOrgId),
       this.prisma.organisationSettings.count({ where: { agencyOrgId } }),
     ]);
-    this.planLimits.assertWithin(
+    await this.planLimits.assertWithin(
       limits,
       limits.includedClients,
       held,
       'client',
+      'includedClients',
     );
 
     // Created with the agency's own SSO token, so the agency owns it and can
