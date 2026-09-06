@@ -21,7 +21,13 @@ const baseContact = {
   optedOut: false, metadata: null, createdAt: new Date(), updatedAt: new Date(),
 };
 
-const mockPlanLimits = { forOrg: jest.fn() };
+const mockPlanLimits = {
+  forOrg: jest.fn(),
+  // Advisory: the refusal is asserted on, the suggestion after it is not, and
+  // a double that answers "no tier would help" keeps the message the one this
+  // spec was written against.
+  cheapestPlanAllowing: jest.fn().mockResolvedValue(null),
+};
 
 describe('ContactsService', () => {
   let service: ContactsService;

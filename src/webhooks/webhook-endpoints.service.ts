@@ -87,11 +87,12 @@ export class WebhookEndpointsService {
       }),
       this.limits.forWaba(ssoOrgId, waba.wabaId),
     ]);
-    this.limits.assertWithin(
+    await this.limits.assertWithin(
       limits,
       limits.webhookEndpoints,
       existing,
       'webhook endpoint',
+      'maxWebhookEndpoints',
     );
 
     const duplicate = await this.prisma.webhookEndpoint.findFirst({

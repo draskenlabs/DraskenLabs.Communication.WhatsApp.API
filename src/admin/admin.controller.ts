@@ -159,6 +159,21 @@ export class AdminController {
     return this.admin.createPlan(actorOf(req), dto);
   }
 
+  /**
+   * Create the provider plan for a tier that has none.
+   *
+   * The amount is the tier's own — nothing about the price is taken from the
+   * request — so this is only ever "make what the price list already says
+   * buyable", never a repricing.
+   */
+  @Post('plans/:code/provider-plan')
+  createProviderPlan(
+    @Req() req: Request,
+    @Param('code') code: string,
+  ): Promise<AdminPlanDto> {
+    return this.admin.createProviderPlan(actorOf(req), code);
+  }
+
   @Patch('plans/:code')
   updatePlan(
     @Req() req: Request,

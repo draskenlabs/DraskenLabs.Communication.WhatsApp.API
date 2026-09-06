@@ -38,7 +38,13 @@ export class ApiKeyService {
       }),
       this.planLimits.forWaba(ssoOrgId, waba.wabaId),
     ]);
-    this.planLimits.assertWithin(limits, limits.apiKeysPerWaba, live, 'API key');
+    await this.planLimits.assertWithin(
+      limits,
+      limits.apiKeysPerWaba,
+      live,
+      'API key',
+      'maxApiKeysPerWaba',
+    );
 
     const accessKey = `ak_${crypto.randomBytes(12).toString('hex')}`;
     const secretKey = `sk_${crypto.randomBytes(24).toString('hex')}`;

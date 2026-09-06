@@ -53,9 +53,19 @@ export class ContactsService {
 
     if (held + adding > limits.contacts) {
       const plan = limits.planName ? `The ${limits.planName} plan` : 'Your plan';
+      // The tier that would actually take the import, named. Without it the
+      // reader has to open the price list and compare two numbers to find out
+      // whether any plan we sell would have accepted their file.
+      const upgrade = await this.planLimits.cheapestPlanAllowing(
+        'maxContacts',
+        held + adding,
+      );
+      const fix = upgrade
+        ? `${upgrade.name} holds ${upgrade.value === null ? 'any number' : upgrade.value} — move to it from your subscription page, or remove some first.`
+        : 'Upgrade the plan or remove some first.';
       throw new BadRequestException(
         `${plan} includes ${limits.contacts} contacts, and you have ${held}. ` +
-          `Importing ${adding} would take you past it — upgrade the plan or remove some first.`,
+          `Importing ${adding} would take you past it — ${fix}`,
       );
     }
   }

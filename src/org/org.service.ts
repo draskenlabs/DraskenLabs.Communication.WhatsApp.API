@@ -105,12 +105,13 @@ export class OrgService {
         this.listMembers(orgId, authorization),
         this.listInvitations(orgId, authorization),
       ]);
-      this.planLimits.assertWithin(
+      await this.planLimits.assertWithin(
         limits,
         limits.teamMembers,
         (Array.isArray(members) ? members.length : 0) +
           (Array.isArray(invitations) ? invitations.length : 0),
         'team member',
+        'maxTeamMembers',
       );
     }
 

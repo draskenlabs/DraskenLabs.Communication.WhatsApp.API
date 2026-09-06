@@ -13,6 +13,21 @@
   (`code:plan_id` pairs) is applied to the `Plan` table at boot by
   `PlanSyncService`. A tier with no id is published as `available: false`, and
   the console offers to talk rather than opening a checkout that would refuse.
+- **A seeded tier can be wired from the console.**
+  `POST /admin/plans/:code/provider-plan` creates the Razorpay plan from the
+  tier's own price and writes the id back. It closes the gap that left a
+  freshly seeded deployment unable to sell anything: a migration writes the
+  price list but cannot know a plan id, `POST /admin/plans` refuses a code that
+  already exists, and `PATCH /admin/plans/:code` only accepts an id already at
+  the provider — so the Razorpay dashboard was the only way to make Starter,
+  Growth or Business buyable. The amount is never taken from the request.
+- **A refusal names the tier that would allow it.** `assertWithin` takes the
+  `Plan` column the ceiling came from and `cheapestPlanAllowing` finds the
+  cheapest published, sellable tier whose number is large enough — so "The
+  Starter plan includes 1 API key, and you have 1" is followed by "Growth
+  (₹999/month) includes 5 API keys" rather than "upgrade the plan". The lookup
+  is advisory: a price list that cannot be read logs and falls back to the
+  generic sentence rather than turning a 400 into a 500.
 - **A tier says what the price includes, not what is allowed.**
   `maxWabas`/`maxPhoneNumbersPerWaba` became
   `includedWabas`/`includedPhoneNumbersPerWaba`, and neither refuses any more —

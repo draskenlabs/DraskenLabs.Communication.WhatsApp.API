@@ -40,7 +40,7 @@ const mockPrisma = {
   waba: { findMany: jest.fn(), count: jest.fn() },
   wabaPhoneNumber: { groupBy: jest.fn(), count: jest.fn() },
   webhookEndpoint: { groupBy: jest.fn(), count: jest.fn() },
-  userApiKey: { groupBy: jest.fn(), count: jest.fn() },
+  userApiKey: { groupBy: jest.fn(), count: jest.fn(), findMany: jest.fn() },
   organisationSettings: { findMany: jest.fn(), count: jest.fn() },
   contact: { count: jest.fn() },
   message: { count: jest.fn() },
@@ -57,7 +57,11 @@ const mockAgency = {
   detachClient: jest.fn(),
 };
 const mockAudit = { record: jest.fn() };
-const mockRazorpay = { createPlan: jest.fn(), fetchPlan: jest.fn() };
+const mockRazorpay = {
+  createPlan: jest.fn(),
+  fetchPlan: jest.fn(),
+  isConfigured: jest.fn(() => true),
+};
 // Rendering and re-sending a document is its own service's business; this
 // console only decides who may ask for one, which here is anybody.
 const mockInvoices = {
@@ -137,6 +141,7 @@ describe('AdminService', () => {
     mockPrisma.webhookEndpoint.groupBy.mockResolvedValue([]);
     mockPrisma.userApiKey.count.mockResolvedValue(0);
     mockPrisma.userApiKey.groupBy.mockResolvedValue([]);
+    mockPrisma.userApiKey.findMany.mockResolvedValue([]);
     mockPrisma.plan.findMany.mockResolvedValue([]);
     mockPrisma.user.findMany.mockResolvedValue([]);
     mockOrgDirectory.name.mockResolvedValue(null);
@@ -407,6 +412,80 @@ describe('AdminService', () => {
         { data: { recommended: boolean } },
       ];
       expect(data.recommended).toBe(false);
+    });
+  });
+
+  describe('wiring a seeded tier to the provider', () => {
+    // The gap this closes: a migration seeds the price list but cannot know a
+    // Razorpay plan id, so every seeded tier arrives unsellable — and neither
+    // `createPlan` (which refuses an existing code) nor `updatePlan` (which
+    // only accepts an id already at the provider) could fix it.
+    it('creates the provider plan from the tier’s own price and wires it', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: null }),
+      );
+      mockPrisma.plan.findMany.mockResolvedValue([plan()]);
+
+      await service.createProviderPlan(ACTOR, 'growth');
+
+      expect(mockRazorpay.createPlan).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 99900, currency: 'INR' }),
+      );
+      const { data } = firstArg<{ data: { razorpayPlanId: string } }>(
+        mockPrisma.plan.update,
+      );
+      expect(data.razorpayPlanId).toBe('plan_created');
+    });
+
+    it('leaves the row alone when the provider refuses', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: null }),
+      );
+      mockRazorpay.createPlan.mockRejectedValue(new Error('gateway down'));
+
+      await expect(
+        service.createProviderPlan(ACTOR, 'growth'),
+      ).rejects.toThrow();
+      expect(mockPrisma.plan.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a tier that already sells against one', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(plan());
+
+      await expect(service.createProviderPlan(ACTOR, 'growth')).rejects.toThrow(
+        /already sells against plan_growth/,
+      );
+      expect(mockRazorpay.createPlan).not.toHaveBeenCalled();
+    });
+
+    it('refuses a quoted tier, which has no amount to charge', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: null, ctaKind: 'contact', price: null }),
+      );
+
+      await expect(service.createProviderPlan(ACTOR, 'growth')).rejects.toThrow(
+        /quoted plan/,
+      );
+      expect(mockRazorpay.createPlan).not.toHaveBeenCalled();
+    });
+
+    it('says so when the deployment has no payment credentials at all', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(
+        plan({ razorpayPlanId: null }),
+      );
+      mockRazorpay.isConfigured.mockReturnValue(false);
+
+      await expect(service.createProviderPlan(ACTOR, 'growth')).rejects.toThrow(
+        /RAZORPAY_KEY_ID/,
+      );
+    });
+
+    it('404s for a plan that does not exist', async () => {
+      mockPrisma.plan.findUnique.mockResolvedValue(null);
+
+      await expect(service.createProviderPlan(ACTOR, 'nope')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -1363,6 +1442,54 @@ describe('AdminService', () => {
       expect((await service.user(7)).organisations[0].planName).toBe(
         'Business',
       );
+    });
+
+    it('finds an organisation they subscribed for but connected nothing in', async () => {
+      // `WabaOrganisation` is written at connect, so reading it alone reported
+      // "no account connected" as "belongs to nothing" — which is what somebody
+      // who had made an organisation and bought a plan saw of themselves.
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 27,
+        ssoId: 'user_3',
+        email: 'gatimaan@example.com',
+        firstName: 'Gatimaan',
+        lastName: 'Payments',
+        isAdmin: false,
+        createdAt: new Date(),
+      });
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_new' },
+      ]);
+      mockOrgDirectory.name.mockResolvedValue('RS Innovative Enterprises');
+
+      const detail = await service.user(27);
+
+      expect(detail.organisations).toHaveLength(1);
+      expect(detail.organisations[0].ssoOrgId).toBe('org_new');
+      // Nothing connected is a true statement about the organisation, not a
+      // reason to leave it out.
+      expect(detail.organisations[0].wabas).toBe(0);
+    });
+
+    it('finds one they minted a key in', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 27,
+        ssoId: 'user_3',
+        email: 'gatimaan@example.com',
+        firstName: 'Gatimaan',
+        lastName: 'Payments',
+        isAdmin: false,
+        createdAt: new Date(),
+      });
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
+      mockPrisma.userApiKey.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_keys' },
+      ]);
+
+      const detail = await service.user(27);
+
+      expect(detail.organisations.map((o) => o.ssoOrgId)).toEqual(['org_keys']);
     });
 
     it('lists an organisation once however many accounts were connected', async () => {
