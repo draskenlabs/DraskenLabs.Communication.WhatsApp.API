@@ -1574,13 +1574,41 @@ export class AdminService {
     });
     if (!user) throw new NotFoundException(`No user ${id}`);
 
-    const links = await this.prisma.wabaOrganisation.findMany({
-      where: { userId: id },
-      select: { ssoOrgId: true, orgName: true, createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    });
+    // Three traces of the same person, because connecting an account is only
+    // one of the things they can do in an organisation. This used to read
+    // `WabaOrganisation` alone, which is written at connect — so somebody who
+    // had made an organisation, subscribed, or minted a key but not yet
+    // connected a WABA came back as belonging to nothing at all, which reads
+    // as a fault rather than as "nothing connected yet".
+    //
+    // Membership itself lives in the SSO and it has no endpoint for reading
+    // somebody else's, so this is every organisation we hold local evidence
+    // of. An organisation created and never used still shows none.
+    const [links, paid, keyed] = await Promise.all([
+      this.prisma.wabaOrganisation.findMany({
+        where: { userId: id },
+        select: { ssoOrgId: true, orgName: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.subscription.findMany({
+        where: { createdByUserId: id },
+        select: { ssoOrgId: true },
+        distinct: ['ssoOrgId'],
+      }),
+      this.prisma.userApiKey.findMany({
+        where: { userId: id },
+        select: { ssoOrgId: true },
+        distinct: ['ssoOrgId'],
+      }),
+    ]);
 
-    const ids = [...new Set(links.map((l) => l.ssoOrgId))];
+    const ids = [
+      ...new Set([
+        ...links.map((l) => l.ssoOrgId),
+        ...paid.map((s) => s.ssoOrgId),
+        ...keyed.map((k) => k.ssoOrgId),
+      ]),
+    ];
     const [settings, subscriptions] = await Promise.all([
       this.prisma.organisationSettings.findMany({
         where: { ssoOrgId: { in: ids } },

@@ -40,7 +40,7 @@ const mockPrisma = {
   waba: { findMany: jest.fn(), count: jest.fn() },
   wabaPhoneNumber: { groupBy: jest.fn(), count: jest.fn() },
   webhookEndpoint: { groupBy: jest.fn(), count: jest.fn() },
-  userApiKey: { groupBy: jest.fn(), count: jest.fn() },
+  userApiKey: { groupBy: jest.fn(), count: jest.fn(), findMany: jest.fn() },
   organisationSettings: { findMany: jest.fn(), count: jest.fn() },
   contact: { count: jest.fn() },
   message: { count: jest.fn() },
@@ -141,6 +141,7 @@ describe('AdminService', () => {
     mockPrisma.webhookEndpoint.groupBy.mockResolvedValue([]);
     mockPrisma.userApiKey.count.mockResolvedValue(0);
     mockPrisma.userApiKey.groupBy.mockResolvedValue([]);
+    mockPrisma.userApiKey.findMany.mockResolvedValue([]);
     mockPrisma.plan.findMany.mockResolvedValue([]);
     mockPrisma.user.findMany.mockResolvedValue([]);
     mockOrgDirectory.name.mockResolvedValue(null);
@@ -1441,6 +1442,54 @@ describe('AdminService', () => {
       expect((await service.user(7)).organisations[0].planName).toBe(
         'Business',
       );
+    });
+
+    it('finds an organisation they subscribed for but connected nothing in', async () => {
+      // `WabaOrganisation` is written at connect, so reading it alone reported
+      // "no account connected" as "belongs to nothing" — which is what somebody
+      // who had made an organisation and bought a plan saw of themselves.
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 27,
+        ssoId: 'user_3',
+        email: 'gatimaan@example.com',
+        firstName: 'Gatimaan',
+        lastName: 'Payments',
+        isAdmin: false,
+        createdAt: new Date(),
+      });
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
+      mockPrisma.subscription.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_new' },
+      ]);
+      mockOrgDirectory.name.mockResolvedValue('RS Innovative Enterprises');
+
+      const detail = await service.user(27);
+
+      expect(detail.organisations).toHaveLength(1);
+      expect(detail.organisations[0].ssoOrgId).toBe('org_new');
+      // Nothing connected is a true statement about the organisation, not a
+      // reason to leave it out.
+      expect(detail.organisations[0].wabas).toBe(0);
+    });
+
+    it('finds one they minted a key in', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 27,
+        ssoId: 'user_3',
+        email: 'gatimaan@example.com',
+        firstName: 'Gatimaan',
+        lastName: 'Payments',
+        isAdmin: false,
+        createdAt: new Date(),
+      });
+      mockPrisma.wabaOrganisation.findMany.mockResolvedValue([]);
+      mockPrisma.userApiKey.findMany.mockResolvedValue([
+        { ssoOrgId: 'org_keys' },
+      ]);
+
+      const detail = await service.user(27);
+
+      expect(detail.organisations.map((o) => o.ssoOrgId)).toEqual(['org_keys']);
     });
 
     it('lists an organisation once however many accounts were connected', async () => {
