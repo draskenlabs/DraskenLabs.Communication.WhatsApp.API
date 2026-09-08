@@ -595,8 +595,9 @@ Meta Platform
 │  WebhooksService.processPayload(body)        │
 │                                              │
 │  for each entry in body.entry:              │
-│    wabaId = entry.id                        │
 │    for each change in entry.changes:        │
+│      wabaId = value.waba_info.waba_id       │
+│               ?? entry.id                   │
 │                                              │
 │      1. INSERT WebhookEvent (raw log)        │
 │         { eventType: change.field,           │
@@ -700,6 +701,21 @@ model WebhookEvent {
 | `Message` | `status` | `handleStatusUpdate()` |
 | `WabaPhoneNumber` | `qualityRating` | `handlePhoneQualityUpdate()` |
 | `MessageTemplate` | `status`, `rejectedReason` | `handleTemplateStatusUpdate()` (Templates module must exist). The reason is taken from `other_info.description`, then `other_info.title`, then `reason` — Meta puts the sentence in `other_info` and often sends `reason: "NONE"` with a rejection |
+| `WabaPhoneNumber` | `nameStatus`, `verifiedName` | `handlePhoneNameUpdate()` — Meta's verdict on a requested display name, recorded rather than only emailed. An approval also promotes `requested_verified_name` to the name in use |
+
+### Which WABA a change is about
+
+`entry.id` is the WABA for the `messages` field, and the service used to trust
+it for every field. It is **not** the WABA for `account_update`: there Meta
+sends the *business* id in `entry.id` and names the account inside the change,
+in `value.waba_info.waba_id`.
+
+Every account event across every tenant was therefore filed under one id
+belonging to none of them — so any WABA but the accidental match went
+un-updated, its customers' endpoints never received the event, and the stored
+`WebhookEvent` rows all pointed at the wrong account. `resolveWabaId()` takes
+the id the change names and falls back to `entry.id` for the fields that carry
+no `waba_info`.
 
 ---
 

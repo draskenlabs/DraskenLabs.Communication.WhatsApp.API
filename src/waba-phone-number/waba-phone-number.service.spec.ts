@@ -124,6 +124,56 @@ describe('WabaPhoneNumberService', () => {
       expect(mockRedis.setPhoneCache).toHaveBeenCalledWith('p1', 'w1', 'enc_token');
     });
 
+    it("stores Meta's display-name status alongside the code verification", async () => {
+      // Two different answers: the number is registered (its OTP is verified)
+      // while its display name is still in review. Folding them together is
+      // what put a verified tick on a name Meta had not approved.
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc_token' });
+      mockEncryption.decrypt.mockReturnValue('raw_token');
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: {
+          data: [
+            {
+              id: 'p1',
+              verified_name: 'Test',
+              name_status: 'PENDING_REVIEW',
+              code_verification_status: 'VERIFIED',
+              display_phone_number: '+1555',
+            },
+          ],
+        },
+      });
+      mockPrisma.wabaPhoneNumber.upsert.mockResolvedValue({ phoneNumberId: 'p1', wabaId: 'w1' });
+
+      await service.syncPhoneNumbers(1, 'org_1', 'w1');
+
+      const [call] = mockPrisma.wabaPhoneNumber.upsert.mock.calls;
+      expect(call[0].update).toMatchObject({
+        nameStatus: 'PENDING_REVIEW',
+        codeVerificationStatus: 'VERIFIED',
+      });
+      const requested = mockedAxios.get.mock.calls[0]?.[1] as {
+        params: { fields: string };
+      };
+      expect(requested.params.fields).toContain('name_status');
+    });
+
+    it('leaves the name status null when Meta does not give one', async () => {
+      // A number mid-onboarding comes back without the field. "Not asked yet"
+      // is not the same answer as "NONE", so nothing is invented.
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({ accessToken: 'enc_token' });
+      mockEncryption.decrypt.mockReturnValue('raw_token');
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: { data: [{ id: 'p1', platform_type: 'CLOUD_API' }] },
+      });
+      mockPrisma.wabaPhoneNumber.upsert.mockResolvedValue({ phoneNumberId: 'p1', wabaId: 'w1' });
+
+      await service.syncPhoneNumbers(1, 'org_1', 'w1');
+
+      const [call] = mockPrisma.wabaPhoneNumber.upsert.mock.calls;
+      expect(call[0].update.nameStatus).toBeNull();
+    });
+
     it('prunes numbers removed on Meta and invalidates their cache', async () => {
       mockedAxios.get = jest.fn().mockResolvedValue({
         data: { data: [{ id: 'p1', platform_type: 'CLOUD_API' }] },

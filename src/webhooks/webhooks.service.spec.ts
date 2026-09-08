@@ -145,6 +145,128 @@ describe('WebhooksService', () => {
     expect(mockAccount.handleAccountUpdate).toHaveBeenCalled();
   });
 
+  it('files an account_update under the WABA the change names, not the business', async () => {
+    // Meta puts the business id in `entry.id` for this field and the account in
+    // `waba_info`. Trusting `entry.id` filed every tenant's account events
+    // under one id belonging to none of them, so every WABA but the accidental
+    // match went un-updated and its customers' endpoints never saw the event.
+    mockPrisma.webhookEvent.create.mockResolvedValue({ id: 21 });
+    mockPrisma.webhookEvent.update.mockResolvedValue({});
+    mockAccount.handleAccountUpdate.mockResolvedValue(undefined);
+
+    await service.processPayload({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: '1294926319306680',
+          changes: [
+            {
+              field: 'account_update',
+              value: {
+                event: 'PARTNER_ADDED',
+                waba_info: {
+                  waba_id: '1636939834635498',
+                  owner_business_id: '1077026238411718',
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(mockPrisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ wabaId: '1636939834635498' }),
+      }),
+    );
+    expect(mockAccount.handleAccountUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      '1636939834635498',
+    );
+    expect(mockDispatcher.enqueue).toHaveBeenCalledWith(
+      '1636939834635498',
+      21,
+      'account_update',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('keeps one entry\'s changes apart when they name different WABAs', async () => {
+    // Both of the tenant's accounts are carried in a single delivery, which is
+    // exactly the shape that made the bug invisible: the second one silently
+    // landed on the first one's id.
+    mockPrisma.webhookEvent.create
+      .mockResolvedValueOnce({ id: 31 })
+      .mockResolvedValueOnce({ id: 32 });
+    mockPrisma.webhookEvent.update.mockResolvedValue({});
+    mockAccount.handleAccountUpdate.mockResolvedValue(undefined);
+
+    await service.processPayload({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: '1294926319306680',
+          changes: [
+            {
+              field: 'account_update',
+              value: {
+                event: 'MM_LITE_TERMS_SIGNED',
+                waba_info: { waba_id: '1039513235563500' },
+              },
+            },
+            {
+              field: 'account_update',
+              value: {
+                event: 'MM_LITE_TERMS_SIGNED',
+                waba_info: { waba_id: '1636939834635498' },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const filed = mockPrisma.webhookEvent.create.mock.calls.map(
+      (call: any[]) => call[0].data.wabaId,
+    );
+    expect(filed).toEqual(['1039513235563500', '1636939834635498']);
+  });
+
+  it('falls back to entry.id for the fields that carry no waba_info', async () => {
+    // `entry.id` really is the WABA for `messages`, so the fallback is the
+    // right answer there rather than a last resort.
+    mockPrisma.webhookEvent.create.mockResolvedValue({ id: 41 });
+    mockPrisma.webhookEvent.update.mockResolvedValue({});
+    mockAccount.handlePhoneQualityUpdate.mockResolvedValue(undefined);
+
+    await service.processPayload({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'waba-real',
+          changes: [
+            {
+              field: 'phone_number_quality_update',
+              value: { display_phone_number: '+1 555', event: 'FLAGGED' },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(mockPrisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ wabaId: 'waba-real' }),
+      }),
+    );
+    expect(mockAccount.handlePhoneQualityUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      'waba-real',
+    );
+  });
+
   it('routes template status update to template status handler', async () => {
     mockPrisma.webhookEvent.create.mockResolvedValue({ id: 3 });
     mockPrisma.webhookEvent.update.mockResolvedValue({});

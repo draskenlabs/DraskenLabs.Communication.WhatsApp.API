@@ -2,6 +2,22 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 
+/**
+ * Meta's `decision` on a name review, in the vocabulary `name_status` uses, or
+ * null for a decision we do not recognise — better no answer than a wrong one
+ * written over what a sync knows.
+ */
+function nameStatusFor(decision: unknown): string | null {
+  const value = typeof decision === 'string' ? decision.toUpperCase() : '';
+  if (value === 'APPROVED') return 'APPROVED';
+  if (value === 'REJECTED' || value === 'DECLINED') return 'DECLINED';
+  if (value === 'PENDING' || value === 'PENDING_REVIEW') {
+    return 'PENDING_REVIEW';
+  }
+  if (value === 'EXPIRED') return 'EXPIRED';
+  return null;
+}
+
 @Injectable()
 export class AccountHandler {
   private readonly logger = new Logger(AccountHandler.name);
@@ -91,7 +107,14 @@ export class AccountHandler {
     }
   }
 
-  handlePhoneNameUpdate(value: unknown, wabaId?: string): void {
+  /**
+   * Meta's verdict on a requested display name.
+   *
+   * Recorded, not just emailed: `nameStatus` is what the console shows against
+   * a number, and a decision that only reached an inbox left the console
+   * claiming the previous answer until somebody happened to run a sync.
+   */
+  async handlePhoneNameUpdate(value: unknown, wabaId?: string): Promise<void> {
     this.logger.log(`Phone name update: ${JSON.stringify(value)}`);
 
     const update = (value ?? {}) as {
@@ -107,6 +130,33 @@ export class AccountHandler {
         decision: update.decision,
         requestedName: update.requested_verified_name,
       });
+    }
+
+    const nameStatus = nameStatusFor(update.decision);
+    if (!nameStatus || !update.display_phone_number) return;
+
+    try {
+      await this.prisma.wabaPhoneNumber.updateMany({
+        // Scoped to the account the webhook is about, for the same reason the
+        // quality update is: a display number is not unique across accounts.
+        where: {
+          displayPhoneNumber: update.display_phone_number,
+          ...(wabaId ? { wabaId } : {}),
+        },
+        data: {
+          nameStatus,
+          // An approval is also the moment the requested name becomes the
+          // name Meta will show. A rejection changes nothing but the status.
+          ...(nameStatus === 'APPROVED' && update.requested_verified_name
+            ? { verifiedName: update.requested_verified_name }
+            : {}),
+        },
+      });
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Failed to record the name decision for ${update.display_phone_number}: ${detail}`,
+      );
     }
   }
 }

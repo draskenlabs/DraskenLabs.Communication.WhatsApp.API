@@ -59,6 +59,19 @@ Implements the Meta Embedded Signup flow. Users authorize the platform via Meta 
 | List phone numbers | `GET /wabas/:wabaId/phone-numbers` | Local DB |
 | Sync phone numbers | `POST /wabas/:wabaId/phone-numbers/sync` | Meta → DB upsert |
 
+**Two statuses, never folded together.** `codeVerificationStatus` is the
+number's own OTP registration — whether it can send. `nameStatus` (Meta's
+`name_status`, synced alongside it) is where the number's *display name* stands
+in Meta's review: `APPROVED`, `PENDING_REVIEW`, `DECLINED`, `EXPIRED`,
+`AVAILABLE_WITHOUT_REVIEW` or `NONE`. A number can be registered and sending
+while its name is still in review, and only an approved name is what recipients
+see, so the two are stored and returned separately.
+
+`nameStatus` is nullable: Meta omits the field for a number that has not
+finished onboarding, and "we have not asked yet" is not the same answer as
+`NONE`. It is also written by the `phone_number_name_update` webhook, so a
+decision reaches the console without waiting for the next sync.
+
 ---
 
 ## Meta API Integration

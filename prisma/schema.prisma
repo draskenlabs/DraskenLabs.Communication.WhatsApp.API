@@ -115,6 +115,13 @@ model WabaPhoneNumber {
   id                     Int       @id @default(autoincrement())
   phoneNumberId          String    @unique
   verifiedName           String
+  /// Where the *display name* stands with Meta — APPROVED, PENDING_REVIEW,
+  /// DECLINED, EXPIRED, AVAILABLE_WITHOUT_REVIEW or NONE. A different thing
+  /// from `codeVerificationStatus`, which is the number's own OTP
+  /// registration: a registered number can still be waiting on its name, and
+  /// only an approved name earns the tick WhatsApp shows to recipients.
+  /// Null until a sync or a `phone_number_name_update` webhook says.
+  nameStatus             String?
   codeVerificationStatus String
   displayPhoneNumber     String
   qualityRating          String
