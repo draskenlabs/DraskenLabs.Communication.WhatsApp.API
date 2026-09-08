@@ -717,6 +717,12 @@ un-updated, its customers' endpoints never received the event, and the stored
 the id the change names and falls back to `entry.id` for the fields that carry
 no `waba_info`.
 
+Rows written before that fix are repaired by migration
+`20260908170000_backfill_webhook_event_waba`: the payload was stored verbatim,
+so each misfiled row still carries the right id and is moved to the account it
+names. Rows that already agree, rows with no `waba_info`, and rows whose payload
+is not an object are left untouched, and re-running it updates nothing.
+
 ---
 
 ## 11. Environment Variables
