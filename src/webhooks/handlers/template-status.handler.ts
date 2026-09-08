@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, TemplateStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { normalizeRejectedReason } from 'src/common/utils/rejected-reason';
+import { templateStatusReason } from 'src/common/utils/rejected-reason';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { MailNotifications } from 'src/mail/mail.notifications';
 
@@ -42,7 +42,7 @@ export class TemplateStatusHandler {
   ) {}
 
   async handle(value: any): Promise<void> {
-    const { event, message_template_id, message_template_name, message_template_language, reason } = value;
+    const { event, message_template_id, message_template_name, message_template_language } = value;
     const status = STATUS_MAP[event];
 
     if (!status) {
@@ -51,9 +51,13 @@ export class TemplateStatusHandler {
     }
 
     // Meta sends `reason: "NONE"` on every non-rejection event, so only a
-    // normalised, non-null reason represents an actual rejection. An approval
+    // normalised, non-null reason represents an actual rejection. The sentence
+    // worth reading is in `other_info` when Meta sends one, which is why this
+    // reads the whole payload rather than `reason` alone. An approval
     // supersedes whatever reason a previous rejection left behind.
-    const rejectedReason = normalizeRejectedReason(reason);
+    const rejectedReason = templateStatusReason(
+      value as { reason?: unknown; other_info?: unknown },
+    );
     const data: Prisma.MessageTemplateUpdateManyMutationInput = { status };
     if (rejectedReason) data.rejectedReason = rejectedReason;
     else if (status === TemplateStatus.APPROVED) data.rejectedReason = null;
