@@ -92,14 +92,16 @@ describe('AccountHandler', () => {
   });
 
   describe('handlePhoneNameUpdate', () => {
-    it('logs without throwing', () => {
-      expect(() =>
+    it('logs without throwing', async () => {
+      await expect(
         handler.handlePhoneNameUpdate({ phone_number: '+1555' }),
-      ).not.toThrow();
+      ).resolves.toBeUndefined();
     });
 
-    it('emails the display-name decision when the WABA is known', () => {
-      handler.handlePhoneNameUpdate(
+    it('emails the display-name decision when the WABA is known', async () => {
+      mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
+
+      await handler.handlePhoneNameUpdate(
         {
           display_phone_number: '+15550051310',
           decision: 'APPROVED',
@@ -114,6 +116,66 @@ describe('AccountHandler', () => {
         decision: 'APPROVED',
         requestedName: 'Drasken Labs',
       });
+    });
+
+    it('records an approval, and the name it approved', async () => {
+      // The console reads `nameStatus` off the row. A decision that only
+      // reached an inbox left the number claiming its previous status until
+      // somebody happened to run a sync.
+      mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
+
+      await handler.handlePhoneNameUpdate(
+        {
+          display_phone_number: '+15550051310',
+          decision: 'APPROVED',
+          requested_verified_name: 'Drasken Labs',
+        },
+        'waba1',
+      );
+
+      expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith({
+        where: { displayPhoneNumber: '+15550051310', wabaId: 'waba1' },
+        data: { nameStatus: 'APPROVED', verifiedName: 'Drasken Labs' },
+      });
+    });
+
+    it('records a rejection without touching the name in use', async () => {
+      mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
+
+      await handler.handlePhoneNameUpdate(
+        {
+          display_phone_number: '+15550051310',
+          decision: 'REJECTED',
+          requested_verified_name: 'Something Else',
+        },
+        'waba1',
+      );
+
+      expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith({
+        where: { displayPhoneNumber: '+15550051310', wabaId: 'waba1' },
+        data: { nameStatus: 'DECLINED' },
+      });
+    });
+
+    it('writes nothing for a decision it does not recognise', async () => {
+      // Better no answer than a wrong one written over what a sync knows.
+      await handler.handlePhoneNameUpdate(
+        { display_phone_number: '+15550051310', decision: 'SOMETHING_NEW' },
+        'waba1',
+      );
+
+      expect(mockPrisma.wabaPhoneNumber.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('survives a database failure', async () => {
+      mockPrisma.wabaPhoneNumber.updateMany.mockRejectedValue(new Error('db down'));
+
+      await expect(
+        handler.handlePhoneNameUpdate(
+          { display_phone_number: '+15550051310', decision: 'APPROVED' },
+          'waba1',
+        ),
+      ).resolves.toBeUndefined();
     });
   });
 });

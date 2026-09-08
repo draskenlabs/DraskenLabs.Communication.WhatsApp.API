@@ -31,6 +31,25 @@ export function registeredNumbersWhere(wabaId: string) {
   return { wabaId, platformType: CLOUD_API_PLATFORM };
 }
 
+/**
+ * One phone number as Meta returns it. Every field is optional: a number that
+ * has not finished onboarding comes back with most of them absent, and
+ * `name_status` is missing until Meta has reviewed the display name — which is
+ * the whole reason the defaults at the upsert exist.
+ */
+interface MetaPhoneNumber {
+  /** Always present — it is the key the upsert matches on. */
+  id: string;
+  verified_name?: string;
+  name_status?: string;
+  code_verification_status?: string;
+  display_phone_number?: string;
+  quality_rating?: string;
+  platform_type?: string;
+  throughput?: { level?: string };
+  last_onboarded_time?: string;
+}
+
 @Injectable()
 export class WabaPhoneNumberService {
   private readonly logger = new Logger(WabaPhoneNumberService.name);
@@ -172,7 +191,7 @@ export class WabaPhoneNumberService {
         {
           params: {
             fields:
-              'id,verified_name,code_verification_status,display_phone_number,quality_rating,platform_type,throughput,last_onboarded_time',
+              'id,verified_name,name_status,code_verification_status,display_phone_number,quality_rating,platform_type,throughput,last_onboarded_time',
           },
           headers: { Authorization: `Bearer ${rawAccessToken}` },
         },
@@ -195,13 +214,22 @@ export class WabaPhoneNumberService {
 
     const synced: WabaPhoneNumber[] = [];
     const keepIds: string[] = [];
-    for (const meta of response.data?.data ?? []) {
+    // Named rather than left as `any`: every field below is optional on Meta's
+    // side, and the shape is the whole reason the defaults underneath exist.
+    const metaNumbers: MetaPhoneNumber[] = response.data?.data ?? [];
+    for (const meta of metaNumbers) {
       // A number that hasn't finished onboarding yet ("Pending sync") comes back
       // from Meta with several of these fields absent. The columns are required,
       // so fall back to sensible defaults rather than writing null/Invalid Date
       // (which Prisma rejects and would fail the whole connect flow).
       const fields = {
         verifiedName: meta.verified_name ?? '',
+        // Null, not a default: a number Meta has not reviewed yet returns no
+        // `name_status`, and inventing one would claim an answer Meta has not
+        // given. The column is separate from `codeVerificationStatus` because
+        // the two really are different — a number can be registered and
+        // sending while its display name is still in review.
+        nameStatus: meta.name_status ?? null,
         codeVerificationStatus: meta.code_verification_status ?? 'NOT_VERIFIED',
         displayPhoneNumber: meta.display_phone_number ?? '',
         qualityRating: meta.quality_rating ?? 'UNKNOWN',

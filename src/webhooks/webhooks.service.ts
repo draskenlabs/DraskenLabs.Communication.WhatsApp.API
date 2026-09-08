@@ -20,6 +20,29 @@ const SUBSCRIBED_FIELDS = [
   'phone_number_name_update',
 ];
 
+/**
+ * Which WABA a change is about.
+ *
+ * `entry.id` is the WABA for the `messages` field, and that is what this used
+ * to trust for every field. It is not true of `account_update`: there Meta
+ * sends the *business* id in `entry.id` and names the account inside the change
+ * itself, in `waba_info.waba_id`. Every account event across every tenant was
+ * therefore filed under one id that belongs to none of them — so a WABA other
+ * than the one that happened to match was never updated, its customers' webhook
+ * endpoints never received the event, and the stored `WebhookEvent` rows all
+ * pointed at the wrong account.
+ *
+ * The value wins where it names an account, and `entry.id` remains the fallback
+ * for the fields that carry no `waba_info`.
+ */
+function resolveWabaId(entry: any, value: any): string {
+  const fromValue: unknown =
+    value?.waba_info?.waba_id ?? value?.waba_id ?? undefined;
+  if (typeof fromValue === 'string' && fromValue.trim()) return fromValue;
+  if (typeof fromValue === 'number') return String(fromValue);
+  return String(entry?.id ?? '');
+}
+
 @Injectable()
 export class WebhooksService {
   private readonly logger = new Logger(WebhooksService.name);
@@ -90,10 +113,9 @@ export class WebhooksService {
     if (body.object !== 'whatsapp_business_account') return;
 
     for (const entry of body.entry ?? []) {
-      const wabaId: string = entry.id;
-
       for (const change of entry.changes ?? []) {
         const { field, value } = change;
+        const wabaId = resolveWabaId(entry, value);
 
         const event = await this.prisma.webhookEvent.create({
           data: { eventType: field, wabaId, payload: value, processed: false },
