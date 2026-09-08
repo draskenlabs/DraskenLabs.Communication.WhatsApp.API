@@ -699,7 +699,7 @@ model WebhookEvent {
 |-------|-------------|-----------|
 | `Message` | `status` | `handleStatusUpdate()` |
 | `WabaPhoneNumber` | `qualityRating` | `handlePhoneQualityUpdate()` |
-| `MessageTemplate` | `status`, `rejectedReason` | `handleTemplateStatusUpdate()` (Templates module must exist) |
+| `MessageTemplate` | `status`, `rejectedReason` | `handleTemplateStatusUpdate()` (Templates module must exist). The reason is taken from `other_info.description`, then `other_info.title`, then `reason` — Meta puts the sentence in `other_info` and often sends `reason: "NONE"` with a rejection |
 
 ---
 
