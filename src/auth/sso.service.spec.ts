@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SsoService } from './sso.service';
 import axios from 'axios';
@@ -56,6 +60,57 @@ describe('SsoService', () => {
     it('throws UnauthorizedException when SSO returns an error', async () => {
       mockedAxios.post = jest.fn().mockRejectedValue({ response: { data: { message: 'Invalid or expired authorization code' } } });
       await expect(service.exchangeCode('bad', 'v')).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  /**
+   * A refusal ends the session and takes the refresh cookie with it; an outage
+   * must not. Reporting both as 401 meant one unreachable minute at the SSO
+   * permanently signed out everybody who happened to refresh during it.
+   */
+  describe('refreshTokens', () => {
+    it('returns the rotated pair', async () => {
+      const tokenData = {
+        accessToken: 'at2',
+        refreshToken: 'rt2',
+        expiresIn: 600,
+      };
+      const post = jest.fn().mockResolvedValue({ data: { data: tokenData } });
+      mockedAxios.post = post;
+
+      await expect(service.refreshTokens('rt1')).resolves.toEqual(tokenData);
+      expect(post).toHaveBeenCalledWith(
+        'https://sso.drasken.dev/auth/refresh',
+        { refreshToken: 'rt1' },
+      );
+    });
+
+    it('reports a refused token as unauthorized', async () => {
+      mockedAxios.post = jest.fn().mockRejectedValue({
+        response: { status: 401, data: { message: 'Refresh token is spent' } },
+      });
+
+      await expect(service.refreshTokens('rt1')).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('reports an unreachable SSO as unavailable', async () => {
+      mockedAxios.post = jest.fn().mockRejectedValue({ code: 'ECONNREFUSED' });
+
+      await expect(service.refreshTokens('rt1')).rejects.toThrow(
+        ServiceUnavailableException,
+      );
+    });
+
+    it('reports an SSO that failed on its own side as unavailable', async () => {
+      mockedAxios.post = jest.fn().mockRejectedValue({
+        response: { status: 502, data: { message: 'Bad gateway' } },
+      });
+
+      await expect(service.refreshTokens('rt1')).rejects.toThrow(
+        ServiceUnavailableException,
+      );
     });
   });
 

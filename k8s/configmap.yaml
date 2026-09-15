@@ -30,7 +30,12 @@ data:
   # The refresh-token cookie. `lax` is enough while the console and this API
   # sit under one registrable domain; `none` (which forces Secure) is for a
   # deployment that splits them across sites.
-  AUTH_COOKIE_SAMESITE: "lax"
+  # lax | none | auto. `auto` (the default when unset) reads it off each
+  # request: the console on this exact host gets `lax`, a console on any other
+  # host gets `none; Secure`. Leave it on auto unless you mean to pin it — a
+  # `lax` cookie a cross-site console cannot send back does not break signing
+  # in, it signs everyone out ten minutes later and keeps doing it.
+  AUTH_COOKIE_SAMESITE: "auto"
   AUTH_COOKIE_SECURE: "true"
   # Meta OAuth redirect (must match the Meta App config)
   META_REDIRECT_URI: "https://api.example.com/connect/callback"

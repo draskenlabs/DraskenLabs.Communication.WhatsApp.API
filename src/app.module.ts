@@ -92,11 +92,16 @@ import * as Joi from 'joi';
         // plus any staging or local origin. The web app's own origin, taken
         // from SSO_REDIRECT_URI, is always allowed and needs no entry here.
         WEB_APP_ORIGINS: Joi.string().optional(),
-        // The refresh cookie. `lax` is right while the console and this API
-        // share a registrable domain; a deployment that splits them across
-        // sites needs `none`, which forces Secure. Secure is off only for a
-        // plain-http local API.
-        AUTH_COOKIE_SAMESITE: Joi.string().valid('lax', 'none').default('lax'),
+        // The refresh cookie. `auto` — the default — reads it off each
+        // request: same host as the caller's Origin gets `lax`, anything else
+        // gets `none`, because a `Lax` cookie is never sent on a cross-site
+        // request and the console would be signed out ten minutes after every
+        // sign-in with nothing to show for it. Pin it to `lax` or `none` to
+        // take that decision away. `none` forces Secure; Secure is off only
+        // for a plain-http local API.
+        AUTH_COOKIE_SAMESITE: Joi.string()
+          .valid('lax', 'none', 'auto')
+          .default('auto'),
         AUTH_COOKIE_SECURE: Joi.boolean()
           .truthy('true')
           .falsy('false')

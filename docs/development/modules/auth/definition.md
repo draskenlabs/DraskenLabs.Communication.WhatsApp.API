@@ -159,13 +159,25 @@ stale.
   set by this API. It is good for thirty days — far longer than the access token
   it buys — and in `localStorage` every script the page loads could read it.
   A caller that stores the token itself may still send it in the body.
+- **`SameSite` is read off the request.** `AUTH_COOKIE_SAMESITE=auto`, the
+  default, sends `Lax` when the caller's `Origin` is this API's own host and
+  `None; Secure` otherwise. A `Lax` cookie is stored happily at sign-in and
+  then never sent again on a cross-site `POST /auth/refresh`, so getting it
+  wrong does not break signing in — it signs everybody out ten minutes later,
+  on every visit, with no error anywhere to say why. `lax` and `none` still pin
+  it for a deployment that would rather decide for itself.
 - **Refreshes are serialised per token.** The SSO rotates on use and treats a
   second presentation of the same token as theft: it revokes the whole session
   family. Two console tabs share one cookie, so the first caller takes a Redis
   lock, and anyone else holding the token it spent is handed the pair it got
   (`refresh:{sha256}`, 60s).
-- A refusal clears the cookie, so the browser does not come back to be refused
-  on every load.
+- **A refusal ends the session; an outage does not.** A `401` means the SSO
+  judged the token and said no, and the cookie is cleared so the browser does
+  not come back to be refused on every load. Anything else — the SSO
+  unreachable, a 5xx from it, losing the race for the lock — is a `503` and
+  leaves the cookie exactly where it is. The two used to be one answer, so a
+  single unreachable minute at the SSO deleted a refresh token that was still
+  good for a month and signed those people out permanently.
 
 `POST /auth/logout` revokes the session at the SSO — so every Drasken
 application sharing it is told — drops the grants, and clears the cookie.
@@ -212,7 +224,7 @@ both the value the browser redirected with and the one sent at token exchange.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/auth/callback` | None | Exchange SSO code (+ PKCE verifier) for the SSO access token + orgs |
-| POST | `/auth/refresh` | Refresh cookie | Mint a new access token, rotating the cookie |
+| POST | `/auth/refresh` | Refresh cookie | Mint a new access token, rotating the cookie. 401 = refused, session over; 503 = try again |
 | POST | `/auth/logout` | SSO token | End the session here and at the SSO |
 | GET | `/auth/organisations` | SSO token | List the session user's organisations |
 | POST | `/auth/organisations` | SSO token | Create an organisation and enter it |
@@ -233,6 +245,8 @@ both the value the browser redirected with and the one sent at token exchange.
 | A forged `X-Org-Id` | Checked against the session's grants on every request; 403 otherwise |
 | Refresh token theft from the page | HttpOnly cookie — never in a response body, never readable by page scripts |
 | A refresh race revoking the session | One caller per token takes a Redis lock; the rest are handed its result |
+| A transient SSO failure ending the session | Only a 401 from the SSO clears the cookie; an outage answers 503 and the next request retries |
+| A cross-site console never receiving the cookie | `SameSite` decided per request from the caller's `Origin`, not from a variable somebody has to know to set |
 | A revoked session still being accepted | Bounded by the access-token lifetime (10 min); `/auth/logout` revokes at the SSO |
 | PKCE code interception | `codeVerifier` only sent on callback; never stored |
 | CSRF on the SSO callback | `state` generated + verified by the web app (sessionStorage); SSO code is single-use, 60s TTL |

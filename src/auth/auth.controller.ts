@@ -64,10 +64,11 @@ export class AuthController {
   @ApiStandardErrorResponses({ unauthorized: true, validation: true })
   async callback(
     @Body() dto: AuthCallbackDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<AuthSessionDto> {
     const { body, tokens } = await this.authService.handleCallback(dto);
-    this.issue(res, tokens);
+    this.issue(req, res, tokens);
     return {
       ...body,
       accessToken: tokens.accessToken,
@@ -83,7 +84,10 @@ export class AuthController {
     description:
       'Browser callers send nothing — the HttpOnly cookie travels on its own with ' +
       '`credentials: "include"`. A caller that stores the token itself may send it in the body. ' +
-      'The refresh token is rotated on every use and the new one replaces the cookie.',
+      'The refresh token is rotated on every use and the new one replaces the cookie.\n\n' +
+      '**401 ends the session** — the token was refused, and the cookie is cleared. ' +
+      '**503 does not**: the SSO could not be reached, the cookie is left alone and the caller ' +
+      'should keep the session and try again rather than signing the user out.',
   })
   @ApiWrappedOkResponse({
     dataDto: SessionTokenDto,
@@ -100,17 +104,26 @@ export class AuthController {
 
     try {
       const tokens = await this.authService.refresh(refreshToken);
-      this.issue(res, tokens);
+      this.issue(req, res, tokens);
       return {
         accessToken: tokens.accessToken,
         expiresIn: tokens.expiresIn,
         tokenType: tokens.tokenType,
       };
     } catch (err) {
-      // The cookie is spent or was refused. Leaving it in place would send the
-      // browser back here on every load to be refused again — and, if the SSO
-      // read it as a replay, the session it names is already gone.
-      clearRefreshCookie(res, this.config);
+      // Cleared only when the SSO actually refused the token. Leaving a spent
+      // cookie in place would send the browser back here on every load to be
+      // refused again — and, if the SSO read it as a replay, the session it
+      // names is already gone.
+      //
+      // Everything else leaves it exactly where it is. This used to clear on
+      // any failure at all, so a moment when the SSO was unreachable deleted a
+      // thirty-day refresh token that was still perfectly good, and the person
+      // was signed out on that visit and every one after it. An outage is
+      // answered with 503 and the next request simply tries again.
+      if (err instanceof UnauthorizedException) {
+        clearRefreshCookie(res, this.config, req);
+      }
       throw err;
     }
   }
@@ -130,7 +143,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<null> {
     await this.authService.logout(this.sessionId(req), this.ssoToken(req));
-    clearRefreshCookie(res, this.config);
+    clearRefreshCookie(res, this.config, req);
     return null;
   }
 
@@ -205,12 +218,18 @@ export class AuthController {
     );
   }
 
-  /** Puts the rotated refresh token back in the cookie. */
-  private issue(res: Response, tokens: SessionTokens): void {
+  /**
+   * Puts the rotated refresh token back in the cookie.
+   *
+   * The request comes along because the cookie's `SameSite` is read off the
+   * caller's `Origin` (see `refresh-cookie.ts`) — a cookie set `Lax` for a
+   * console on another site is stored and then never sent again.
+   */
+  private issue(req: Request, res: Response, tokens: SessionTokens): void {
     const ttl = Number(
       this.config.get<string>('SSO_REFRESH_TOKEN_TTL') ?? 2592000,
     );
-    setRefreshCookie(res, this.config, tokens.refreshToken, ttl);
+    setRefreshCookie(res, this.config, tokens.refreshToken, ttl, req);
   }
 
   private sessionId(req: AuthedRequest): string {

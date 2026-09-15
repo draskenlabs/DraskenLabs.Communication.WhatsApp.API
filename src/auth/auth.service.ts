@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { createHash } from 'crypto';
 import { SsoService, OrgSummary, SsoTokenData } from './sso.service';
 import { SsoTokenService } from './sso-token.service';
@@ -119,7 +123,11 @@ export class AuthService {
     if (!(await this.redisService.takeRefreshLock(hash))) {
       const shared = await this.waitForRefresh(hash);
       if (shared) return this.sessionTokens(shared);
-      throw new UnauthorizedException('Could not refresh the session');
+      // The tab holding the lock is still waiting on the SSO. Nobody has
+      // refused this token, so this must not read as the session ending —
+      // the caller clears the cookie on a 401, and losing a race would then
+      // cost the session outright.
+      throw new ServiceUnavailableException('Could not refresh the session');
     }
 
     try {

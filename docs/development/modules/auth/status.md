@@ -145,3 +145,53 @@ What that costs and what it buys:
 | `User.email`, `User.firstName`, etc. | Removed — profile data lives in SSO |
 | `Organisation`, `OrgMember` tables | Removed — `ssoOrgId: String` used instead |
 | `user.status` check in middleware | Removed — SSO handles account state |
+
+## The session survived the wrong things — 2026-09-15
+
+Two independent faults both ended in the same place: the console signs somebody
+out after an idle spell rather than refreshing. Neither was visible at sign-in,
+which is why both lasted.
+
+- **A `Lax` cookie a cross-site console could never send back.**
+  `dl_wa_refresh` took its `SameSite` from `AUTH_COOKIE_SAMESITE`, defaulting to
+  `lax` on the assumption that the console and this API share a registrable
+  domain. Where that does not hold, the browser stores the cookie at sign-in and
+  simply never attaches it to the cross-site `POST /auth/refresh`. Everything
+  works for one access token — about ten minutes — and then every refresh
+  arrives with no cookie, gets `No refresh token`, and the console signs the
+  person out. Nothing logs an error; the default was just wrong for that
+  deployment and nobody had a reason to look at it.
+
+  `refreshCookieOptions` now decides per request: `auto` (the new default) sends
+  `Lax` when the caller's `Origin` is this API's own host and `None; Secure`
+  otherwise. It reads same-site strictly — `wa.` calling `api.` of one domain is
+  same-site by the cookie rules but is given `None` anyway, because telling that
+  apart from two unrelated domains needs the public suffix list and guessing it
+  the other way is the failure this exists to stop. Erring towards `None` costs
+  a little CSRF hardening on one endpoint, where CORS still refuses to hand any
+  other origin the response; erring towards `Lax` costs people their sessions.
+  `lax` and `none` still pin it explicitly.
+
+- **A transient SSO failure deleting a refresh token good for a month.**
+  `SsoService.refreshTokens` turned every axios failure into
+  `UnauthorizedException` — a timeout, a connection refused, a 502 from the SSO,
+  all of them — and `AuthController.refresh` cleared the cookie on any error at
+  all. So one unreachable minute at the SSO permanently ended every session that
+  happened to refresh during it: the cookie was gone, and the person was signed
+  out on that visit and on every visit afterwards with nothing left to recover
+  from. The 2-second wait for a concurrent refresh timing out did the same thing
+  to whoever lost the race.
+
+  A refusal and an outage are now different answers. Only the SSO judging the
+  token (a 4xx) raises `UnauthorizedException` and clears the cookie; no
+  response, a 5xx, or a lost race raises `ServiceUnavailableException` and
+  leaves the cookie alone, so the next request simply tries again.
+
+Existing sessions broken by either fault do not heal themselves — a cookie that
+cannot be sent cannot be re-set, and a deleted one is gone — so those people
+sign in once more and then stay signed in.
+
+Covered by `src/auth/auth.controller.spec.ts` (the cookie kept on a 503, the
+`SameSite` chosen per request, and an explicit setting still winning),
+`src/auth/sso.service.spec.ts` (refused vs. unreachable vs. 5xx) and
+`src/auth/auth.service.spec.ts` (a lost race reported as unavailable).
