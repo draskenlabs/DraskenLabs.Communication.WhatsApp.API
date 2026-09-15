@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -226,6 +227,21 @@ export class SsoService {
       return data.data as SsoTokenData;
     } catch (err) {
       const error = err as AxiosError<{ message?: string }>;
+      const status = error.response?.status;
+
+      // A refusal and an outage are not the same answer, and this used to
+      // report both as 401. The caller clears the refresh cookie on a 401 —
+      // so one unreachable minute at the SSO permanently ended every session
+      // that happened to refresh during it, and the console signed those
+      // people out on every visit afterwards with nothing left to recover
+      // from. Only the SSO judging the token ends a session; anything else is
+      // "not now".
+      if (status === undefined || status >= 500) {
+        throw new ServiceUnavailableException(
+          'The sign-in service is unavailable',
+        );
+      }
+
       const msg =
         error.response?.data?.message ?? 'Could not refresh the session';
       throw new UnauthorizedException(msg);

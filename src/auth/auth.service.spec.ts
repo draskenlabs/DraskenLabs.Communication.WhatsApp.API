@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import {
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { SsoService } from './sso.service';
 import { SsoTokenService } from './sso-token.service';
@@ -247,6 +250,20 @@ describe('AuthService', () => {
         UnauthorizedException,
       );
       expect(mockRedisService.releaseRefreshLock).toHaveBeenCalled();
+    });
+
+    /**
+     * Losing the race is not being refused. The controller clears the cookie
+     * on a 401, so answering one here would cost the session outright — for a
+     * caller that did nothing wrong except arrive second.
+     */
+    it('reports a lost race as unavailable, not as a refusal', async () => {
+      mockRedisService.takeRefreshLock.mockResolvedValue(false);
+      mockRedisService.getRefreshResult.mockResolvedValue(null);
+
+      await expect(service.refresh('old_refresh')).rejects.toThrow(
+        ServiceUnavailableException,
+      );
     });
   });
 
