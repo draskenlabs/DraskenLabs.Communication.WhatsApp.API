@@ -5,7 +5,8 @@ import { MailNotifications } from 'src/mail/mail.notifications';
 import { mailNotificationsDouble } from 'src/mail/mail.test-doubles';
 
 const mockPrisma = {
-  wabaPhoneNumber: { updateMany: jest.fn() },
+  wabaPhoneNumber: { updateMany: jest.fn(), findFirst: jest.fn() },
+  phoneQualityEvent: { create: jest.fn() },
 };
 
 const mockMailNotifications = mailNotificationsDouble();
@@ -15,6 +16,12 @@ describe('AccountHandler', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // No name in use unless a test says otherwise — a fresh number.
+    mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({
+      nameStatus: null,
+      phoneNumberId: 'pn1',
+      wabaId: 'waba1',
+    });
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         { provide: MailNotifications, useValue: mockMailNotifications },
@@ -115,7 +122,25 @@ describe('AccountHandler', () => {
         displayPhoneNumber: '+15550051310',
         decision: 'APPROVED',
         requestedName: 'Drasken Labs',
+        rejectionReason: undefined,
       });
+    });
+
+    it("passes on Meta's reason for a refusal", async () => {
+      // The decision alone does not say what to change about the name.
+      await handler.handlePhoneNameUpdate(
+        {
+          display_phone_number: '+15550051310',
+          decision: 'REJECTED',
+          requested_verified_name: 'Best Bank Ever',
+          rejection_reason: 'TRADEMARK_VIOLATION',
+        },
+        'waba1',
+      );
+
+      expect(mockMailNotifications.displayNameDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ rejectionReason: 'TRADEMARK_VIOLATION' }),
+      );
     });
 
     it('records an approval, and the name it approved', async () => {
@@ -135,11 +160,18 @@ describe('AccountHandler', () => {
 
       expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith({
         where: { displayPhoneNumber: '+15550051310', wabaId: 'waba1' },
-        data: { nameStatus: 'APPROVED', verifiedName: 'Drasken Labs' },
+        data: {
+          nameStatus: 'APPROVED',
+          verifiedName: 'Drasken Labs',
+          // The request is settled, so nothing is left showing as pending.
+          newDisplayName: null,
+          newNameStatus: null,
+        },
       });
     });
 
-    it('records a rejection without touching the name in use', async () => {
+    it("records a first name's rejection against the number itself", async () => {
+      // Nothing is in use yet, so the refused name is the only one there is.
       mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
 
       await handler.handlePhoneNameUpdate(
@@ -153,7 +185,132 @@ describe('AccountHandler', () => {
 
       expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith({
         where: { displayPhoneNumber: '+15550051310', wabaId: 'waba1' },
-        data: { nameStatus: 'DECLINED' },
+        data: {
+          nameStatus: 'DECLINED',
+          newDisplayName: null,
+          newNameStatus: null,
+        },
+      });
+    });
+
+    it('leaves a live name alone when a rename is refused', async () => {
+      // The refusal is about the requested name. Writing it to `nameStatus`
+      // told the customer the name recipients are seeing had been declined.
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({
+        nameStatus: 'APPROVED',
+      });
+      mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
+
+      await handler.handlePhoneNameUpdate(
+        {
+          display_phone_number: '+15550051310',
+          decision: 'REJECTED',
+          requested_verified_name: 'Something Else',
+        },
+        'waba1',
+      );
+
+      expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith({
+        where: { displayPhoneNumber: '+15550051310', wabaId: 'waba1' },
+        data: { newNameStatus: 'DECLINED', newDisplayName: 'Something Else' },
+      });
+    });
+
+    it('protects a name cleared without review just the same', async () => {
+      // AVAILABLE_WITHOUT_REVIEW is in use exactly like an approved name — it
+      // is the usual outcome for a name matching the verified business.
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({
+        nameStatus: 'AVAILABLE_WITHOUT_REVIEW',
+      });
+      mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
+
+      await handler.handlePhoneNameUpdate(
+        {
+          display_phone_number: '+15550051310',
+          decision: 'REJECTED',
+          requested_verified_name: 'Something Else',
+        },
+        'waba1',
+      );
+
+      expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { newNameStatus: 'DECLINED', newDisplayName: 'Something Else' },
+        }),
+      );
+    });
+
+    it('reads a deferred review as still in review', async () => {
+      // Meta holding the request for a longer look is not a verdict. It used
+      // to fall through unrecognised and leave the console on the old answer.
+      mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
+
+      await handler.handlePhoneNameUpdate(
+        {
+          display_phone_number: '+15550051310',
+          decision: 'DEFERRED',
+          requested_verified_name: 'Drasken Labs',
+        },
+        'waba1',
+      );
+
+      expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith({
+        where: { displayPhoneNumber: '+15550051310', wabaId: 'waba1' },
+        data: {
+          nameStatus: 'PENDING_REVIEW',
+          newDisplayName: null,
+          newNameStatus: null,
+        },
+      });
+    });
+
+    it('shows a rename in review beside the name still in use', async () => {
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({
+        nameStatus: 'APPROVED',
+      });
+      mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
+
+      await handler.handlePhoneNameUpdate(
+        {
+          display_phone_number: '+15550051310',
+          decision: 'DEFERRED',
+          requested_verified_name: 'Drasken Labs Support',
+        },
+        'waba1',
+      );
+
+      expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith({
+        where: { displayPhoneNumber: '+15550051310', wabaId: 'waba1' },
+        data: {
+          newNameStatus: 'PENDING_REVIEW',
+          newDisplayName: 'Drasken Labs Support',
+        },
+      });
+    });
+
+    it('clears the pending rename once it is approved', async () => {
+      mockPrisma.wabaPhoneNumber.findFirst.mockResolvedValue({
+        nameStatus: 'APPROVED',
+      });
+      mockPrisma.wabaPhoneNumber.updateMany.mockResolvedValue({ count: 1 });
+
+      await handler.handlePhoneNameUpdate(
+        {
+          display_phone_number: '+15550051310',
+          decision: 'APPROVED',
+          requested_verified_name: 'Drasken Labs Support',
+        },
+        'waba1',
+      );
+
+      expect(mockPrisma.wabaPhoneNumber.updateMany).toHaveBeenCalledWith({
+        where: { displayPhoneNumber: '+15550051310', wabaId: 'waba1' },
+        data: {
+          nameStatus: 'APPROVED',
+          verifiedName: 'Drasken Labs Support',
+          newDisplayName: null,
+          newNameStatus: null,
+        },
       });
     });
 
@@ -168,7 +325,12 @@ describe('AccountHandler', () => {
     });
 
     it('survives a database failure', async () => {
-      mockPrisma.wabaPhoneNumber.updateMany.mockRejectedValue(new Error('db down'));
+      mockPrisma.wabaPhoneNumber.findFirst.mockRejectedValue(
+        new Error('db down'),
+      );
+      mockPrisma.wabaPhoneNumber.updateMany.mockRejectedValue(
+        new Error('db down'),
+      );
 
       await expect(
         handler.handlePhoneNameUpdate(

@@ -701,7 +701,7 @@ model WebhookEvent {
 | `Message` | `status` | `handleStatusUpdate()` |
 | `WabaPhoneNumber` | `qualityRating` | `handlePhoneQualityUpdate()` |
 | `MessageTemplate` | `status`, `rejectedReason` | `handleTemplateStatusUpdate()` (Templates module must exist). The reason is taken from `other_info.description`, then `other_info.title`, then `reason` — Meta puts the sentence in `other_info` and often sends `reason: "NONE"` with a rejection |
-| `WabaPhoneNumber` | `nameStatus`, `verifiedName` | `handlePhoneNameUpdate()` — Meta's verdict on a requested display name, recorded rather than only emailed. An approval also promotes `requested_verified_name` to the name in use |
+| `WabaPhoneNumber` | `nameStatus`, `verifiedName`, `newDisplayName`, `newNameStatus` | `handlePhoneNameUpdate()` — Meta's verdict on a *requested* display name, recorded rather than only emailed. An approval promotes `requested_verified_name` to the name in use and clears the pending columns. A refusal or a `DEFERRED` hold lands on `newNameStatus` while an approved name is live, and on `nameStatus` only where the number has no name in use — otherwise a refused rename marked the name recipients see as declined |
 
 ### Which WABA a change is about
 

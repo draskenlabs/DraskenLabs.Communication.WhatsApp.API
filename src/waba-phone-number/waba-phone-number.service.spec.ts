@@ -158,6 +158,109 @@ describe('WabaPhoneNumberService', () => {
       expect(requested.params.fields).toContain('name_status');
     });
 
+    it('keeps a rename in review apart from the name in use', async () => {
+      // Meta leaves `name_status` on the approved name and reports the
+      // requested one separately, so a rename shows up as a rename rather
+      // than as the live name suddenly going back into review.
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({
+        accessToken: 'enc_token',
+      });
+      mockEncryption.decrypt.mockReturnValue('raw_token');
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: {
+          data: [
+            {
+              id: 'p1',
+              verified_name: 'Drasken Labs',
+              name_status: 'APPROVED',
+              new_display_name: 'Drasken Labs Support',
+              new_name_status: 'PENDING_REVIEW',
+              code_verification_status: 'VERIFIED',
+            },
+          ],
+        },
+      });
+      mockPrisma.wabaPhoneNumber.upsert.mockResolvedValue({
+        phoneNumberId: 'p1',
+        wabaId: 'w1',
+      });
+
+      await service.syncPhoneNumbers(1, 'org_1', 'w1');
+
+      const [call] = mockPrisma.wabaPhoneNumber.upsert.mock.calls;
+      expect(call[0].update).toMatchObject({
+        verifiedName: 'Drasken Labs',
+        nameStatus: 'APPROVED',
+        newDisplayName: 'Drasken Labs Support',
+        newNameStatus: 'PENDING_REVIEW',
+      });
+      const requested = mockedAxios.get.mock.calls[0]?.[1] as {
+        params: { fields: string };
+      };
+      expect(requested.params.fields).toContain('new_name_status');
+      expect(requested.params.fields).toContain('new_display_name');
+    });
+
+    it('clears a rename Meta no longer reports', async () => {
+      // Once the request is decided Meta stops sending it. Left behind, a
+      // settled rename sat on the card as though it were still out.
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({
+        accessToken: 'enc_token',
+      });
+      mockEncryption.decrypt.mockReturnValue('raw_token');
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: {
+          data: [
+            {
+              id: 'p1',
+              verified_name: 'Drasken Labs',
+              name_status: 'APPROVED',
+            },
+          ],
+        },
+      });
+      mockPrisma.wabaPhoneNumber.upsert.mockResolvedValue({
+        phoneNumberId: 'p1',
+        wabaId: 'w1',
+      });
+
+      await service.syncPhoneNumbers(1, 'org_1', 'w1');
+
+      const [call] = mockPrisma.wabaPhoneNumber.upsert.mock.calls;
+      expect(call[0].update.newDisplayName).toBeNull();
+      expect(call[0].update.newNameStatus).toBeNull();
+    });
+
+    it('stores NON_EXISTS as the answer Meta gave', async () => {
+      // Meta's way of saying it holds no name review for this number. It is a
+      // status, not a missing field, and it is what most numbers come back
+      // with before a display name has ever been submitted.
+      mockPrisma.userWhatsapp.findFirst.mockResolvedValue({
+        accessToken: 'enc_token',
+      });
+      mockEncryption.decrypt.mockReturnValue('raw_token');
+      mockedAxios.get = jest.fn().mockResolvedValue({
+        data: {
+          data: [
+            {
+              id: 'p1',
+              name_status: 'NON_EXISTS',
+              code_verification_status: 'VERIFIED',
+            },
+          ],
+        },
+      });
+      mockPrisma.wabaPhoneNumber.upsert.mockResolvedValue({
+        phoneNumberId: 'p1',
+        wabaId: 'w1',
+      });
+
+      await service.syncPhoneNumbers(1, 'org_1', 'w1');
+
+      const [call] = mockPrisma.wabaPhoneNumber.upsert.mock.calls;
+      expect(call[0].update.nameStatus).toBe('NON_EXISTS');
+    });
+
     it('leaves the name status null when Meta does not give one', async () => {
       // A number mid-onboarding comes back without the field. "Not asked yet"
       // is not the same answer as "NONE", so nothing is invented.

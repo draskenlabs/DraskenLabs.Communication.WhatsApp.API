@@ -33,15 +33,23 @@ export function registeredNumbersWhere(wabaId: string) {
 
 /**
  * One phone number as Meta returns it. Every field is optional: a number that
- * has not finished onboarding comes back with most of them absent, and
- * `name_status` is missing until Meta has reviewed the display name — which is
+ * has not finished onboarding comes back with most of them absent, which is
  * the whole reason the defaults at the upsert exist.
+ *
+ * `name_status` is always an answer about the name *in use* — including
+ * `NON_EXISTS`, which is Meta saying there is no review on file rather than
+ * a field it left out. A rename under review never touches it: the requested
+ * name is reported separately in `new_display_name`/`new_name_status` while
+ * the approved one stays live.
  */
 interface MetaPhoneNumber {
   /** Always present — it is the key the upsert matches on. */
   id: string;
   verified_name?: string;
   name_status?: string;
+  /** The requested name while it is in review, absent when none is pending. */
+  new_display_name?: string;
+  new_name_status?: string;
   code_verification_status?: string;
   display_phone_number?: string;
   quality_rating?: string;
@@ -191,7 +199,7 @@ export class WabaPhoneNumberService {
         {
           params: {
             fields:
-              'id,verified_name,name_status,code_verification_status,display_phone_number,quality_rating,platform_type,throughput,last_onboarded_time',
+              'id,verified_name,name_status,new_display_name,new_name_status,code_verification_status,display_phone_number,quality_rating,platform_type,throughput,last_onboarded_time',
           },
           headers: { Authorization: `Bearer ${rawAccessToken}` },
         },
@@ -224,12 +232,18 @@ export class WabaPhoneNumberService {
       // (which Prisma rejects and would fail the whole connect flow).
       const fields = {
         verifiedName: meta.verified_name ?? '',
-        // Null, not a default: a number Meta has not reviewed yet returns no
-        // `name_status`, and inventing one would claim an answer Meta has not
-        // given. The column is separate from `codeVerificationStatus` because
-        // the two really are different — a number can be registered and
-        // sending while its display name is still in review.
+        // Null, not a default: a field Meta left out is not an answer, and
+        // inventing one would claim a status it never gave. The column is
+        // separate from `codeVerificationStatus` because the two really are
+        // different questions, answered on their own schedules — a number can
+        // be registered and sending while its display name is still in review,
+        // and a name can clear review before the number is ever verified.
         nameStatus: meta.name_status ?? null,
+        // A rename in review, kept apart from the name in use. Cleared back to
+        // null once Meta stops reporting one, so a decided rename does not sit
+        // on the card forever.
+        newDisplayName: meta.new_display_name ?? null,
+        newNameStatus: meta.new_name_status ?? null,
         codeVerificationStatus: meta.code_verification_status ?? 'NOT_VERIFIED',
         displayPhoneNumber: meta.display_phone_number ?? '',
         qualityRating: meta.quality_rating ?? 'UNKNOWN',

@@ -120,8 +120,16 @@ model WabaPhoneNumber {
   /// from `codeVerificationStatus`, which is the number's own OTP
   /// registration: a registered number can still be waiting on its name, and
   /// only an approved name earns the tick WhatsApp shows to recipients.
-  /// Null until a sync or a `phone_number_name_update` webhook says.
+  /// Null until a sync or a `phone_number_name_update` webhook says, and
+  /// `NON_EXISTS`/`NONE` where Meta has no review record for the number.
   nameStatus             String?
+  /// A rename that has been asked for but not yet approved. Meta keeps the
+  /// approved name live while the requested one is reviewed, so the pending
+  /// name gets its own columns rather than overwriting `verifiedName` and
+  /// `nameStatus` — which would have the console report the live name as
+  /// declined the moment a *rename* was refused.
+  newDisplayName         String?
+  newNameStatus          String?
   codeVerificationStatus String
   displayPhoneNumber     String
   qualityRating          String

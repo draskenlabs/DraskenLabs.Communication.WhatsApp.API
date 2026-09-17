@@ -62,15 +62,37 @@ Implements the Meta Embedded Signup flow. Users authorize the platform via Meta 
 **Two statuses, never folded together.** `codeVerificationStatus` is the
 number's own OTP registration — whether it can send. `nameStatus` (Meta's
 `name_status`, synced alongside it) is where the number's *display name* stands
-in Meta's review: `APPROVED`, `PENDING_REVIEW`, `DECLINED`, `EXPIRED`,
-`AVAILABLE_WITHOUT_REVIEW` or `NONE`. A number can be registered and sending
-while its name is still in review, and only an approved name is what recipients
-see, so the two are stored and returned separately.
+in Meta's review. Only an approved name is what recipients see, so the two are
+stored and returned separately.
 
-`nameStatus` is nullable: Meta omits the field for a number that has not
-finished onboarding, and "we have not asked yet" is not the same answer as
-`NONE`. It is also written by the `phone_number_name_update` webhook, so a
-decision reaches the console without waiting for the next sync.
+The two are also **independent, not sequential**. A display name is supplied
+when the number is added to the WABA, and its review starts there — it does not
+wait on the OTP. A number can be `PENDING_REVIEW` while unverified, or
+`VERIFIED` while its name is still out. What needs both is `/register`: Meta
+wants a verified number *and* a name in use before it will put the number on
+the Cloud API.
+
+| `nameStatus` | Meaning |
+|--------------|---------|
+| `APPROVED` | Reviewed and in use. |
+| `AVAILABLE_WITHOUT_REVIEW` | Cleared with no manual review — the usual outcome for a name matching the verified business. In use exactly like `APPROVED`, and the reason approval is never assumed to imply a review happened. |
+| `PENDING_REVIEW` | Out for review. |
+| `DECLINED` | Refused. Not terminal — a new name resubmits and re-enters review. |
+| `EXPIRED` | An approval that lapsed. |
+| `NONE` / `NON_EXISTS` | Meta holds no name review for this number. Two spellings of one answer; `NON_EXISTS` is what the Graph API actually returns. |
+
+`nameStatus` is nullable, and null means something different from all of the
+above: Meta omits the field for a number that has not finished onboarding, and
+"we have not asked yet" is not an answer Meta gave. It is also written by the
+`phone_number_name_update` webhook, so a decision reaches the console without
+waiting for the next sync.
+
+**A rename is its own review.** Requesting a new name does not take the current
+one out of service: Meta leaves `name_status` on the approved name and reports
+the requested one in `new_display_name` / `new_name_status` until it clears,
+is refused, or expires. Both are synced into `newDisplayName` / `newNameStatus`
+and cleared when Meta stops reporting them. Folding a rename's verdict into
+`nameStatus` reported the name customers are actually seeing as declined.
 
 ---
 

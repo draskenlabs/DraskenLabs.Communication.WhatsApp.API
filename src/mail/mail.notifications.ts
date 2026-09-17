@@ -417,6 +417,8 @@ export class MailNotifications {
     displayPhoneNumber?: string;
     decision?: string;
     requestedName?: string;
+    /** Meta's reason for a refusal — the only part that says what to change. */
+    rejectionReason?: string;
   }): Promise<void> {
     const recipients = await this.mail.recipientsForWaba(input.wabaId);
     await this.mail.sendToAll(recipients, {
@@ -435,6 +437,12 @@ export class MailNotifications {
           ? ([['Requested name', input.requestedName]] as [string, string][])
           : []),
         ['Decision', this.humanise(input.decision ?? 'Reviewed')],
+        ...(input.rejectionReason
+          ? ([['Reason', this.humanise(input.rejectionReason)]] as [
+              string,
+              string,
+            ][])
+          : []),
       ],
       action: { label: 'Open phone numbers', path: '/phone-numbers' },
       footnote:
